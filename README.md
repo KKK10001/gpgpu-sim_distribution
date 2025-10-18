@@ -221,12 +221,38 @@ following (this assumes the CUDA Toolkit was installed in /usr/local/cuda):
 	export CUDA_INSTALL_PATH=/usr/local/cuda
 	export PATH=$CUDA_INSTALL_PATH/bin
 
+	上面缺省的export PATH的命令是写死一个路径，并未实现对$PATH的追加
+	我自己测试之后有效的ENV追加如下:
+	export CUDA_INSTALL_PATH=/usr/local/cuda
+	export PATH=$CUDA_INSTALL_PATH/bin:$PATH
+	export LD_LIBRARY_PATH=$CUDA_INSTALL_PATH/lib64:$LD_LIBRARY_PATH
+	echo "CUDA_INSTALL_PATH="$CUDA_INSTALL_PATH
+
 If running applications which use cuDNN or cuBLAS:
 
 	export CUDNN_PATH=<Path To cuDNN Directory>
 	export LD_LIBRARY_PATH=$CUDA_INSTALL_PATH/lib64:$CUDA_INSTALL_PATH/lib:$CUDNN_PATH/lib64
 
-	
+	我自己测试之后有效的ENV追加如下:
+	export CUDNN_PATH=/usr/lib/x86_64-linux-gnu
+	export LD_LIBRARY_PATH=$CUDNN_PATH:$LD_LIBRARY_PATH
+	echo "CUDNN_PATH="$CUDNN_PATH
+
+	-------------------------- 可以将下面的代码添加到~/.bashrc -------------------
+	-------------------------- 之后每次new terminal就能看到效果 ------------------
+	# CUDA
+	export CUDA_INSTALL_PATH=/usr/local/cuda
+	export PATH=$CUDA_INSTALL_PATH/bin:$PATH
+	export LD_LIBRARY_PATH=$CUDA_INSTALL_PATH/lib64:$LD_LIBRARY_PATH
+	echo "CUDA_INSTALL_PATH="$CUDA_INSTALL_PATH
+	# cudnn
+	export CUDNN_PATH=/usr/lib/x86_64-linux-gnu
+	export LD_LIBRARY_PATH=$CUDNN_PATH:$LD_LIBRARY_PATH
+	echo "CUDNN_PATH="$CUDNN_PATH
+
+	echo "LD_LIBRARY_PATH="$LD_LIBRARY_PATH
+	which nvcc
+	nvcc --version
 
 ## Step 2: Build
 
