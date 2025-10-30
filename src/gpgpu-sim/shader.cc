@@ -1096,15 +1096,24 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
 
     // Record the last group that's actually being monitored by this DEPBAR
     // instr
-    unsigned int end_group =
-        m_warp[warp_id]->m_ldgdepbar_id - m_warp[warp_id]->m_depbar_group;
+    // Compute monitored group range safely to avoid underflow and OOB access
+    unsigned int end_group = 0;
+    if (m_warp[warp_id]->m_ldgdepbar_id > m_warp[warp_id]->m_depbar_group) {
+      end_group = m_warp[warp_id]->m_ldgdepbar_id -
+                  m_warp[warp_id]->m_depbar_group;
+    } else {
+      end_group = 0;
+    }
+    auto &ldg_buf = m_warp[warp_id]->m_ldgdepbar_buf;
+    if (end_group > ldg_buf.size()) end_group = ldg_buf.size();
 
     // Check for the case that the LDGSTSs monitored have finished when
     // encountering the DEPBAR instruction
     bool done_flag = true;
-    for (int i = 0; i < end_group; i++) {
-      for (int j = 0; j < m_warp[warp_id]->m_ldgdepbar_buf[i].size(); j++) {
-        if (m_warp[warp_id]->m_ldgdepbar_buf[i][j].pc != -1) {
+    for (unsigned int i = 0; i < end_group; i++) {
+      const auto &group = ldg_buf[i];
+      for (unsigned int j = 0; j < group.size(); j++) {
+        if (group[j].pc != -1) {
           done_flag = false;
           goto UpdateDEPBAR;
         }
@@ -1864,21 +1873,26 @@ void ldst_unit::get_L1T_sub_stats(struct cache_sub_stats &css) const {
 // Add this function to unset depbar
 void shader_core_ctx::unset_depbar(const warp_inst_t &inst) {
   bool done_flag = true;
-  unsigned int end_group = m_warp[inst.warp_id()]->m_depbar_start_id == 0
-                               ? m_warp[inst.warp_id()]->m_ldgdepbar_buf.size()
-                               : (m_warp[inst.warp_id()]->m_depbar_start_id -
-                                  m_warp[inst.warp_id()]->m_depbar_group + 1);
+  auto &ldg_buf = m_warp[inst.warp_id()]->m_ldgdepbar_buf;
+  unsigned int end_group = 0;
+  if (m_warp[inst.warp_id()]->m_depbar_start_id == 0) {
+    end_group = ldg_buf.size();
+  } else {
+    // depbar_start_id is inclusive, adjust relative to current group
+    int rel = static_cast<int>(m_warp[inst.warp_id()]->m_depbar_start_id) -
+              static_cast<int>(m_warp[inst.warp_id()]->m_depbar_group) + 1;
+    end_group = rel > 0 ? static_cast<unsigned int>(rel) : 0u;
+  }
+  if (end_group > ldg_buf.size()) end_group = ldg_buf.size();
 
   if (inst.m_is_ldgsts) {
-    for (int i = 0; i < m_warp[inst.warp_id()]->m_ldgdepbar_buf.size(); i++) {
-      for (int j = 0; j < m_warp[inst.warp_id()]->m_ldgdepbar_buf[i].size();
-           j++) {
-        if (m_warp[inst.warp_id()]->m_ldgdepbar_buf[i][j].pc == inst.pc) {
+    for (unsigned int i = 0; i < ldg_buf.size(); i++) {
+      for (unsigned int j = 0; j < ldg_buf[i].size(); j++) {
+        if (ldg_buf[i][j].pc == inst.pc) {
           // Handle the case that same pc results in multiple LDGSTS
           // instructions
-          if (m_warp[inst.warp_id()]->m_ldgdepbar_buf[i][j].get_addr(0) ==
-              inst.get_addr(0)) {
-            m_warp[inst.warp_id()]->m_ldgdepbar_buf[i][j].pc = -1;
+          if (ldg_buf[i][j].get_addr(0) == inst.get_addr(0)) {
+            ldg_buf[i][j].pc = -1;
             goto DoneWB;
           }
         }
@@ -1886,10 +1900,9 @@ void shader_core_ctx::unset_depbar(const warp_inst_t &inst) {
     }
 
   DoneWB:
-    for (int i = 0; i < end_group; i++) {
-      for (int j = 0; j < m_warp[inst.warp_id()]->m_ldgdepbar_buf[i].size();
-           j++) {
-        if (m_warp[inst.warp_id()]->m_ldgdepbar_buf[i][j].pc != -1) {
+    for (unsigned int i = 0; i < end_group; i++) {
+      for (unsigned int j = 0; j < ldg_buf[i].size(); j++) {
+        if (ldg_buf[i][j].pc != -1) {
           done_flag = false;
           goto UpdateDEPBAR;
         }
