@@ -32,6 +32,8 @@
 #ifndef __TRACE_H__
 #define __TRACE_H__
 
+#include <stdio.h>
+
 namespace Trace {
 
 #define TS_TUP_BEGIN(X) enum X {
@@ -50,8 +52,15 @@ extern int sampling_memory_partition;
 extern const char* trace_streams_str[];
 extern bool trace_streams_enabled[NUM_TRACE_STREAMS];
 extern const char* config_str;
+// Optional output redirection for trace/DPRINTF streams. Defaults to stdout.
+extern FILE* out;
+extern char* output_filename;
+extern unsigned long long max_lines;
+extern unsigned long long lines_emitted;
+extern unsigned long long stop_cycle;
 
 void init();
+bool allow_emit(unsigned long long cycle);
 
 }  // namespace Trace
 
@@ -59,22 +68,35 @@ void init();
 
 #define SIM_PRINT_STR "GPGPU-Sim Cycle %llu: %s - "
 #define DTRACE(x) ((Trace::trace_streams_enabled[Trace::x]) && Trace::enabled)
-#define DPRINTF(x, ...)                                                      \
-  do {                                                                       \
-    if (DTRACE(x)) {                                                         \
-      printf(SIM_PRINT_STR, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, \
-             Trace::trace_streams_str[Trace::x]);                            \
-      printf(__VA_ARGS__);                                                   \
-    }                                                                        \
+#define DPRINTF(x, ...)                                                                          \
+  do {                                                                                           \
+    if (DTRACE(x)) {                                                                             \
+      unsigned long long __cyc__ =                                                               \
+          (unsigned long long)(m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);                 \
+      if (Trace::allow_emit(__cyc__)) {                                                          \
+        fprintf(Trace::out, SIM_PRINT_STR, __cyc__,                                              \
+                Trace::trace_streams_str[Trace::x]);                                             \
+        fprintf(Trace::out, __VA_ARGS__);                                                        \
+        fflush(Trace::out);                                                                      \
+        ++Trace::lines_emitted;                                                                  \
+        if (Trace::max_lines > 0 && Trace::lines_emitted >= Trace::max_lines) Trace::enabled = false; \
+      }                                                                                          \
+    }                                                                                            \
   } while (0)
 
-#define DPRINTFG(x, ...)                                       \
-  do {                                                         \
-    if (DTRACE(x)) {                                           \
-      printf(SIM_PRINT_STR, gpu_sim_cycle + gpu_tot_sim_cycle, \
-             Trace::trace_streams_str[Trace::x]);              \
-      printf(__VA_ARGS__);                                     \
-    }                                                          \
+#define DPRINTFG(x, ...)                                                                          \
+  do {                                                                                            \
+    if (DTRACE(x)) {                                                                              \
+      unsigned long long __cyc__ = (unsigned long long)(gpu_sim_cycle + gpu_tot_sim_cycle);       \
+      if (Trace::allow_emit(__cyc__)) {                                                           \
+        fprintf(Trace::out, SIM_PRINT_STR, __cyc__,                                               \
+                Trace::trace_streams_str[Trace::x]);                                              \
+        fprintf(Trace::out, __VA_ARGS__);                                                         \
+        fflush(Trace::out);                                                                       \
+        ++Trace::lines_emitted;                                                                   \
+        if (Trace::max_lines > 0 && Trace::lines_emitted >= Trace::max_lines) Trace::enabled = false; \
+      }                                                                                           \
+    }                                                                                             \
   } while (0)
 
 #else

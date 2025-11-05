@@ -755,6 +755,11 @@ void gpgpu_sim_config::reg_options(option_parser_t opp) {
                          "Complete list found in trace_streams.tup. "
                          "Default none",
                          "none");
+  option_parser_register(opp, "-trace_output_file", OPT_CSTR,
+                         (char **)&Trace::output_filename,
+                         "Optional file path for trace/DPRINTF output. "
+                         "If set, trace messages are written here instead of stdout.",
+                         NULL);
   option_parser_register(
       opp, "-trace_sampling_core", OPT_INT32, &Trace::sampling_core,
       "The core which is printed using CORE_DPRINTF. Default 0", "0");
@@ -763,6 +768,13 @@ void gpgpu_sim_config::reg_options(option_parser_t opp) {
                          "The memory partition which is printed using "
                          "MEMPART_DPRINTF. Default -1 (i.e. all)",
                          "-1");
+  option_parser_register(
+    opp, "-trace_max_lines", OPT_UINT64, &Trace::max_lines,
+    "Maximum number of trace lines to emit before auto-disabling tracing (0 = unlimited)",
+    "0");
+  option_parser_register(opp, "-trace_stop_cycle", OPT_UINT64, &Trace::stop_cycle,
+             "Stop emitting trace after this absolute cycle (0 = no limit)",
+             "0");
   gpgpu_ctx->stats->ptx_file_line_stats_options(opp);
 
   // Jin: kernel launch latency
@@ -2191,6 +2203,8 @@ void gpgpu_sim::cycle() {
           shader_print_runtime_stat(stdout);
         if (m_config.gpu_runtime_stat_flag & GPU_RSTAT_L1MISS)
           shader_print_l1_miss_stat(stdout);
+          // just for debug 2025/11/4
+          // assert(0);
         if (m_config.gpu_runtime_stat_flag & GPU_RSTAT_SCHED)
           shader_print_scheduler_stat(stdout, false);
       }

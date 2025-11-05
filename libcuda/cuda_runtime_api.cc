@@ -467,7 +467,9 @@ char *get_app_binary_name(std::string abs_path) {
 static int get_app_cuda_version_internal(std::string app_binary) {
   int app_cuda_version = 0;
   char fname[1024];
-  snprintf(fname, 1024, "_app_cuda_version_XXXXXX");
+  // Use a tmp file in /tmp to avoid cluttering the run directory, and
+  // ensure we remove it after use.
+  snprintf(fname, 1024, "/tmp/_app_cuda_version_XXXXXX");
   int fd = mkstemp(fname);
   close(fd);
   // Weili: Add way to extract CUDA version information from Balar Vanadis
@@ -492,6 +494,8 @@ static int get_app_cuda_version_internal(std::string app_binary) {
     app_cuda_version = atoi(buf);
   }
   fclose(cmd);
+  // Clean up the temporary file now that we've read the version
+  unlink(fname);
   if (app_cuda_version == 0) {
     printf("Error - Cannot detect the app's CUDA version. Command: %s\n",
            app_cuda_version_command.c_str());

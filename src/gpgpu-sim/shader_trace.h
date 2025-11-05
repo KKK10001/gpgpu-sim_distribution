@@ -42,28 +42,38 @@
 
 // Intended to be called from inside components of a shader core.
 // Depends on a get_sid() function
-#define SHADER_DPRINTF(x, ...)                                \
-  do {                                                        \
-    if (SHADER_DTRACE(x)) {                                   \
-      printf(SHADER_PRINT_STR,                                \
-             m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, \
-             Trace::trace_streams_str[Trace::x], get_sid());  \
-      printf(__VA_ARGS__);                                    \
-    }                                                         \
+#define SHADER_DPRINTF(x, ...)                                                       \
+  do {                                                                               \
+    if (SHADER_DTRACE(x)) {                                                          \
+      unsigned long long __cyc__ =                                                   \
+          (unsigned long long)(m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);     \
+      if (Trace::allow_emit(__cyc__)) {                                              \
+        fprintf(Trace::out, SHADER_PRINT_STR, __cyc__,                               \
+                Trace::trace_streams_str[Trace::x], get_sid());                      \
+        fprintf(Trace::out, __VA_ARGS__);                                            \
+        fflush(Trace::out);                                                          \
+        ++Trace::lines_emitted;                                                      \
+        if (Trace::max_lines > 0 && Trace::lines_emitted >= Trace::max_lines) Trace::enabled = false; \
+      }                                                                              \
+    }                                                                                \
   } while (0)
 
 // Intended to be called from inside a scheduler_unit.
 // Depends on a m_id member
-#define SCHED_DPRINTF(...)                                               \
-  do {                                                                   \
-    if (SHADER_DTRACE(WARP_SCHEDULER)) {                                 \
-      printf(SCHED_PRINT_STR,                                            \
-             m_shader->get_gpu()->gpu_sim_cycle +                        \
-                 m_shader->get_gpu()->gpu_tot_sim_cycle,                 \
-             Trace::trace_streams_str[Trace::WARP_SCHEDULER], get_sid(), \
-             m_id);                                                      \
-      printf(__VA_ARGS__);                                               \
-    }                                                                    \
+#define SCHED_DPRINTF(...)                                                                      \
+  do {                                                                                          \
+    if (SHADER_DTRACE(WARP_SCHEDULER)) {                                                        \
+      unsigned long long __cyc__ = (unsigned long long)(                                         \
+          m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle);          \
+      if (Trace::allow_emit(__cyc__)) {                                                          \
+        fprintf(Trace::out, SCHED_PRINT_STR, __cyc__,                                            \
+                Trace::trace_streams_str[Trace::WARP_SCHEDULER], get_sid(), m_id);               \
+        fprintf(Trace::out, __VA_ARGS__);                                                        \
+        fflush(Trace::out);                                                                      \
+        ++Trace::lines_emitted;                                                                  \
+        if (Trace::max_lines > 0 && Trace::lines_emitted >= Trace::max_lines) Trace::enabled = false; \
+      }                                                                                          \
+    }                                                                                            \
   } while (0)
 
 #else

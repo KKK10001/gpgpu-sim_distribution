@@ -427,6 +427,15 @@ class gpgpu_sim_config : public power_config,
     power_config::init();
     Trace::init();
 
+    // Debug: report trace configuration status early
+    fprintf(stdout,
+      "TRACE STATUS: enabled=%d config=[%s] output=[%s] L1D_ACCESS=%d\n",
+      (int)Trace::enabled,
+      Trace::config_str ? Trace::config_str : "none",
+      Trace::output_filename ? Trace::output_filename : "stdout",
+      (int)Trace::trace_streams_enabled[Trace::L1D_ACCESS]);
+    fflush(stdout);
+
     // initialize file name if it is not set
     time_t curr_time;
     time(&curr_time);

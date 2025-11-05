@@ -43,6 +43,7 @@
 #include <list>
 #include <map>
 #include <set>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -1408,6 +1409,11 @@ class ldst_unit : public pipelined_simd_unit {
   void get_L1C_sub_stats(struct cache_sub_stats &css) const;
   void get_L1T_sub_stats(struct cache_sub_stats &css) const;
 
+  // Expose a lightweight view of one pending memory-dependent longop
+  // (used for diagnostic trace when globally blocked). Returns true if found.
+  bool get_any_pending_longop_detail(unsigned &warp, int &reg, unsigned &pc,
+                                     unsigned long long &addr) const;
+
  protected:
   ldst_unit(mem_fetch_interface *icnt,
             shader_core_mem_fetch_allocator *mf_allocator,
@@ -1475,6 +1481,14 @@ class ldst_unit : public pipelined_simd_unit {
 
   std::vector<std::deque<mem_fetch *>> l1_latency_queue;
   void L1_latency_queue_cycle();
+
+  // Track last-seen address and PC for pending long-latency load by (warp,reg)
+  std::map<std::pair<unsigned,int>, std::pair<unsigned long long, unsigned>>
+      m_pending_longop_detail;
+  // Track a simple causal chain string for the pending longop (warp,reg)
+  std::map<std::pair<unsigned,int>, std::string> m_pending_longop_chain;
+  // Track source for next writeback (to tag unblock cause)
+  std::string m_next_wb_source;
 };
 
 enum pipeline_stage_name_t {
@@ -2542,6 +2556,11 @@ class shader_core_ctx : public core_t {
   // issue
   unsigned int Issue_Prio;
 
+  // Per-cycle issue diagnostics (for targeted MEM_STALL tracing)
+  // Reset at the beginning of issue(), updated by schedulers during the cycle
+  bool m_any_issued_this_cycle = false;
+  unsigned m_mem_longop_fails_this_cycle = 0;
+
   // execute
   unsigned m_num_function_units;
   std::vector<unsigned> m_dispatch_port;
@@ -2566,6 +2585,8 @@ class shader_core_ctx : public core_t {
  public:
   std::deque<kernel_info_t *> pending_ctas;
   bool can_issue_1block(kernel_info_t &kernel);
+  // Accessor for diagnostics
+  ldst_unit *get_ldst_unit() { return m_ldst_unit; }
   bool occupy_shader_resource_1block(kernel_info_t &kernel, bool occupy);
   void release_shader_resource_1block(unsigned hw_ctaid, kernel_info_t &kernel);
   int find_available_hwtid(unsigned int cta_size, bool occupy);

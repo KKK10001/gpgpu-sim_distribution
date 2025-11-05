@@ -35,6 +35,7 @@
 #include "gpu-sim.h"
 #include "hashing.h"
 #include "stat-tool.h"
+#include "shader_trace.h"
 
 // used to allocate memory that is large enough to adapt the changes in cache
 // size across kernels
@@ -240,6 +241,7 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
                                            mem_fetch *mf, bool is_write,
                                            bool probe_mode) const {
   mem_access_sector_mask_t mask = mf->get_access_sector_mask();
+
   return probe(addr, idx, mask, is_write, probe_mode, mf);
 }
 
@@ -313,8 +315,8 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
           }
         }
       }
-    }
-  }
+    } // if (!line->is_reserved_line())
+  } // for (unsigned way = 0; way < m_config.m_assoc; way++)
   if (all_reserved) {
     assert(m_config.m_alloc_policy == ON_MISS);
     return RESERVATION_FAIL;  // miss and not enough space in cache to allocate
@@ -325,10 +327,11 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
     idx = invalid_line;
   } else if (valid_line != (unsigned)-1) {
     idx = valid_line;
-  } else
+  } else {
     abort();  // if an unreserved block exists, it is either invalid or
-              // replaceable
-
+                  // replaceable
+  }
+    
   return MISS;
 }
 
@@ -1976,7 +1979,8 @@ enum cache_request_status data_cache::process_tag_probe(
 // performing actions specific to each cache when such actions are implemnted.
 enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
                                              unsigned time,
-                                             std::list<cache_event> &events) {
+                                             std::list<cache_event> &events) {  
+
   assert(mf->get_data_size() <= m_config.get_atom_sz());
   bool wr = mf->get_is_write();
   new_addr_type block_addr = m_config.block_addr(addr);
@@ -1991,6 +1995,35 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
   m_stats.inc_stats_pw(mf->get_access_type(),
                        m_stats.select_stats_status(probe_status, access_status),
                        mf->get_streamID());
+
+  // jiasen. for debug
+  if (!wr) {
+    // fprintf(fp, "data_cache::access addr=0x%llx probe_status=%d "
+    //             "access_status=%d time=%u\n",
+    //         addr, probe_status, access_status, time);
+
+    std::vector<std::string> ret_status;
+    ret_status.push_back("HIT");
+    ret_status.push_back("HIT_RESERVED");
+    ret_status.push_back("MISS");
+    ret_status.push_back("RESERVATION_FAIL");
+    ret_status.push_back("SECTOR_MISS");
+    ret_status.push_back("MSHR_HIT");
+    ret_status.push_back("NUM_CACHE_REQUEST_STATUS");    
+
+    std::string cache_level = !m_level ? "L1D" : "L2";
+    if (DTRACE(L1D_ACCESS)) {
+      if (cache_level == "L1D") {
+        fprintf(Trace::out, "time=%u access L1D "
+                "addr=0x%llx block_addr=0x%llx "
+                "probe_status=%d access_status=%s\n",
+                time, addr, block_addr,
+                probe_status, ret_status[access_status].c_str());
+        fflush(Trace::out);
+      }
+    }
+  }
+
   return access_status;
 }
 

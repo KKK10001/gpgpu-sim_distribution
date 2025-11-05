@@ -28,6 +28,8 @@
 
 #include "trace.h"
 #include "string.h"
+#include <stdio.h>
+#include <ctype.h>
 
 namespace Trace {
 
@@ -46,11 +48,85 @@ int sampling_core = 0;
 int sampling_memory_partition = -1;
 bool trace_streams_enabled[NUM_TRACE_STREAMS] = {false};
 const char* config_str;
+FILE* out = stdout;
+char* output_filename = NULL;
+unsigned long long max_lines = 0ULL;
+unsigned long long lines_emitted = 0ULL;
+unsigned long long stop_cycle = 0ULL;
+
+bool allow_emit(unsigned long long cycle) {
+  if (!enabled) return false;
+  if (stop_cycle > 0ULL && cycle > stop_cycle) return false;
+  if (max_lines > 0ULL && lines_emitted >= max_lines) return false;
+  return true;
+}
+
+static inline void trim(char* s) {
+  if (!s) return;
+  // left trim
+  char* p = s;
+  while (*p && isspace((unsigned char)*p)) ++p;
+  if (p != s) memmove(s, p, strlen(p) + 1);
+  // right trim
+  size_t len = strlen(s);
+  while (len > 0 && isspace((unsigned char)s[len - 1])) s[--len] = '\0';
+}
 
 void init() {
-  for (unsigned i = 0; i < NUM_TRACE_STREAMS; ++i) {
-    if (strstr(config_str, trace_streams_str[i]) != NULL) {
-      trace_streams_enabled[i] = true;
+  // Reset all streams to disabled by default
+  for (unsigned i = 0; i < NUM_TRACE_STREAMS; ++i) trace_streams_enabled[i] = false;
+
+  if (!config_str || config_str[0] == '\0' || strcmp(config_str, "none") == 0) {
+    // Nothing to enable
+  } else {
+    // Tokenize by comma, do exact token matches (avoid substring false-positives like the ALL in STALL)
+    char buf[1024];
+    buf[0] = '\0';
+    // Guard buffer size
+    strncpy(buf, config_str, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+
+    bool enable_all = false;
+    // First pass: check for any ALL-like tokens
+    {
+      char tmp[1024];
+      strncpy(tmp, buf, sizeof(tmp) - 1);
+      tmp[sizeof(tmp) - 1] = '\0';
+      char* saveptr = NULL;
+      for (char* tok = strtok_r(tmp, ",", &saveptr); tok; tok = strtok_r(NULL, ",", &saveptr)) {
+        trim(tok);
+        if (tok[0] == '\0') continue;
+        if (strcmp(tok, "*") == 0 || strcasecmp(tok, "ALL") == 0 || strcmp(tok, "ExecAll") == 0) {
+          enable_all = true;
+          break;
+        }
+      }
+    }
+
+    if (enable_all) {
+      for (unsigned i = 0; i < NUM_TRACE_STREAMS; ++i) trace_streams_enabled[i] = true;
+    } else {
+      // Second pass: enable exact-matched streams
+      char* saveptr = NULL;
+      for (char* tok = strtok_r(buf, ",", &saveptr); tok; tok = strtok_r(NULL, ",", &saveptr)) {
+        trim(tok);
+        if (tok[0] == '\0') continue;
+        for (unsigned i = 0; i < NUM_TRACE_STREAMS; ++i) {
+          if (strcmp(tok, trace_streams_str[i]) == 0) {
+            trace_streams_enabled[i] = true;
+            break;
+          }
+        }
+      }
+    }
+  }
+  // If an explicit output filename is provided, redirect trace prints there.
+  if (output_filename && output_filename[0] != '\0') {
+    FILE* f = fopen(output_filename, "w");
+    if (f) {
+      out = f;
+      // Line-buffer the file to keep interleaved messages readable.
+      setvbuf(out, NULL, _IOLBF, 0);
     }
   }
 }

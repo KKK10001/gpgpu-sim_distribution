@@ -32,6 +32,7 @@
 
 #include "shader.h"
 #include <float.h>
+#include <string>
 #include <limits.h>
 #include <string.h>
 #include "../../libcuda/gpgpu_context.h"
@@ -50,6 +51,7 @@
 #include "stat-tool.h"
 #include "traffic_breakdown.h"
 #include "visualizer.h"
+#include "shader_trace.h"
 
 #define PRIORITIZE_MSHR_OVER_WB 1
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
@@ -1134,8 +1136,118 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
   m_warp[warp_id]->set_next_pc(next_inst->pc + next_inst->isize);
 }
 
+// File-scope aggregation state for MEM_STALL_GLOBAL (reset on cycle change)
+static unsigned long long __memstall_last_cycle__ = 0ULL;
+static unsigned __memstall_cores_seen__ = 0U;
+static unsigned __memstall_blocked_cores__ = 0U;
+static bool __global_memstall_active__ = false;
+static unsigned long long __global_memstall_start_cycle__ = 0ULL;
+struct __unblock_cause_s__ {
+  bool valid = false;
+  unsigned core = 0;
+  unsigned warp = 0;
+  int reg = -1;
+  unsigned pc = 0;
+  unsigned long long addr = 0ULL;
+  unsigned long long cycle = 0ULL;
+  std::string cause_tag;   // e.g., L1D_HIT, L1D_FILL_RETURN, ICNT_RETURN, CONST_RETURN, TEX_RETURN
+  std::string chain;       // recorded causal chain for the pending longop
+} __last_unblock_cause__;
+// Buffer per-core details for the current cycle before confirming global stall
+static std::map<unsigned, std::tuple<unsigned,int,unsigned,unsigned long long>>
+    __cycle_memstall_details__;
+
+static inline void __report_memstall_core__(shader_core_ctx* sc,
+                                            bool core_mem_blocked) {
+  unsigned long long cyc = (unsigned long long)(
+      sc->get_gpu()->gpu_sim_cycle + sc->get_gpu()->gpu_tot_sim_cycle);
+  if (cyc != __memstall_last_cycle__) {
+    __memstall_last_cycle__ = cyc;
+    __memstall_cores_seen__ = 0U;
+    __memstall_blocked_cores__ = 0U;
+    __cycle_memstall_details__.clear();
+  }
+  ++__memstall_cores_seen__;
+  if (core_mem_blocked) ++__memstall_blocked_cores__;
+  // If this core is blocked by memory this cycle, stash a representative detail
+  if (core_mem_blocked) {
+    unsigned warp = 0; int reg = -1; unsigned pc = 0; unsigned long long addr = 0ULL;
+    if (sc->get_ldst_unit() && sc->get_ldst_unit()->get_any_pending_longop_detail(warp, reg, pc, addr)) {
+      __cycle_memstall_details__[sc->get_sid()] = std::make_tuple(warp, reg, pc, addr);
+    }
+  }
+  // When all cores have reported for this cycle and all were blocked by mem-dependent
+  // scoreboard stalls, handle begin/end transitions and emit details.
+  if (__memstall_cores_seen__ == sc->get_config()->num_shader()) {
+    bool all_blocked = (__memstall_blocked_cores__ == sc->get_config()->num_shader());
+    if (all_blocked && !__global_memstall_active__) {
+      __global_memstall_active__ = true;
+      __global_memstall_start_cycle__ = cyc;
+      if (DTRACE(MEM_STALL_GLOBAL)) {
+        if (Trace::allow_emit(cyc)) {
+          fprintf(Trace::out, "GPGPU-Sim Cycle %llu: %s - All cores blocked by memory-dependent scoreboard stalls\n", cyc,
+                  Trace::trace_streams_str[Trace::MEM_STALL_GLOBAL]);
+          fflush(Trace::out);
+          ++Trace::lines_emitted;
+          if (Trace::max_lines > 0 && Trace::lines_emitted >= Trace::max_lines)
+            Trace::enabled = false;
+        }
+      }
+      // Emit per-core detail lines
+      if (DTRACE(MEM_STALL_DETAIL)) {
+        for (const auto &kv : __cycle_memstall_details__) {
+          unsigned core = kv.first; auto [warp, reg, pc, addr] = kv.second;
+          if (Trace::allow_emit(cyc)) {
+            // Instruction string if available
+            std::string insn = sc->get_config()->gpgpu_ctx->func_sim->ptx_get_insn_str(pc);
+            fprintf(Trace::out, "GPGPU-Sim Cycle %llu: %s - Core %u waiting: warp=%u reg=%d pc=%#x addr=%#llx insn=\"%s\"\n",
+                    cyc, Trace::trace_streams_str[Trace::MEM_STALL_DETAIL], core, warp, reg, pc,
+                    (unsigned long long)addr, insn.c_str());
+            fflush(Trace::out);
+            ++Trace::lines_emitted;
+            if (Trace::max_lines > 0 && Trace::lines_emitted >= Trace::max_lines)
+              Trace::enabled = false;
+          }
+        }
+      }
+    } else if (!all_blocked && __global_memstall_active__) {
+      // End of a global blocked window
+      unsigned long long dur = cyc - __global_memstall_start_cycle__ + 1ULL;
+      if (DTRACE(MEM_STALL_GLOBAL_END)) {
+        if (Trace::allow_emit(cyc)) {
+          fprintf(Trace::out, "GPGPU-Sim Cycle %llu: %s - Global mem-stall window ended (start=%llu, dur=%llu cycles)\n",
+                  cyc, Trace::trace_streams_str[Trace::MEM_STALL_GLOBAL_END],
+                  __global_memstall_start_cycle__, dur);
+          // If we captured a cause, print it next
+          if (__last_unblock_cause__.valid && DTRACE(MEM_STALL_DETAIL)) {
+            std::string insn = sc->get_config()->gpgpu_ctx->func_sim->ptx_get_insn_str(__last_unblock_cause__.pc);
+            const char *tag = __last_unblock_cause__.cause_tag.empty() ? "" : __last_unblock_cause__.cause_tag.c_str();
+            const char *chain = __last_unblock_cause__.chain.empty() ? "" : __last_unblock_cause__.chain.c_str();
+            fprintf(Trace::out, "GPGPU-Sim Cycle %llu: %s - Unblock cause: Core %u warp=%u reg=%d pc=%#x addr=%#llx insn=\"%s\" tag=%s chain=%s\n",
+                    __last_unblock_cause__.cycle,
+                    Trace::trace_streams_str[Trace::MEM_STALL_DETAIL],
+                    __last_unblock_cause__.core, __last_unblock_cause__.warp,
+                    __last_unblock_cause__.reg, __last_unblock_cause__.pc,
+                    (unsigned long long)__last_unblock_cause__.addr,
+                    insn.c_str(), tag, chain);
+            __last_unblock_cause__.valid = false;
+          }
+          fflush(Trace::out);
+          ++Trace::lines_emitted;
+          if (Trace::max_lines > 0 && Trace::lines_emitted >= Trace::max_lines)
+            Trace::enabled = false;
+        }
+      }
+      __global_memstall_active__ = false;
+    }
+  }
+}
+
 void shader_core_ctx::issue() {
   // Ensure fair round robin issu between schedulers
+  // Reset per-cycle diagnostics used for MEM_STALL tracing
+  m_any_issued_this_cycle = false;
+  m_mem_longop_fails_this_cycle = 0;
   unsigned j;
   for (unsigned i = 0; i < schedulers.size(); i++) {
     j = (Issue_Prio + i) % schedulers.size();
@@ -1147,6 +1259,15 @@ void shader_core_ctx::issue() {
   // for (unsigned i = 0; i < schedulers.size(); i++) {
   //    schedulers[i]->cycle();
   //}
+
+  // After all schedulers have attempted, if this core issued nothing and we saw
+  // at least one scoreboard fail due to long-latency memory dependency, mark this
+  // core as memory-stall blocked for this cycle and participate in global aggregation.
+  if (!m_any_issued_this_cycle && m_mem_longop_fails_this_cycle > 0) {
+    __report_memstall_core__(this, true);
+  } else {
+    __report_memstall_core__(this, false);
+  }
 }
 
 shd_warp_t &scheduler_unit::warp(int i) { return *((*m_warp)[i]); }
@@ -1516,9 +1637,43 @@ void scheduler_unit::cycle() {
 
             }  // end of else
           } else {
-            SCHED_DPRINTF(
-                "Warp (warp_id %u, dynamic_warp_id %u) fails scoreboard\n",
-                (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
+            // Scoreboard collision. Classify whether it is due to a long-latency
+            // memory dependency (load result not yet available) by checking
+            // if any of the source registers are marked as longop in the scoreboard.
+            bool mem_longop_wait = false;
+            for (unsigned jjj = 0; jjj < pI->incount; ++jjj) {
+              int reg = pI->in[jjj];
+              if (reg > 0 && m_scoreboard->islongop(warp_id, reg)) {
+                mem_longop_wait = true;
+                break;
+              }
+            }
+            if (mem_longop_wait) {
+              ++(m_shader->m_mem_longop_fails_this_cycle);
+              if (DTRACE(MEM_STALL)) {
+                unsigned long long __cyc__ = (unsigned long long)(
+                    m_shader->get_gpu()->gpu_sim_cycle +
+                    m_shader->get_gpu()->gpu_tot_sim_cycle);
+                if (Trace::allow_emit(__cyc__)) {
+                  fprintf(Trace::out, "GPGPU-Sim Cycle %llu: %s - ", __cyc__,
+                          Trace::trace_streams_str[Trace::MEM_STALL]);
+                  fprintf(Trace::out,
+                          "Core %d - mem-longop wait: warp=%u dyn=%u pc=%#x\n",
+                          get_sid(), (*iter)->get_warp_id(),
+                          (*iter)->get_dynamic_warp_id(), pI->pc);
+                  fflush(Trace::out);
+                  ++Trace::lines_emitted;
+                  if (Trace::max_lines > 0 &&
+                      Trace::lines_emitted >= Trace::max_lines)
+                    Trace::enabled = false;
+                }
+              }
+            } else {
+              // Keep existing scheduler trace for generic scoreboard fails
+              SCHED_DPRINTF(
+                  "Warp (warp_id %u, dynamic_warp_id %u) fails scoreboard\n",
+                  (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
+            }
           }
         }
       } else if (valid) {
@@ -1545,6 +1700,7 @@ void scheduler_unit::cycle() {
       // supervised_is index with each entry in the
       // m_next_cycle_prioritized_warps vector. For now, just run through until
       // you find the right warp_id
+      m_shader->m_any_issued_this_cycle = true;
       for (std::vector<shd_warp_t *>::const_iterator supervised_iter =
                m_supervised_warps.begin();
            supervised_iter != m_supervised_warps.end(); ++supervised_iter) {
@@ -1937,6 +2093,14 @@ void shader_core_ctx::warp_inst_complete(const warp_inst_t &inst) {
 
   m_stats->m_num_sim_winsn[m_sid]++;
   m_gpu->gpu_sim_insn += inst.active_count();
+  // Optional trace: report cumulative executed instruction count
+  // Enabled by: -trace_enabled 1 -trace_components INSN_COUNT [and optional sampling]
+  {
+    unsigned long long __tot_insn__ =
+        (unsigned long long)(m_gpu->gpu_tot_sim_insn + m_gpu->gpu_sim_insn);
+    SHADER_DPRINTF(INSN_COUNT, "insn=%llu (+%u) warp=%u\n", __tot_insn__,
+                   inst.active_count(), inst.warp_id());
+  }
   inst.completed(m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
 }
 
@@ -2014,6 +2178,22 @@ mem_stage_stall_type ldst_unit::process_cache_access(
   mem_stage_stall_type result = NO_RC_FAIL;
   bool write_sent = was_write_sent(events);
   bool read_sent = was_read_sent(events);
+  // Record causal tag for load operations (pending longop chain)
+  if (inst.is_load()) {
+    for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
+      int reg_id = inst.out[r];
+      if (reg_id > 0) {
+        std::string tag;
+        if (status == HIT)
+          tag = "L1D:HIT";
+        else if (status == RESERVATION_FAIL)
+          tag = "L1D:RESERVATION_FAIL";
+        else if (status == MISS || status == HIT_RESERVED)
+          tag = read_sent ? "L1D:MISS->SENT_UP" : "L1D:MISS";
+        m_pending_longop_chain[std::make_pair(inst.warp_id(), reg_id)] = tag;
+      }
+    }
+  }
   if (write_sent) {
     unsigned inc_ack = (m_config->m_L1D_config.get_mshr_type() == SECTOR_ASSOC)
                            ? (mf->get_data_size() / SECTOR_SIZE)
@@ -2069,6 +2249,16 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue(cache_t *cache,
       mf->get_addr(), mf,
       m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle,
       events);
+  // Record pending longop detail (for loads)
+  if (inst.is_load()) {
+    for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
+      int reg_id = inst.out[r];
+      if (reg_id > 0) {
+        m_pending_longop_detail[std::make_pair(inst.warp_id(), reg_id)] =
+            std::make_pair((unsigned long long)mf->get_addr(), inst.pc);
+      }
+    }
+  }
   return process_cache_access(cache, mf->get_addr(), inst, events, mf, status);
 }
 
@@ -2093,6 +2283,15 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
       if ((l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1]) ==
           NULL) {
         l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1] = mf;
+        // Tag chain for enqueued L1D access (latency modeled)
+        if (mf->get_inst().is_load()) {
+          for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
+            int reg_id = mf->get_inst().out[r];
+            if (reg_id > 0) {
+              m_pending_longop_chain[std::make_pair(mf->get_inst().warp_id(), reg_id)] = "L1D:ENQUEUE";
+            }
+          }
+        }
 
         if (mf->get_inst().is_store()) {
           unsigned inc_ack =
@@ -2126,6 +2325,15 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
         mf->get_addr(), mf,
         m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle,
         events);
+    if (inst.is_load()) {
+      for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
+        int reg_id = inst.out[r];
+        if (reg_id > 0) {
+          m_pending_longop_detail[std::make_pair(inst.warp_id(), reg_id)] =
+              std::make_pair((unsigned long long)mf->get_addr(), inst.pc);
+        }
+      }
+    }
     return process_cache_access(cache, mf->get_addr(), inst, events, mf,
                                 status);
   }
@@ -2136,6 +2344,14 @@ void ldst_unit::L1_latency_queue_cycle() {
     if ((l1_latency_queue[j][0]) != NULL) {
       mem_fetch *mf_next = l1_latency_queue[j][0];
       std::list<cache_event> events;
+      
+      if (DTRACE(L1D_ACCESS)) {
+        fprintf(Trace::out, "L1D Access: time=%u addr=0x%llx byte_mask:%s\n",
+                m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle,
+                mf_next->get_addr(), mf_next->get_access_byte_mask().to_string().c_str()
+        );
+      }
+
       enum cache_request_status status =
           m_L1D->access(mf_next->get_addr(), mf_next,
                         m_core->get_gpu()->gpu_sim_cycle +
@@ -2161,6 +2377,31 @@ void ldst_unit::L1_latency_queue_cycle() {
                     mf_next->get_inst().out[r]);
                 m_scoreboard->releaseRegister(mf_next->get_inst().warp_id(),
                                               mf_next->get_inst().out[r]);
+                // Remove pending detail for (warp,reg)
+                m_pending_longop_detail.erase(std::make_pair(
+                    mf_next->get_inst().warp_id(), (int)mf_next->get_inst().out[r]));
+                // Record potential unblock cause if in global stall window
+                if (__global_memstall_active__) {
+                  __last_unblock_cause__.valid = true;
+                  __last_unblock_cause__.core = m_core->get_sid();
+                  __last_unblock_cause__.warp = mf_next->get_inst().warp_id();
+                  __last_unblock_cause__.reg = mf_next->get_inst().out[r];
+                  __last_unblock_cause__.pc = mf_next->get_inst().pc;
+                  __last_unblock_cause__.addr = (unsigned long long)mf_next->get_addr();
+                  __last_unblock_cause__.cycle =
+                      (unsigned long long)(m_core->get_gpu()->gpu_sim_cycle +
+                                           m_core->get_gpu()->gpu_tot_sim_cycle);
+                  __last_unblock_cause__.cause_tag = "L1D_HIT";
+                  // attach causal chain if available
+                  auto key = std::make_pair(__last_unblock_cause__.warp, __last_unblock_cause__.reg);
+                  auto itc = m_pending_longop_chain.find(key);
+                  if (itc != m_pending_longop_chain.end()) {
+                    __last_unblock_cause__.chain = itc->second + "->L1D_HIT";
+                    m_pending_longop_chain.erase(itc);
+                  } else {
+                    __last_unblock_cause__.chain.clear();
+                  }
+                }
                 m_core->warp_inst_complete(mf_next->get_inst());
               }
             }
@@ -2216,13 +2457,13 @@ void ldst_unit::L1_latency_queue_cycle() {
       }
     }
 
-    for (unsigned stage = 0; stage < m_config->m_L1D_config.l1_latency - 1;
-         ++stage)
+    for (unsigned stage = 0; stage < m_config->m_L1D_config.l1_latency - 1; ++stage) {
       if (l1_latency_queue[j][stage] == NULL) {
         l1_latency_queue[j][stage] = l1_latency_queue[j][stage + 1];
         l1_latency_queue[j][stage + 1] = NULL;
       }
-  }
+    }
+  } // for (unsigned int j = 0; j < m_config->m_L1D_config.l1_banks; j++) 
 }
 
 bool ldst_unit::constant_cycle(warp_inst_t &inst, mem_stage_stall_type &rc_fail,
@@ -2366,6 +2607,18 @@ void ldst_unit::flush() {
 void ldst_unit::invalidate() {
   // Flush L1D cache
   m_L1D->invalidate();
+}
+
+bool ldst_unit::get_any_pending_longop_detail(unsigned &warp, int &reg,
+                                              unsigned &pc,
+                                              unsigned long long &addr) const {
+  if (m_pending_longop_detail.empty()) return false;
+  auto it = m_pending_longop_detail.begin();
+  warp = it->first.first;
+  reg = it->first.second;
+  addr = it->second.first;
+  pc = it->second.second;
+  return true;
 }
 
 simd_function_unit::simd_function_unit(const shader_core_config *config) {
@@ -2722,9 +2975,36 @@ void ldst_unit::writeback() {
             unsigned still_pending =
                 --m_pending_writes[m_next_wb.warp_id()][m_next_wb.out[r]];
             if (!still_pending) {
-              m_pending_writes[m_next_wb.warp_id()].erase(m_next_wb.out[r]);
-              m_scoreboard->releaseRegister(m_next_wb.warp_id(),
-                                            m_next_wb.out[r]);
+        m_pending_writes[m_next_wb.warp_id()].erase(m_next_wb.out[r]);
+        m_scoreboard->releaseRegister(m_next_wb.warp_id(),
+                      m_next_wb.out[r]);
+        // Remove pending detail and record potential cause
+        // Capture causal chain prior to erasing per (warp,reg)
+        std::string __chain_before__;
+        auto __itc = m_pending_longop_chain.find(std::make_pair(m_next_wb.warp_id(), (int)m_next_wb.out[r]));
+        if (__itc != m_pending_longop_chain.end()) {
+          __chain_before__ = __itc->second;
+          m_pending_longop_chain.erase(__itc);
+        }
+        m_pending_longop_detail.erase(
+          std::make_pair(m_next_wb.warp_id(), (int)m_next_wb.out[r]));
+        if (__global_memstall_active__) {
+        __last_unblock_cause__.valid = true;
+        __last_unblock_cause__.core = m_core->get_sid();
+        __last_unblock_cause__.warp = m_next_wb.warp_id();
+        __last_unblock_cause__.reg = m_next_wb.out[r];
+        __last_unblock_cause__.pc = m_next_wb.pc;
+        __last_unblock_cause__.addr = (unsigned long long)m_next_wb.get_addr(0);
+        __last_unblock_cause__.cycle = (unsigned long long)(
+          m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle);
+        __last_unblock_cause__.cause_tag = m_next_wb_source;
+        if (!__chain_before__.empty()) {
+          if (!m_next_wb_source.empty()) __last_unblock_cause__.chain = __chain_before__ + "->" + m_next_wb_source;
+          else __last_unblock_cause__.chain = __chain_before__;
+        } else {
+          __last_unblock_cause__.chain = m_next_wb_source;
+        }
+        }
               insn_completed = true;
             }
           } else {  // shared
@@ -2764,6 +3044,7 @@ void ldst_unit::writeback() {
       case 0:  // shared memory
         if (!m_pipeline_reg[0]->empty()) {
           m_next_wb = *m_pipeline_reg[0];
+          m_next_wb_source = "SHARED";
           if (m_next_wb.isatomic()) {
             m_next_wb.do_atomic();
             m_core->decrement_atomic_count(m_next_wb.warp_id(),
@@ -2778,6 +3059,7 @@ void ldst_unit::writeback() {
         if (m_L1T->access_ready()) {
           mem_fetch *mf = m_L1T->next_access();
           m_next_wb = mf->get_inst();
+          m_next_wb_source = "TEX_RETURN";
           delete mf;
           serviced_client = next_client;
         }
@@ -2786,6 +3068,7 @@ void ldst_unit::writeback() {
         if (m_L1C->access_ready()) {
           mem_fetch *mf = m_L1C->next_access();
           m_next_wb = mf->get_inst();
+          m_next_wb_source = "CONST_RETURN";
           delete mf;
           serviced_client = next_client;
         }
@@ -2793,6 +3076,7 @@ void ldst_unit::writeback() {
       case 3:  // global/local
         if (m_next_global) {
           m_next_wb = m_next_global->get_inst();
+          m_next_wb_source = "ICNT_RETURN";
           if (m_next_global->isatomic()) {
             m_core->decrement_atomic_count(
                 m_next_global->get_wid(),
@@ -2807,6 +3091,7 @@ void ldst_unit::writeback() {
         if (m_L1D && m_L1D->access_ready()) {
           mem_fetch *mf = m_L1D->next_access();
           m_next_wb = mf->get_inst();
+          m_next_wb_source = "L1D_FILL_RETURN";
           delete mf;
           serviced_client = next_client;
         }
@@ -2904,12 +3189,34 @@ void ldst_unit::cycle() {
                                m_core->get_gpu()->gpu_tot_sim_cycle);
             m_response_fifo.pop_front();
             m_next_global = mf;
+            // Return path via interconnect (bypass L1D): extend chain
+            if (mf->get_inst().is_load()) {
+              for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
+                int reg_id = mf->get_inst().out[r];
+                if (reg_id > 0) {
+                  auto key = std::make_pair(mf->get_inst().warp_id(), reg_id);
+                  std::string &ch = m_pending_longop_chain[key];
+                  if (ch.empty()) ch = "RET:ICNT"; else ch += "->RET:ICNT";
+                }
+              }
+            }
           }
         } else {
           if (m_L1D->fill_port_free()) {
             m_L1D->fill(mf, m_core->get_gpu()->gpu_sim_cycle +
                                 m_core->get_gpu()->gpu_tot_sim_cycle);
             m_response_fifo.pop_front();
+            // Return path filled into L1D: extend chain
+            if (mf->get_inst().is_load()) {
+              for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
+                int reg_id = mf->get_inst().out[r];
+                if (reg_id > 0) {
+                  auto key = std::make_pair(mf->get_inst().warp_id(), reg_id);
+                  std::string &ch = m_pending_longop_chain[key];
+                  if (ch.empty()) ch = "RET:L1D"; else ch += "->RET:L1D";
+                }
+              }
+            }
           }
         }
       }
@@ -2920,7 +3227,9 @@ void ldst_unit::cycle() {
   m_L1C->cycle();
   if (m_L1D) {
     m_L1D->cycle();
-    if (m_config->m_L1D_config.l1_latency > 0) L1_latency_queue_cycle();
+    if (m_config->m_L1D_config.l1_latency > 0) {
+      L1_latency_queue_cycle();
+    }
   }
 
   warp_inst_t &pipe_reg = *m_dispatch_reg;
@@ -3683,7 +3992,9 @@ void shader_core_config::set_pipeline_latency() {
 }
 
 void shader_core_ctx::cycle() {
-  if (!isactive() && get_not_completed() == 0) return;
+  if (!isactive() && get_not_completed() == 0) {
+    return;
+  }
 
   m_stats->shader_cycles[m_sid]++;
   writeback();
