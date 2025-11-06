@@ -2135,6 +2135,10 @@ void gpgpu_sim::cycle() {
           all_threads_complete = 0;
       }
     }
+    if (DTRACE(L1D_ACCESS)) {
+      fprintf(Trace::out, "%llu: All threads are completed. Flush L1D\n", 
+        gpu_tot_sim_cycle + gpu_sim_cycle);
+    }
 
     if (m_config.gpgpu_flush_l2_cache) {
       if (!m_config.gpgpu_flush_l1_cache) {
@@ -2203,8 +2207,6 @@ void gpgpu_sim::cycle() {
           shader_print_runtime_stat(stdout);
         if (m_config.gpu_runtime_stat_flag & GPU_RSTAT_L1MISS)
           shader_print_l1_miss_stat(stdout);
-          // just for debug 2025/11/4
-          // assert(0);
         if (m_config.gpu_runtime_stat_flag & GPU_RSTAT_SCHED)
           shader_print_scheduler_stat(stdout, false);
       }

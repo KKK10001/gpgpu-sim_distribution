@@ -997,18 +997,22 @@ void shader_core_ctx::fetch() {
           std::list<cache_event> events;
           enum cache_request_status status;
           if (m_config->perfect_inst_const_cache) {
-            status = HIT;
+            status = RD_HIT;
             shader_cache_access_log(m_sid, INSTRUCTION, 0);
           } else
             status = m_L1I->access(
                 (new_addr_type)ppc, mf,
                 m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, events);
 
-          if (status == MISS) {
+          // I'm not sure if self-modification would happen in GPU I$. 
+          // At least Rodinia regression all passed on 2025/11/6
+          assert(status != WR_HIT && status != WR_MISS);
+
+          if (status == RD_MISS) {
             m_last_warp_fetched = warp_id;
             m_warp[warp_id]->set_imiss_pending();
             m_warp[warp_id]->set_last_fetch(m_gpu->gpu_sim_cycle);
-          } else if (status == HIT) {
+          } else if (status == RD_HIT) {
             m_last_warp_fetched = warp_id;
             m_inst_fetch_buffer = ifetch_buffer_t(pc, nbytes, warp_id);
             m_warp[warp_id]->set_last_fetch(m_gpu->gpu_sim_cycle);
@@ -2017,7 +2021,9 @@ void ldst_unit::get_cache_stats(cache_stats &cs) {
 }
 
 void ldst_unit::get_L1D_sub_stats(struct cache_sub_stats &css) const {
-  if (m_L1D) m_L1D->get_sub_stats(css);
+  if (m_L1D) {
+    m_L1D->get_sub_stats(css);
+  } 
 }
 void ldst_unit::get_L1C_sub_stats(struct cache_sub_stats &css) const {
   if (m_L1C) m_L1C->get_sub_stats(css);
@@ -2184,12 +2190,15 @@ mem_stage_stall_type ldst_unit::process_cache_access(
       int reg_id = inst.out[r];
       if (reg_id > 0) {
         std::string tag;
-        if (status == HIT)
-          tag = "L1D:HIT";
-        else if (status == RESERVATION_FAIL)
+        if (status == RD_HIT) {
+          tag = "L1D:RD_HIT";
+        } else if (status == WR_HIT) {
+          tag = "L1D:WR_HIT";
+        } else if (status == RESERVATION_FAIL) {
           tag = "L1D:RESERVATION_FAIL";
-        else if (status == MISS || status == HIT_RESERVED)
+        } else if (status == RD_MISS || status == WR_MISS || status == HIT_RESERVED) {
           tag = read_sent ? "L1D:MISS->SENT_UP" : "L1D:MISS";
+        }          
         m_pending_longop_chain[std::make_pair(inst.warp_id(), reg_id)] = tag;
       }
     }
@@ -2202,7 +2211,7 @@ mem_stage_stall_type ldst_unit::process_cache_access(
     for (unsigned i = 0; i < inc_ack; ++i)
       m_core->inc_store_req(inst.warp_id());
   }
-  if (status == HIT) {
+  if (status == WR_HIT || status == RD_HIT) {
     assert(!read_sent);
     inst.accessq_pop_back();
     if (inst.is_load()) {
@@ -2224,7 +2233,7 @@ mem_stage_stall_type ldst_unit::process_cache_access(
     assert(!write_sent);
     delete mf;
   } else {
-    assert(status == MISS || status == HIT_RESERVED);
+    assert(status == RD_MISS || status == WR_MISS || status == HIT_RESERVED);
     // inst.clear_active( access.get_warp_mask() ); // threads in mf writeback
     // when mf returns
     inst.accessq_pop_back();
@@ -2346,22 +2355,21 @@ void ldst_unit::L1_latency_queue_cycle() {
       std::list<cache_event> events;
       
       if (DTRACE(L1D_ACCESS)) {
-        fprintf(Trace::out, "L1D Access: time=%u addr=0x%llx byte_mask:%s\n",
-                m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle,
+        fprintf(Trace::out, "%llu: L1D Access addr=0x%llx byte_mask:%s\n",
+                m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
                 mf_next->get_addr(), mf_next->get_access_byte_mask().to_string().c_str()
         );
       }
 
       enum cache_request_status status =
           m_L1D->access(mf_next->get_addr(), mf_next,
-                        m_core->get_gpu()->gpu_sim_cycle +
-                            m_core->get_gpu()->gpu_tot_sim_cycle,
+                        m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle,
                         events);
 
       bool write_sent = was_write_sent(events);
       bool read_sent = was_read_sent(events);
 
-      if (status == HIT) {
+      if (status == WR_HIT || status == RD_HIT) {
         assert(!read_sent);
         l1_latency_queue[j][0] = NULL;
         if (mf_next->get_inst().is_load()) {
@@ -2437,7 +2445,7 @@ void ldst_unit::L1_latency_queue_cycle() {
         assert(!read_sent);
         assert(!write_sent);
       } else {
-        assert(status == MISS || status == HIT_RESERVED);
+        assert(status == WR_MISS || status == RD_MISS || status == HIT_RESERVED);
         l1_latency_queue[j][0] = NULL;
         if (m_config->m_L1D_config.get_write_policy() != WRITE_THROUGH &&
             mf_next->get_inst().is_store() &&
@@ -3456,10 +3464,19 @@ void gpgpu_sim::shader_print_cache_stats(FILE *fout) const {
       total_css += css;
     }
     fprintf(fout, "\tL1D_total_cache_accesses = %llu\n", total_css.accesses);
-    fprintf(fout, "\tL1D_total_cache_misses = %llu\n", total_css.misses);
+    fprintf(fout, "\tL1D_total_reads          = %llu\n", total_css.reads);
+    fprintf(fout, "\tL1D_total_writes         = %llu\n\n", total_css.writes);    
+
+    fprintf(fout, "\tL1D_total_misses         = %llu\n", total_css.misses);
+    fprintf(fout, "\tL1D_total_rd_misses      = %llu\n", total_css.rd_misses);
+    fprintf(fout, "\tL1D_total_wr_misses      = %llu\n", total_css.wr_misses);
     if (total_css.accesses > 0) {
-      fprintf(fout, "\tL1D_total_cache_miss_rate = %.4lf\n",
+      fprintf(fout, "\tL1D_total_miss_rate = %.4lf\n",
               (double)total_css.misses / (double)total_css.accesses);
+      fprintf(fout, "\tL1D_total_rd_miss_rate = %.4lf\n",
+              (double)total_css.rd_misses / (double)total_css.reads);
+      fprintf(fout, "\tL1D_total_wr_miss_rate = %.4lf\n",
+              (double)total_css.wr_misses / (double)total_css.writes);              
     }
     fprintf(fout, "\tL1D_total_cache_pending_hits = %llu\n",
             total_css.pending_hits);
