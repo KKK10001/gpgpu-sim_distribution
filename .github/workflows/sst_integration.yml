@@ -12,6 +12,7 @@ on:
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
   build-QV100:
+    if: github.repository == 'accel-sim/gpgpu-sim_distribution'
     name: SST-QV100
     runs-on: ubuntu-latest
     defaults:
