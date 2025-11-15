@@ -1155,6 +1155,41 @@ void gpgpu_sim::reinit_clock_domains(void) {
 }
 
 bool gpgpu_sim::active() {
+   // 2025-11-14 eve
+  // Lightweight instrumentation: enabled if ACCELSIM_ACTIVE_TRACE env var set.
+  // Helps diagnose breakpoint-induced crashes by logging entry state before any dereferences.
+  static bool s_trace_enabled = (getenv("ACCELSIM_ACTIVE_TRACE") != NULL);
+  if (s_trace_enabled) {
+    static unsigned s_call_count = 0;
+    s_call_count++;
+    FILE *trace_fp = fopen("active_trace.log", "a");
+    if (trace_fp) {
+      fprintf(trace_fp,
+              "active() call=%u this=%p tot_cycle=%llu cluster_ptr=%p stream_mgr=%p mem_part=%p\n",
+              s_call_count, (void *)this,
+              (unsigned long long)(gpu_tot_sim_cycle + gpu_sim_cycle),
+              (void *)m_cluster,
+              gpgpu_ctx && gpgpu_ctx->the_gpgpusim ?
+                  (void *)gpgpu_ctx->the_gpgpusim->g_stream_manager : NULL,
+              (void *)m_memory_partition_unit);
+      // We also log early-exit reasons below by flushing a line before returning.
+      fclose(trace_fp);
+    }
+  }
+  if (!gpgpu_ctx) {
+    if (s_trace_enabled) {
+      FILE *trace_fp = fopen("active_trace.log", "a");
+      if (trace_fp) { fprintf(trace_fp, "early-exit: gpgpu_ctx NULL\n"); fclose(trace_fp);}  
+    }
+    return false;
+  }  
+  if (!gpgpu_ctx->the_gpgpusim->g_stream_manager) {
+    if (s_trace_enabled) {
+      FILE *trace_fp = fopen("active_trace.log", "a");
+      if (trace_fp) { fprintf(trace_fp, "early-exit: stream_manager NULL\n"); fclose(trace_fp);}  
+    }
+    return false;
+  }
   if (m_config.gpu_max_cycle_opt &&
       (gpu_tot_sim_cycle + gpu_sim_cycle) >= m_config.gpu_max_cycle_opt)
     return false;
@@ -1168,12 +1203,17 @@ bool gpgpu_sim::active() {
       (gpu_completed_cta >= m_config.gpu_max_completed_cta_opt))
     return false;
   if (m_config.gpu_deadlock_detect && gpu_deadlock) return false;
-  for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++)
-    if (m_cluster[i]->get_not_completed() > 0) return true;
-  ;
-  for (unsigned i = 0; i < m_memory_config->m_n_mem; i++)
-    if (m_memory_partition_unit[i]->busy() > 0) return true;
-  ;
+  if (!m_cluster) return false;
+  for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
+    if (m_cluster[i] && m_cluster[i]->get_not_completed() > 0) return true;
+  }
+
+  if (m_memory_partition_unit) {
+    for (unsigned i = 0; i < m_memory_config->m_n_mem; i++) {
+      if (m_memory_partition_unit[i] && m_memory_partition_unit[i]->busy() > 0)
+        return true;
+    }
+  }
   if (icnt_busy()) return true;
   if (get_more_cta_left()) return true;
   return false;

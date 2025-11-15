@@ -99,6 +99,7 @@ enum AdaptiveCache { FIXED = 0, ADAPTIVE_CACHE = 1 };
 #include <stdio.h>
 #include <string.h>
 #include <set>
+#include <unordered_map>
 
 typedef unsigned long long new_addr_type;
 typedef unsigned long long cudaTextureObject_t;
@@ -603,6 +604,21 @@ class gpgpu_t {
   unsigned long long gpu_sim_cycle;
   unsigned long long gpu_tot_sim_cycle;
 
+  unsigned long long tot_l1d_lat_from_sched_to_access;
+  unsigned long long tot_l1d_accesses;
+  float avg_l1d_lat_from_sched_to_access;
+
+  unsigned long long tot_l1d_wr_lat_from_sched;
+  unsigned long long tot_l1d_writes;
+  float avg_l1d_wr_lat_from_sched;
+
+  unsigned long long tot_l1d_rd_lat_from_sched;
+  unsigned long long tot_l1d_reads;  
+  float avg_l1d_rd_lat_from_sched;
+
+  std::unordered_map<unsigned long long /* pc */, unsigned long long /* cycle */> sched_cycle;
+  float avg_alu_lat; // from scheduling to wb
+
   void *gpu_malloc(size_t size);
   void *gpu_mallocarray(size_t count);
   void gpu_memset(size_t dst_start_addr, int c, size_t count);
@@ -686,8 +702,7 @@ class gpgpu_t {
   unsigned long long m_dev_malloc;
   //  These maps contain the current texture mappings for the GPU at any given
   //  time.
-  std::map<std::string, std::set<const struct textureReference *> >
-      m_NameToTextureRef;
+  std::map<std::string, std::set<const struct textureReference *>> m_NameToTextureRef;
   std::map<const struct textureReference *, std::string> m_TextureRefToName;
   std::map<std::string, const struct cudaArray *> m_NameToCudaArray;
   std::map<std::string, const struct textureInfo *> m_NameToTextureInfo;
@@ -789,6 +804,8 @@ MEM_ACCESS_TYPE_TUP_DEF
 #undef MA_TUP_END
 
 const char *mem_access_type_str(enum mem_access_type access_type);
+
+const char *uarch_op_str(enum uarch_op_t op_type);
 
 enum cache_operator_type {
   CACHE_UNDEFINED,

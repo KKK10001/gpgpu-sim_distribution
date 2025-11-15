@@ -448,10 +448,10 @@ addr_t generic_to_global(addr_t addr) { return addr; }
 void *gpgpu_t::gpu_malloc(size_t size) {
   unsigned long long result = m_dev_malloc;
   if (g_debug_execution >= 3) {
-    printf(
-        "GPGPU-Sim PTX: allocating %zu bytes on GPU starting at address "
-        "0x%Lx\n",
-        size, m_dev_malloc);
+  printf(
+    "GPGPU-Sim PTX: allocating %zu bytes on GPU starting at address "
+    "0x%llx\n",
+    size, (unsigned long long)m_dev_malloc);
     fflush(stdout);
   }
   m_dev_malloc += size;
@@ -463,10 +463,10 @@ void *gpgpu_t::gpu_malloc(size_t size) {
 void *gpgpu_t::gpu_mallocarray(size_t size) {
   unsigned long long result = m_dev_malloc;
   if (g_debug_execution >= 3) {
-    printf(
-        "GPGPU-Sim PTX: allocating %zu bytes on GPU starting at address "
-        "0x%Lx\n",
-        size, m_dev_malloc);
+  printf(
+    "GPGPU-Sim PTX: allocating %zu bytes on GPU starting at address "
+    "0x%llx\n",
+    size, (unsigned long long)m_dev_malloc);
     fflush(stdout);
   }
   m_dev_malloc += size;
@@ -478,9 +478,9 @@ void *gpgpu_t::gpu_mallocarray(size_t size) {
 void gpgpu_t::memcpy_to_gpu(size_t dst_start_addr, const void *src,
                             size_t count) {
   if (g_debug_execution >= 3) {
-    printf(
-        "GPGPU-Sim PTX: copying %zu bytes from CPU[0x%Lx] to GPU[0x%Lx] ... ",
-        count, (unsigned long long)src, (unsigned long long)dst_start_addr);
+  printf(
+    "GPGPU-Sim PTX: copying %zu bytes from CPU[0x%llx] to GPU[0x%llx] ... ",
+    count, (unsigned long long)src, (unsigned long long)dst_start_addr);
     fflush(stdout);
   }
   char *src_data = (char *)src;
@@ -498,8 +498,8 @@ void gpgpu_t::memcpy_to_gpu(size_t dst_start_addr, const void *src,
 
 void gpgpu_t::memcpy_from_gpu(void *dst, size_t src_start_addr, size_t count) {
   if (g_debug_execution >= 3) {
-    printf("GPGPU-Sim PTX: copying %zu bytes from GPU[0x%Lx] to CPU[0x%Lx] ...",
-           count, (unsigned long long)src_start_addr, (unsigned long long)dst);
+    printf("GPGPU-Sim PTX: copying %zu bytes from GPU[0x%llx] to CPU[0x%llx] ...",
+      count, (unsigned long long)src_start_addr, (unsigned long long)dst);
     fflush(stdout);
   }
   unsigned char *dst_data = (unsigned char *)dst;
@@ -517,8 +517,8 @@ void gpgpu_t::memcpy_from_gpu(void *dst, size_t src_start_addr, size_t count) {
 
 void gpgpu_t::memcpy_gpu_to_gpu(size_t dst, size_t src, size_t count) {
   if (g_debug_execution >= 3) {
-    printf("GPGPU-Sim PTX: copying %zu bytes from GPU[0x%Lx] to GPU[0x%Lx] ...",
-           count, (unsigned long long)src, (unsigned long long)dst);
+    printf("GPGPU-Sim PTX: copying %zu bytes from GPU[0x%llx] to GPU[0x%llx] ...",
+      count, (unsigned long long)src, (unsigned long long)dst);
     fflush(stdout);
   }
   for (unsigned n = 0; n < count; n++) {
@@ -534,10 +534,10 @@ void gpgpu_t::memcpy_gpu_to_gpu(size_t dst, size_t src, size_t count) {
 
 void gpgpu_t::gpu_memset(size_t dst_start_addr, int c, size_t count) {
   if (g_debug_execution >= 3) {
-    printf(
-        "GPGPU-Sim PTX: setting %zu bytes of memory to 0x%x starting at "
-        "0x%Lx... ",
-        count, (unsigned char)c, (unsigned long long)dst_start_addr);
+  printf(
+    "GPGPU-Sim PTX: setting %zu bytes of memory to 0x%x starting at "
+    "0x%llx... ",
+    count, (unsigned char)c, (unsigned long long)dst_start_addr);
     fflush(stdout);
   }
   unsigned char c_value = (unsigned char)c;
@@ -2201,7 +2201,7 @@ unsigned ptx_sim_init_thread(kernel_info_t &kernel,
     if (g_debug_execution == -1) {
       printf(
           "GPGPU-Sim PTX simulator:  allocating thread ctaid=(%u,%u,%u) "
-          "tid=(%u,%u,%u) @ 0x%Lx\n",
+          "tid=(%u,%u,%u) @ 0x%llx\n",
           ctaid3d.x, ctaid3d.y, ctaid3d.z, tid3d.x, tid3d.y, tid3d.z,
           (unsigned long long)thd);
       fflush(stdout);
@@ -2298,7 +2298,7 @@ void cuda_sim::gpgpu_ptx_sim_memcpy_symbol(const char *hostVar, const void *src,
   if (g != gpu->gpgpu_ctx->func_sim->g_global_name_lookup.end()) {
     if (found_sym) {
       printf(
-          "Execution error: PTX symbol \"%s\" w/ hostVar=0x%Lx is declared "
+          "Execution error: PTX symbol \"%s\" w/ hostVar=0x%llx is declared "
           "both const and global?\n",
           sym_name.c_str(), (unsigned long long)hostVar);
       abort();
@@ -2328,14 +2328,14 @@ void cuda_sim::gpgpu_ptx_sim_memcpy_symbol(const char *hostVar, const void *src,
   }
 
   if (!found_sym) {
-    printf("Execution error: No information for PTX symbol w/ hostVar=0x%Lx\n",
+  printf("Execution error: No information for PTX symbol w/ hostVar=0x%llx\n",
            (unsigned long long)hostVar);
     abort();
   } else
-    printf(
-        "GPGPU-Sim PTX: gpgpu_ptx_sim_memcpy_symbol: Found PTX symbol w/ "
-        "hostVar=0x%Lx\n",
-        (unsigned long long)hostVar);
+  printf(
+    "GPGPU-Sim PTX: gpgpu_ptx_sim_memcpy_symbol: Found PTX symbol w/ "
+    "hostVar=0x%llx\n",
+    (unsigned long long)hostVar);
   const char *mem_name = NULL;
   memory_space *mem = NULL;
 

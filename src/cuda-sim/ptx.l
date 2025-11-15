@@ -273,7 +273,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 [-]?[0-9]+U?    TC; CHECK_UNSIGNED; yylval->int_value =  atoi(yytext); return INT_OPERAND;
 
 0[fF][0-9a-fA-F]{8}  TC; sscanf(yytext+2,"%x", (unsigned*)(void*)&yylval->float_value); return FLOAT_OPERAND;
-0[dD][0-9a-fA-F]{16}  TC; sscanf(yytext+2,"%Lx", (unsigned long long*)(void*)&yylval->double_value); return DOUBLE_OPERAND;
+0[dD][0-9a-fA-F]{16}  TC; sscanf(yytext+2,"%llx", (unsigned long long*)(void*)&yylval->double_value); return DOUBLE_OPERAND;
 
 \.s8   TC;  return S8_TYPE;
 \.s16  TC;  return S16_TYPE;

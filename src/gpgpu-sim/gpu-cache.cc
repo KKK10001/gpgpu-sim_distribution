@@ -36,10 +36,29 @@
 #include "hashing.h"
 #include "stat-tool.h"
 #include "shader_trace.h"
+#include "../../libcuda/gpgpu_context.h"
+
+static inline std::pair<uint64_t,uint64_t> to_u64_pair(const std::bitset<128>& bs) {
+  uint64_t lo = 0, hi = 0;
+  for (int i = 0; i < 64; ++i) {
+    if (bs.test(i))      lo |= (1ull << i);
+    if (bs.test(i+64))   hi |= (1ull << (i));
+  }
+  return {hi, lo}; // 注意：返回时把高 64 位放在 first
+}
+void print_hex_128_for_bitset(const std::bitset<128>& bs) {
+  std::pair<uint64_t,uint64_t> hilo = to_u64_pair(bs);
+  uint64_t hi = hilo.first;
+  uint64_t lo = hilo.second;
+  std::cout << "0x"
+            << std::hex << std::uppercase
+            << std::setw(16) << std::setfill('0') << hi
+            << std::setw(16) << std::setfill('0') << lo
+            << std::dec << '\n';
+}
 
 // used to allocate memory that is large enough to adapt the changes in cache
 // size across kernels
-
 const char *cache_request_status_str(enum cache_request_status status) {
   static const char *static_cache_request_status_str[] = {
       "HIT", "RD_HIT", "WR_HIT",
@@ -54,6 +73,41 @@ const char *cache_request_status_str(enum cache_request_status status) {
   assert(status < NUM_CACHE_REQUEST_STATUS);
 
   return static_cache_request_status_str[status];
+}
+
+const char* cache_block_state_str(enum cache_block_state state) {
+  static const char *static_cache_block_state_str[] = {
+      "INVALID", "RESERVED", "VALID", "MODIFIED"};
+
+  assert(sizeof(static_cache_block_state_str) / sizeof(const char *) ==
+         NUM_CACHE_BLOCK_STATES);
+  assert(state < NUM_CACHE_BLOCK_STATES);
+
+  return static_cache_block_state_str[state];
+}
+
+const char* write_policy_str(enum write_policy_t wp) {
+  static const char* static_write_policy_str[] = {
+      "READ_ONLY", "WRITE_BACK", "WRITE_THROUGH", "WRITE_EVICT",
+      "LOCAL_WB_GLOBAL_WT"};
+
+  assert(sizeof(static_write_policy_str) / sizeof(const char*) ==
+         NUM_WRITE_POLICIES);
+  assert(wp < NUM_WRITE_POLICIES);
+
+  return static_write_policy_str[wp];
+}
+
+const char* write_allocate_policy_str(enum write_allocate_policy_t wap) {
+  static const char* static_write_allocate_policy_str[] = {
+      "NO_WRITE_ALLOCATE", "WRITE_ALLOCATE", "FETCH_ON_WRITE",
+      "LAZY_FETCH_ON_READ"};
+
+  assert(sizeof(static_write_allocate_policy_str) / sizeof(const char*) ==
+         NUM_WRITE_ALLOCATE_POLICIES);
+  assert(wap < NUM_WRITE_ALLOCATE_POLICIES);
+
+  return static_write_allocate_policy_str[wap];
 }
 
 const char *cache_fail_status_str(enum cache_reservation_fail_reason status) {
@@ -285,24 +339,23 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
           if (DTRACE(CACHE_MISS)) {
             std::string miss_type = is_write ? "WR_SECTOR_MISS" : "RD_SECTOR_MISS";
             fprintf(Trace::out, "%llu: cache miss (%s) at address: %llu\n", 
-              time, miss_type.c_str(), addr);
+              (unsigned long long)time, miss_type.c_str(), (unsigned long long)addr);
           }
           return is_write ? WR_SECTOR_MISS : RD_SECTOR_MISS;
         }
-
       } else if (line->is_valid_line() && line->get_status(mask) == INVALID) {
         idx = index;
         if (DTRACE(CACHE_MISS)) {
           std::string miss_type = is_write ? "WR_SECTOR_MISS" : "RD_SECTOR_MISS";         
           fprintf(Trace::out, "%llu: invalid line causes "
             "cache miss (%s) at address=0x%llx index=%u\n", 
-            time, miss_type.c_str(), addr, index);
+            (unsigned long long)time, miss_type.c_str(), (unsigned long long)addr, index);
         }
         return is_write ? WR_SECTOR_MISS : RD_SECTOR_MISS;
       } else {
         assert(line->get_status(mask) == INVALID);
       }
-    }
+    } // cacheline hit
     if (!line->is_reserved_line()) {
       // percentage of dirty lines in the cache
       // number of dirty lines / total lines in the cache
@@ -331,7 +384,7 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
               valid_line = index;
             }
           }
-        }
+        } // valid line
       }
     } // if (!line->is_reserved_line())
   } // for (unsigned way = 0; way < m_config.m_assoc; way++)
@@ -340,7 +393,6 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
     return RESERVATION_FAIL;  // miss and not enough space in cache to allocate
                               // on miss
   }
-
   if (invalid_line != (unsigned)-1) {
     idx = invalid_line;
   } else if (valid_line != (unsigned)-1) {
@@ -348,6 +400,10 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
   } else {
     abort();  // if an unreserved block exists, it is either invalid or
                   // replaceable
+  }
+
+  if (is_write) {
+    assert(1);
   }
 
   return is_write ? WR_MISS : RD_MISS;
@@ -401,6 +457,10 @@ enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
       }
       break;      
     case WR_MISS:
+      if (DTRACE(CACHELINE_STATUS)) {
+        fprintf(Trace::out, "%llu: Probed WR_MISS on pc:%#llx addr:%#llx\n",
+          (unsigned long long)time,(unsigned long long)mf->get_pc(), (unsigned long long)addr);
+      }
       m_wr_miss++;
       m_writes++;
       m_miss++;
@@ -1836,16 +1896,20 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
   bool wb = false;
   evicted_block_info evicted;
 
-  cache_request_status m_status =
+  cache_request_status req_status =
       m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
-  assert(m_status != RD_HIT && m_status != WR_HIT);
+  assert(req_status != RD_HIT && req_status != WR_HIT);
   cache_block_t *block = m_tag_array->get_block(cache_index);
   if (!block->is_modified_line()) {
     m_tag_array->inc_dirty();
   }
-  block->set_status(MODIFIED, mf->get_access_sector_mask());
+  cache_block_state prev_blk_state = block->get_status(mf->get_access_sector_mask()); // for tracing
+
+  unsigned sidx = block->set_status(MODIFIED, mf->get_access_sector_mask());
+
   block->set_byte_mask(mf);
-  if (m_status == HIT_RESERVED) {
+
+  if (req_status == HIT_RESERVED) {
     block->set_ignore_on_fill(true, mf->get_access_sector_mask());
     block->set_modified_on_fill(true, mf->get_access_sector_mask());
     block->set_byte_mask_on_fill(true);
@@ -1855,12 +1919,34 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
     block->set_m_readable(true, mf->get_access_sector_mask());
   } else {
     block->set_m_readable(false, mf->get_access_sector_mask());
-    if (m_status == HIT_RESERVED)
+    if (req_status == HIT_RESERVED) {
       block->set_readable_on_fill(true, mf->get_access_sector_mask());
+    }      
   }
   update_m_readable(mf, cache_index);
 
-  if (m_status != RESERVATION_FAIL) {
+  cache_block_state sector_status   = block->get_status(mf->get_access_sector_mask());
+  mem_access_byte_mask_t dirty_mask = block->get_dirty_byte_mask();
+  std::pair<uint64_t,uint64_t> hilo2 = to_u64_pair(dirty_mask);
+  uint64_t hi = hilo2.first;
+  uint64_t lo = hilo2.second;  
+  if (DTRACE(CACHELINE_STATUS)) {
+    fprintf(Trace::out,
+            "%llu:%s%s addr:%#llx m_sector[sidx:%u] (%s->%s) "
+            "dirty_byte_mask=0x%016llx%016llx is_readable=%u\n",
+            (unsigned long long)(m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle),
+            m_gpu->gpgpu_ctx->func_sim->ptx_get_insn_str(
+                mf->get_inst().pc)
+                .c_str(),
+            cache_request_status_str(req_status),
+            (unsigned long long)block_addr, sidx,
+            cache_block_state_str(prev_blk_state),
+            cache_block_state_str(sector_status),
+            (unsigned long long)hi, (unsigned long long)lo,
+            block->is_readable(mf->get_access_sector_mask()));
+  }
+
+  if (req_status != RESERVATION_FAIL) {
     // If evicted block is modified and not a write-through
     // (already modified lower level)
     if (wb && (m_config.m_write_policy != WRITE_THROUGH)) {
@@ -1876,7 +1962,24 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
       send_write_request(wb, cache_event(WRITE_BACK_REQUEST_SENT, evicted),
                          time, events);
     }
+    // if (DTRACE(CACHELINE_STATUS)) {            
+    //   fprintf(Trace::out, "%llu: WR_MISS on pc=%#llx block_addr=%#lx sector_mask=%s byte_mask=%s\n",
+    //     time, mf->get_pc(),
+    //     block_addr, mf->get_access_sector_mask().to_string().c_str(),
+    //     mf->get_access_byte_mask().to_string().c_str()
+    //   );
+    // }
+
     return WR_MISS;
+  }
+  if (DTRACE(CACHELINE_STATUS)) {
+    fprintf(Trace::out,
+      "%llu: RESERVATION_FAIL on block_addr=%#llx sector_mask=%s "
+      "byte_mask=%s\n",
+      (unsigned long long)(m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle),
+      (unsigned long long)block_addr,
+      mf->get_access_sector_mask().to_string().c_str(),
+      mf->get_access_byte_mask().to_string().c_str());
   }
   return RESERVATION_FAIL;
 }
@@ -2086,37 +2189,33 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
                        m_stats.select_stats_status(probe_status, access_status),
                        mf->get_streamID());
 
-  // jiasen. for debug
-  if (!wr) {
-    // fprintf(fp, "data_cache::access addr=0x%llx probe_status=%d "
-    //             "access_status=%d time=%u\n",
-    //         addr, probe_status, access_status, time);
-
-    std::vector<std::string> ret_status;    
-    ret_status.push_back("HIT");
-    ret_status.push_back("RD_HIT");
-    ret_status.push_back("WR_HIT");
-    ret_status.push_back("HIT_RESERVED");
-    ret_status.push_back("MISS");
-    ret_status.push_back("RD_MISS");
-    ret_status.push_back("WR_MISS");
-    ret_status.push_back("RESERVATION_FAIL");
-    ret_status.push_back("SECTOR_MISS");
-    ret_status.push_back("RD_SECTOR_MISS");
-    ret_status.push_back("WR_SECTOR_MISS");
-    ret_status.push_back("MSHR_HIT");
-
-    std::string cache_level = !m_level ? "L1D" : "L2";
+  std::string cache_level = !m_level ? "L1D" : "L2";
+  if (cache_level == "L1D") {
+    uint64_t lat_from_sched_to_access = time - m_gpu->sched_cycle[mf->get_pc()];
+    m_gpu->tot_l1d_accesses++;
+    m_gpu->tot_l1d_lat_from_sched_to_access += lat_from_sched_to_access;
+    if (wr) {
+      m_gpu->tot_l1d_writes++;
+      m_gpu->tot_l1d_wr_lat_from_sched += lat_from_sched_to_access;
+    } else {
+      m_gpu->tot_l1d_reads++;
+      m_gpu->tot_l1d_rd_lat_from_sched += lat_from_sched_to_access;
+    }
     if (DTRACE(L1D_ACCESS)) {
-      if (cache_level == "L1D") {
-  fprintf(Trace::out, "%llu: time=%llu access L1D "
-                "addr=0x%llx block_addr=0x%llx "
-                "probe_status=%d access_status=%s\n",
-                m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, time, 
-                addr, block_addr,
-                probe_status, ret_status[access_status].c_str());
-        fflush(Trace::out);
-      }
+      assert((m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle) == time);
+      uint64_t lat_from_sched_to_access = time - m_gpu->sched_cycle[mf->get_pc()];
+      fprintf(Trace::out, "%llu: %s L1D " // grep "wr L1D" or "rd L1D"
+                    "pc=%#llx addr=0x%llx block_addr=0x%llx "
+                    "probe_status=%s access_status=%s access_type=%s "
+                    "lat_from_sched_to_access=%llu (%llu - %llu)\n",
+                    (unsigned long long)time, wr ? "wr" : "rd",                     
+                    (unsigned long long)mf->get_pc(),
+                    (unsigned long long)addr, (unsigned long long)block_addr,
+                    cache_request_status_str(probe_status), 
+                    cache_request_status_str(access_status),
+                    mem_access_type_str(mf->get_access_type()),
+                    (unsigned long long)lat_from_sched_to_access, (unsigned long long)time, (unsigned long long)m_gpu->sched_cycle[mf->get_pc()]
+                  );
     }
   }
 
@@ -2130,6 +2229,10 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
 enum cache_request_status l1_cache::access(new_addr_type addr, mem_fetch *mf,
                                            unsigned long long time,
                                            std::list<cache_event> &events) {
+  if (DTRACE(L1D_ACCESS)) {
+    fprintf(Trace::out, "%llu: global monitor: access L1D addr=0x%llx\n",
+                  time, addr);
+  }
   return data_cache::access(addr, mf, time, events);
 }
 

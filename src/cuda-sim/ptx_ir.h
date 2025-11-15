@@ -948,6 +948,7 @@ class ptx_instruction : public warp_inst_t {
 
   void print_insn() const;
   virtual void print_insn(FILE *fp) const;
+  std::string get_insn_string() const;
   std::string to_string() const;
   unsigned inst_size() const { return m_inst_size; }
   unsigned uid() const { return m_uid; }

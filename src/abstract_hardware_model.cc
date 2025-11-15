@@ -180,6 +180,14 @@ void gpgpu_functional_sim_config::ptx_set_tex_cache_linesize(
 
 gpgpu_t::gpgpu_t(const gpgpu_functional_sim_config &config, gpgpu_context *ctx)
     : m_function_model_config(config) {
+
+  printf("DEBUG: g_ptx_inst_debug_to_file = %d\n", 
+    m_function_model_config.get_ptx_inst_debug_to_file());
+
+  printf("DEBUG: gpgpu_t constructor start\n");
+  printf("DEBUG: config address: %p\n", &config);
+  printf("DEBUG: m_function_model_config address: %p\n", &m_function_model_config);
+
   gpgpu_ctx = ctx;
   m_global_mem = new memory_space_impl<8192>("global", 64 * 1024);
 
@@ -196,18 +204,36 @@ gpgpu_t::gpgpu_t(const gpgpu_functional_sim_config &config, gpgpu_context *ctx)
   checkpoint_CTA_t = m_function_model_config.get_checkpoint_CTA_t();
   checkpoint_insn_Y = m_function_model_config.get_checkpoint_insn_Y();
 
-  // initialize texture mappings to empty
-  m_NameToTextureInfo.clear();
-  m_NameToCudaArray.clear();
-  m_TextureRefToName.clear();
-  m_NameToAttribute.clear();
-
-  if (m_function_model_config.get_ptx_inst_debug_to_file() != 0)
-    ptx_inst_debug_file =
-        fopen(m_function_model_config.get_ptx_inst_debug_file(), "w");
-
   gpu_sim_cycle = 0;
   gpu_tot_sim_cycle = 0;
+
+  // ----------------------------------- L1D perf counters -------------------------- // 
+  tot_l1d_lat_from_sched_to_access = 0;
+  tot_l1d_accesses = 0; 
+  avg_l1d_lat_from_sched_to_access = 0.0f;
+
+  tot_l1d_wr_lat_from_sched = 0;
+  tot_l1d_writes = 0;
+  avg_l1d_wr_lat_from_sched = 0.0f;
+
+  tot_l1d_rd_lat_from_sched = 0;
+  tot_l1d_reads = 0;
+  avg_l1d_rd_lat_from_sched = 0.0f;
+
+  avg_alu_lat = 0.0f;
+
+  sched_cycle.clear();
+
+  // initialize texture mappings to empty
+  m_NameToTextureRef.clear();
+  m_TextureRefToName.clear();
+  m_NameToCudaArray.clear();
+  m_NameToTextureInfo.clear();
+  m_NameToAttribute.clear();
+
+  if (m_function_model_config.get_ptx_inst_debug_to_file() != 0) {
+    ptx_inst_debug_file = fopen(m_function_model_config.get_ptx_inst_debug_file(), "w");
+  }
 }
 
 new_addr_type line_size_based_tag_func(new_addr_type address,
@@ -230,6 +256,48 @@ const char *mem_access_type_str(enum mem_access_type access_type) {
   assert(access_type < NUM_MEM_ACCESS_TYPE);
 
   return access_type_str[access_type];
+}
+
+// ---------------------------------------------------------------------------
+// Translate a uarch_op_t enum value to a string (similar style to
+// mem_access_type_str macro approach, but enum layout is sparse: NO_OP = -1,
+// ALU_OP starts at 1, specialized unit ops start at 100. Direct array indexing
+// would waste space or require offset math, so we instead use a switch with a
+// macro to keep the code compact and consistent.
+// ---------------------------------------------------------------------------
+const char *uarch_op_str(enum uarch_op_t op_type) {
+  switch (op_type) {
+#define UARCH_TUP(X) case X: return #X;
+    UARCH_TUP(NO_OP)
+    UARCH_TUP(ALU_OP)
+    UARCH_TUP(SFU_OP)
+    UARCH_TUP(TENSOR_CORE_OP)
+    UARCH_TUP(DP_OP)
+    UARCH_TUP(SP_OP)
+    UARCH_TUP(INTP_OP)
+    UARCH_TUP(ALU_SFU_OP)
+    UARCH_TUP(LOAD_OP)
+    UARCH_TUP(TENSOR_CORE_LOAD_OP)
+    UARCH_TUP(TENSOR_CORE_STORE_OP)
+    UARCH_TUP(STORE_OP)
+    UARCH_TUP(BRANCH_OP)
+    UARCH_TUP(BARRIER_OP)
+    UARCH_TUP(MEMORY_BARRIER_OP)
+    UARCH_TUP(CALL_OPS)
+    UARCH_TUP(RET_OPS)
+    UARCH_TUP(EXIT_OPS)
+    UARCH_TUP(SPECIALIZED_UNIT_1_OP)
+    UARCH_TUP(SPECIALIZED_UNIT_2_OP)
+    UARCH_TUP(SPECIALIZED_UNIT_3_OP)
+    UARCH_TUP(SPECIALIZED_UNIT_4_OP)
+    UARCH_TUP(SPECIALIZED_UNIT_5_OP)
+    UARCH_TUP(SPECIALIZED_UNIT_6_OP)
+    UARCH_TUP(SPECIALIZED_UNIT_7_OP)
+    UARCH_TUP(SPECIALIZED_UNIT_8_OP)
+#undef UARCH_TUP
+  default:
+    return "UNKNOWN_UARCH_OP";
+  }
 }
 
 void warp_inst_t::clear_active(const active_mask_t &inactive) {

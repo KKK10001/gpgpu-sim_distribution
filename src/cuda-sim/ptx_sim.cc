@@ -62,8 +62,8 @@ void ptx_cta_info::check_cta_thread_status_and_reset() {
     printf(
         "Execution error: Some threads still running in CTA during CTA "
         "reallocation! (1)\n");
-    printf("   CTA uid = %Lu (sm_idx = %u) : %lu running out of %zu total\n",
-           m_uid, m_sm_idx,
+    printf("   CTA uid = %llu (sm_idx = %u) : %lu running out of %zu total\n",
+      (unsigned long long)m_uid, m_sm_idx,
            (m_threads_in_cta.size() - m_threads_that_have_exited.size()),
            m_threads_in_cta.size());
     printf("   These are the threads that are still running:\n");
@@ -100,7 +100,7 @@ void ptx_cta_info::check_cta_thread_status_and_reset() {
           printf(
               "Execution error: Some threads still running in CTA during CTA "
               "reallocation! (2)\n");
-          printf("   CTA uid = %Lu (sm_idx = %u) :\n", m_uid, m_sm_idx);
+          printf("   CTA uid = %llu (sm_idx = %u) :\n", (unsigned long long)m_uid, m_sm_idx);
           fail2 = true;
         }
         printf("       ");

@@ -1478,6 +1478,7 @@ class ldst_unit : public pipelined_simd_unit {
   // for debugging
   unsigned long long m_last_inst_gpu_sim_cycle;
   unsigned long long m_last_inst_gpu_tot_sim_cycle;
+  std::unordered_map<unsigned long long /* pc */, unsigned long long /* cycle */> m_last_inst_sched_cycle;
 
   std::vector<std::deque<mem_fetch *>> l1_latency_queue;
   void L1_latency_queue_cycle();
@@ -2509,6 +2510,7 @@ class shader_core_ctx : public core_t {
 
   unsigned long long m_last_inst_gpu_sim_cycle;
   unsigned long long m_last_inst_gpu_tot_sim_cycle;
+  std::unordered_map<unsigned long long /* pc */, unsigned long long /* cycle */> m_last_inst_sched_cycle;
 
   // general information
   unsigned m_sid;  // shader id

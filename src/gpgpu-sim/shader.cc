@@ -35,6 +35,8 @@
 #include <string>
 #include <limits.h>
 #include <string.h>
+#include <unordered_map>
+#include <tuple>
 #include "../../libcuda/gpgpu_context.h"
 #include "../cuda-sim/cuda-sim.h"
 #include "../cuda-sim/ptx-stats.h"
@@ -896,6 +898,14 @@ void shader_core_ctx::decode() {
     if (pI1) {
       m_warp[m_inst_fetch_buffer.m_warp_id]->ibuffer_fill(0, pI1);
       m_warp[m_inst_fetch_buffer.m_warp_id]->inc_inst_in_pipeline();
+
+      if (DTRACE(DECODE)) {
+        std::string inst_str = m_gpu->gpgpu_ctx->func_sim->ptx_get_insn_str(pc);
+        fprintf(Trace::out, "%llu: decoded inst for warp %u%s\n",
+                m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
+                m_inst_fetch_buffer.m_warp_id, inst_str.c_str());
+      }  
+
       m_stats->m_num_decoded_insn[m_sid]++;
       if ((pI1->oprnd_type == INT_OP) ||
           (pI1->oprnd_type == UN_OP)) {  // these counters get added up in mcPat
@@ -909,6 +919,14 @@ void shader_core_ctx::decode() {
       if (pI2) {
         m_warp[m_inst_fetch_buffer.m_warp_id]->ibuffer_fill(1, pI2);
         m_warp[m_inst_fetch_buffer.m_warp_id]->inc_inst_in_pipeline();
+
+      if (DTRACE(DECODE)) {
+        std::string inst_str = m_gpu->gpgpu_ctx->func_sim->ptx_get_insn_str(pc);
+        fprintf(Trace::out, "%llu: decoded inst for warp %u%s\n",
+                m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
+                m_inst_fetch_buffer.m_warp_id, inst_str.c_str());
+      }  
+
         m_stats->m_num_decoded_insn[m_sid]++;
         if ((pI1->oprnd_type == INT_OP) ||
             (pI1->oprnd_type == UN_OP)) {  // these counters get added up in
@@ -920,6 +938,13 @@ void shader_core_ctx::decode() {
       }
     }
     m_inst_fetch_buffer.m_valid = false;
+
+    // if (DTRACE(DECODE)) {
+    //   std::string inst_str = m_gpu->gpgpu_ctx->func_sim->ptx_get_insn_str(pc);
+    //   fprintf(Trace::out, "%llu: decoded inst for warp %u%s\n",
+    //           m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
+    //           m_inst_fetch_buffer.m_warp_id, inst_str.c_str());
+    // }    
   }
 }
 
@@ -999,10 +1024,18 @@ void shader_core_ctx::fetch() {
           if (m_config->perfect_inst_const_cache) {
             status = RD_HIT;
             shader_cache_access_log(m_sid, INSTRUCTION, 0);
-          } else
+          } else {
             status = m_L1I->access(
                 (new_addr_type)ppc, mf,
                 m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, events);
+          }
+
+          if (DTRACE(FETCH)) {
+            fprintf(Trace::out, "%llu: fetched inst for warp %u pc=0x%llx "
+                                 "(access I$ va=0x%llx, nbytes=%u) => %s\n",
+                    m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, warp_id,
+                    pc, ppc, nbytes, cache_request_status_str(status));
+          }
 
           // I'm not sure if self-modification would happen in GPU I$. 
           // At least Rodinia regression all passed on 2025/11/6
@@ -1119,7 +1152,7 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
     for (unsigned int i = 0; i < end_group; i++) {
       const auto &group = ldg_buf[i];
       for (unsigned int j = 0; j < group.size(); j++) {
-        if (group[j].pc != -1) {
+        if (group[j].pc != ((unsigned long long) - 1)) {
           done_flag = false;
           goto UpdateDEPBAR;
         }
@@ -1200,7 +1233,9 @@ static inline void __report_memstall_core__(shader_core_ctx* sc,
       // Emit per-core detail lines
       if (DTRACE(MEM_STALL_DETAIL)) {
         for (const auto &kv : __cycle_memstall_details__) {
-          unsigned core = kv.first; auto [warp, reg, pc, addr] = kv.second;
+          unsigned core = kv.first;
+          unsigned warp = 0; int reg = -1; unsigned pc = 0; unsigned long long addr = 0ULL;
+          std::tie(warp, reg, pc, addr) = kv.second;
           if (Trace::allow_emit(cyc)) {
             // Instruction string if available
             std::string insn = sc->get_config()->gpgpu_ctx->func_sim->ptx_get_insn_str(pc);
@@ -1662,7 +1697,7 @@ void scheduler_unit::cycle() {
                   fprintf(Trace::out, "GPGPU-Sim Cycle %llu: %s - ", __cyc__,
                           Trace::trace_streams_str[Trace::MEM_STALL]);
                   fprintf(Trace::out,
-                          "Core %d - mem-longop wait: warp=%u dyn=%u pc=%#x\n",
+                          "Core %d - mem-longop wait: warp=%u dyn=%u pc=%#llx\n",
                           get_sid(), (*iter)->get_warp_id(),
                           (*iter)->get_dynamic_warp_id(), pI->pc);
                   fflush(Trace::out);
@@ -1977,7 +2012,9 @@ void shader_core_ctx::execute() {
   }
   for (unsigned n = 0; n < m_num_function_units; n++) {
     unsigned multiplier = m_fu[n]->clock_multiplier();
-    for (unsigned c = 0; c < multiplier; c++) m_fu[n]->cycle();
+    for (unsigned c = 0; c < multiplier; c++) {
+      m_fu[n]->cycle();
+    }
     m_fu[n]->active_lanes_in_pipeline();
     unsigned issue_port = m_issue_port[n];
     register_set &issue_inst = m_pipeline_reg[issue_port];
@@ -1996,8 +2033,28 @@ void shader_core_ctx::execute() {
           (resbus = test_res_bus((*ready_reg)->latency)) != -1) {
         assert((*ready_reg)->latency < MAX_ALU_LATENCY);
         m_result_bus[resbus]->set((*ready_reg)->latency);
+
+        if (DTRACE(ISSUE)) {
+          uint64_t curr_cycle = 
+              get_gpu()->gpu_tot_sim_cycle + get_gpu()->gpu_sim_cycle;
+          get_gpu()->sched_cycle[(*ready_reg)->pc] = curr_cycle;
+          fprintf(Trace::out, "%llu: Scheduled insn (WB in %u cycles)%s\n",
+                  get_gpu()->gpu_tot_sim_cycle + get_gpu()->gpu_sim_cycle,
+                  (*ready_reg)->latency,
+                  m_config->gpgpu_ctx->func_sim->ptx_get_insn_str((*ready_reg)->pc)
+                      .c_str());
+        }
+
         m_fu[n]->issue(issue_inst);
       } else if (!schedule_wb_now) {
+        if (DTRACE(ISSUE)) {
+          uint64_t curr_cycle = get_gpu()->gpu_tot_sim_cycle + get_gpu()->gpu_sim_cycle;
+          get_gpu()->sched_cycle[(*ready_reg)->pc] = curr_cycle;       
+          fprintf(Trace::out, "%llu: Scheduled insn%s\n",
+                  get_gpu()->gpu_tot_sim_cycle + get_gpu()->gpu_sim_cycle,
+                  m_config->gpgpu_ctx->func_sim->ptx_get_insn_str((*ready_reg)->pc)
+                      .c_str());
+        }
         m_fu[n]->issue(issue_inst);
       } else {
         // stall issue (cannot reserve result bus)
@@ -2064,7 +2121,7 @@ void shader_core_ctx::unset_depbar(const warp_inst_t &inst) {
   DoneWB:
     for (unsigned int i = 0; i < end_group; i++) {
       for (unsigned int j = 0; j < ldg_buf[i].size(); j++) {
-        if (ldg_buf[i][j].pc != -1) {
+        if (ldg_buf[i][j].pc != ((unsigned long long) - 1)) {
           done_flag = false;
           goto UpdateDEPBAR;
         }
@@ -2148,9 +2205,19 @@ void shader_core_ctx::writeback() {
     m_warp[warp_id]->dec_inst_in_pipeline();
     warp_inst_complete(*pipe_reg);
     m_gpu->gpu_sim_insn_last_update_sid = m_sid;
-    m_gpu->gpu_sim_insn_last_update = m_gpu->gpu_sim_cycle;
-    m_last_inst_gpu_sim_cycle = m_gpu->gpu_sim_cycle;
+    m_gpu->gpu_sim_insn_last_update     = m_gpu->gpu_sim_cycle;
+
+    op_type curr_op_type = (*preg)->op;
+    m_gpu->gpu_sim_tot_uarch_op_lat[curr_op_type] +=
+        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle -
+        m_gpu->sched_cycle[(*preg)->pc];
+    m_gpu->gpu_sim_tot_uarch_op_insts[curr_op_type]++;
+    
+    m_last_inst_gpu_sim_cycle     = m_gpu->gpu_sim_cycle;
     m_last_inst_gpu_tot_sim_cycle = m_gpu->gpu_tot_sim_cycle;
+    
+    m_last_inst_sched_cycle       = m_gpu->sched_cycle;    
+
     pipe_reg->clear();
     preg = m_pipeline_reg[EX_WB].get_ready();
     pipe_reg = (preg == NULL) ? NULL : *preg;
@@ -2352,19 +2419,20 @@ void ldst_unit::L1_latency_queue_cycle() {
   for (unsigned int j = 0; j < m_config->m_L1D_config.l1_banks; j++) {
     if ((l1_latency_queue[j][0]) != NULL) {
       mem_fetch *mf_next = l1_latency_queue[j][0];
-      std::list<cache_event> events;
-      
-      if (DTRACE(L1D_ACCESS)) {
-        fprintf(Trace::out, "%llu: L1D Access addr=0x%llx byte_mask:%s\n",
-                m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
-                mf_next->get_addr(), mf_next->get_access_byte_mask().to_string().c_str()
-        );
-      }
+      std::list<cache_event> events;      
 
       enum cache_request_status status =
           m_L1D->access(mf_next->get_addr(), mf_next,
                         m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle,
                         events);
+
+      if (DTRACE(L1D_ACCESS)) {
+        fprintf(Trace::out, "%llu: L1D Access (%s) addr=0x%llx byte_mask:%s\n",
+                m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
+                cache_request_status_str(status),
+                mf_next->get_addr(), mf_next->get_access_byte_mask().to_string().c_str()
+        );
+      }
 
       bool write_sent = was_write_sent(events);
       bool read_sent = was_read_sent(events);
@@ -2425,7 +2493,7 @@ void ldst_unit::L1_latency_queue_cycle() {
               m_core->unset_depbar(mf_next->get_inst());
             }
           }
-        }
+        } // if (mf_next->get_inst().is_load()) {
 
         // For write hit in WB policy
         if (mf_next->get_inst().is_store() && !write_sent) {
@@ -2445,7 +2513,9 @@ void ldst_unit::L1_latency_queue_cycle() {
         assert(!read_sent);
         assert(!write_sent);
       } else {
-        assert(status == WR_MISS || status == RD_MISS || status == HIT_RESERVED);
+        assert(status == WR_MISS || status == WR_SECTOR_MISS ||
+            status == RD_MISS || status == HIT_RESERVED);
+
         l1_latency_queue[j][0] = NULL;
         if (m_config->m_L1D_config.get_write_policy() != WRITE_THROUGH &&
             mf_next->get_inst().is_store() &&
@@ -2459,16 +2529,78 @@ void ldst_unit::L1_latency_queue_cycle() {
                   ? (mf_next->get_data_size() / SECTOR_SIZE)
                   : 1;
           mf_next->set_reply();
-          for (unsigned i = 0; i < dec_ack; ++i) m_core->store_ack(mf_next);
-          if (!write_sent && !read_sent) delete mf_next;
+          for (unsigned i = 0; i < dec_ack; ++i) { 
+            m_core->store_ack(mf_next);
+          }
+
+          if (DTRACE(L1D_ACCESS)) {
+            fprintf(Trace::out,
+                    "%llu: set WRITE_ACK for L1D %s (wp:%s wap:%s) on pc:%#llx addr:%#llx\n",
+                    m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
+                    cache_request_status_str(status),
+                    write_policy_str(m_config->m_L1D_config.get_write_policy()),
+                    write_allocate_policy_str(m_config->m_L1D_config.get_write_allocate_policy()),
+                    mf_next->get_inst().pc,
+                    mf_next->get_addr()
+                  );
+          }
+
+          if (!write_sent && !read_sent) { 
+            delete mf_next;
+          }
         }
+      }
+    } // Finished m_L1D->accessing for l1_latency_queue[j][0]
+
+    if (DTRACE(L1D_ACCESS)) {
+      std::vector<std::pair<unsigned, mem_fetch*>> pending_accesses;
+      for (unsigned stage = 0; stage <= m_config->m_L1D_config.l1_latency - 1; ++stage) {
+        if (l1_latency_queue[j][stage] != NULL) {
+          mem_fetch* mf = l1_latency_queue[j][stage];
+          pending_accesses.push_back(std::make_pair(stage, mf));
+        }
+      }
+      if (pending_accesses.size()) {
+        fprintf(Trace::out, "%llu: Before squeezing, l1_lat_q[bank:%u][%u] holds: {",
+          m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, j, m_config->m_L1D_config.l1_latency);
+        for (unsigned idx = 0; idx < pending_accesses.size(); ++idx) {
+          std::string tail_sym = idx == pending_accesses.size() - 1 ? "" : ", ";
+          fprintf(Trace::out, "<stage:%u pc:%#llx addr:%#llx>%s", 
+            pending_accesses[idx].first,
+            pending_accesses[idx].second->get_inst().pc,
+            pending_accesses[idx].second->get_addr(), tail_sym.c_str());
+        }
+        fprintf(Trace::out, "}\n");
       }
     }
 
+    // squeezing bubbles
     for (unsigned stage = 0; stage < m_config->m_L1D_config.l1_latency - 1; ++stage) {
       if (l1_latency_queue[j][stage] == NULL) {
         l1_latency_queue[j][stage] = l1_latency_queue[j][stage + 1];
         l1_latency_queue[j][stage + 1] = NULL;
+      }
+    }
+
+    if (DTRACE(L1D_ACCESS)) {
+      std::vector<std::pair<unsigned, mem_fetch*>> pending_accesses;
+      for (unsigned stage = 0; stage <= m_config->m_L1D_config.l1_latency - 1; ++stage) {
+        if (l1_latency_queue[j][stage] != NULL) {
+          mem_fetch* mf = l1_latency_queue[j][stage];
+          pending_accesses.push_back(std::make_pair(stage, mf));
+        }
+      }
+      if (pending_accesses.size()) {
+        fprintf(Trace::out, "%llu: After squeezing, l1_lat_q[bank:%u][%u] holds: {",
+          m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, j, m_config->m_L1D_config.l1_latency);
+        for (unsigned idx = 0; idx < pending_accesses.size(); ++idx) {
+          std::string tail_sym = idx == pending_accesses.size() - 1 ? "" : ", ";
+          fprintf(Trace::out, "<stage:%u pc:%#llx addr:%#llx>%s", 
+            pending_accesses[idx].first,
+            pending_accesses[idx].second->get_inst().pc,
+            pending_accesses[idx].second->get_addr(), tail_sym.c_str());
+        }
+        fprintf(Trace::out, "}\n");
       }
     }
   } // for (unsigned int j = 0; j < m_config->m_L1D_config.l1_banks; j++) 
@@ -2530,7 +2662,7 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
   if (inst.accessq_empty()) return true;
 
   mem_stage_stall_type stall_cond = NO_RC_FAIL;
-  const mem_access_t &access = inst.accessq_back();
+  [[maybe_unused]] const mem_access_t &access = inst.accessq_back();
 
   bool bypassL1D = false;
   if (CACHE_GLOBAL == inst.cache_op || (m_L1D == NULL)) {
@@ -2908,9 +3040,9 @@ ldst_unit::ldst_unit(mem_fetch_interface *icnt,
                      Scoreboard *scoreboard, const shader_core_config *config,
                      const memory_config *mem_config, shader_core_stats *stats,
                      unsigned sid, unsigned tpc, gpgpu_sim *gpu)
-    : pipelined_simd_unit(NULL, config, config->smem_latency, core, 0),
-      m_next_wb(config),
-      m_gpu(gpu) {
+    : pipelined_simd_unit(NULL, config, config->smem_latency, core, 0),      
+      m_gpu(gpu),
+      m_next_wb(config) {
   assert(config->smem_latency > 1);
   init(icnt, mf_allocator, core, operand_collector, scoreboard, config,
        mem_config, stats, sid, tpc);
@@ -3041,6 +3173,7 @@ void ldst_unit::writeback() {
       m_next_wb.clear();
       m_last_inst_gpu_sim_cycle = m_core->get_gpu()->gpu_sim_cycle;
       m_last_inst_gpu_tot_sim_cycle = m_core->get_gpu()->gpu_tot_sim_cycle;
+      m_last_inst_sched_cycle = m_core->get_gpu()->sched_cycle;
     }
   }
 
@@ -3431,6 +3564,14 @@ void gpgpu_sim::shader_print_cache_stats(FILE *fout) const {
     fprintf(fout, "\n========= Core cache stats =========\n");
     fprintf(fout, "L1I_cache:\n");
     for (unsigned i = 0; i < m_shader_config->n_simt_clusters; ++i) {
+      if (m_cluster == NULL) {
+        fprintf(stderr, "GPGPU-Sim uArch: ERROR shader_print_cache_stats(): m_cluster is NULL while collecting L1I stats.\n");
+        break;
+      }
+      if (m_cluster[i] == NULL) {
+        fprintf(stderr, "GPGPU-Sim uArch: ERROR shader_print_cache_stats(): m_cluster[%u] is NULL while collecting L1I stats.\n", i);
+        continue;
+      }
       m_cluster[i]->get_L1I_sub_stats(css);
       total_css += css;
     }
@@ -3452,6 +3593,14 @@ void gpgpu_sim::shader_print_cache_stats(FILE *fout) const {
     css.clear();
     fprintf(fout, "L1D_cache:\n");
     for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
+      if (m_cluster == NULL) {
+        fprintf(stderr, "GPGPU-Sim uArch: ERROR shader_print_cache_stats(): m_cluster is NULL while collecting L1D stats.\n");
+        break;
+      }
+      if (m_cluster[i] == NULL) {
+        fprintf(stderr, "GPGPU-Sim uArch: ERROR shader_print_cache_stats(): m_cluster[%u] is NULL while collecting L1D stats.\n", i);
+        continue;
+      }
       m_cluster[i]->get_L1D_sub_stats(css);
 
       fprintf(stdout,
@@ -3491,6 +3640,14 @@ void gpgpu_sim::shader_print_cache_stats(FILE *fout) const {
     css.clear();
     fprintf(fout, "L1C_cache:\n");
     for (unsigned i = 0; i < m_shader_config->n_simt_clusters; ++i) {
+      if (m_cluster == NULL) {
+        fprintf(stderr, "GPGPU-Sim uArch: ERROR shader_print_cache_stats(): m_cluster is NULL while collecting L1C stats.\n");
+        break;
+      }
+      if (m_cluster[i] == NULL) {
+        fprintf(stderr, "GPGPU-Sim uArch: ERROR shader_print_cache_stats(): m_cluster[%u] is NULL while collecting L1C stats.\n", i);
+        continue;
+      }
       m_cluster[i]->get_L1C_sub_stats(css);
       total_css += css;
     }
@@ -3512,6 +3669,14 @@ void gpgpu_sim::shader_print_cache_stats(FILE *fout) const {
     css.clear();
     fprintf(fout, "L1T_cache:\n");
     for (unsigned i = 0; i < m_shader_config->n_simt_clusters; ++i) {
+      if (m_cluster == NULL) {
+        fprintf(stderr, "GPGPU-Sim uArch: ERROR shader_print_cache_stats(): m_cluster is NULL while collecting L1T stats.\n");
+        break;
+      }
+      if (m_cluster[i] == NULL) {
+        fprintf(stderr, "GPGPU-Sim uArch: ERROR shader_print_cache_stats(): m_cluster[%u] is NULL while collecting L1T stats.\n", i);
+        continue;
+      }
       m_cluster[i]->get_L1T_sub_stats(css);
       total_css += css;
     }
@@ -3770,8 +3935,9 @@ void ldst_unit::print(FILE *fout) const {
 void shader_core_ctx::display_pipeline(FILE *fout, int print_mem,
                                        int mask) const {
   fprintf(fout, "=================================================\n");
-  fprintf(fout, "shader %u at cycle %Lu+%Lu (%u threads running)\n", m_sid,
-          m_gpu->gpu_tot_sim_cycle, m_gpu->gpu_sim_cycle, m_not_completed);
+  fprintf(fout, "shader %u at cycle %llu+%llu (%u threads running)\n", m_sid,
+    (unsigned long long)m_gpu->gpu_tot_sim_cycle,
+    (unsigned long long)m_gpu->gpu_sim_cycle, m_not_completed);
   fprintf(fout, "=================================================\n");
 
   dump_warp_state(fout);
@@ -4836,8 +5002,15 @@ void simt_core_cluster::core_cycle() {
 }
 
 void simt_core_cluster::reinit() {
-  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++)
+  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++) {
+    if (m_core[i] == NULL) {
+      fprintf(stderr,
+              "GPGPU-Sim uArch: ERROR simt_core_cluster::reinit(): m_core[%u] is NULL (cluster %u).\n",
+              i, m_cluster_id);
+      continue;
+    }
     m_core[i]->reinit(0, m_config->n_thread_per_shader, true);
+  }
 }
 
 unsigned simt_core_cluster::max_cta(const kernel_info_t &kernel) {
@@ -5203,7 +5376,21 @@ void simt_core_cluster::get_L1I_sub_stats(struct cache_sub_stats &css) const {
   struct cache_sub_stats total_css;
   temp_css.clear();
   total_css.clear();
+  // Defensive: ensure core array is initialized
+  if (!m_core) {
+    fprintf(stderr,
+            "GPGPU-Sim uArch: ERROR simt_core_cluster::get_L1I_sub_stats(): m_core base is NULL (cluster %u).\n",
+            m_cluster_id);
+    css.clear();
+    return;
+  }
   for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; ++i) {
+    if (m_core[i] == NULL) {
+      fprintf(stderr,
+              "GPGPU-Sim uArch: ERROR simt_core_cluster::get_L1I_sub_stats(): m_core[%u] is NULL (cluster %u).\n",
+              i, m_cluster_id);
+      continue;
+    }
     m_core[i]->get_L1I_sub_stats(temp_css);
     total_css += temp_css;
   }
@@ -5225,7 +5412,20 @@ void simt_core_cluster::get_L1C_sub_stats(struct cache_sub_stats &css) const {
   struct cache_sub_stats total_css;
   temp_css.clear();
   total_css.clear();
+  if (!m_core) {
+    fprintf(stderr,
+            "GPGPU-Sim uArch: ERROR simt_core_cluster::get_L1C_sub_stats(): m_core base is NULL (cluster %u).\n",
+            m_cluster_id);
+    css.clear();
+    return;
+  }
   for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; ++i) {
+    if (m_core[i] == NULL) {
+      fprintf(stderr,
+              "GPGPU-Sim uArch: ERROR simt_core_cluster::get_L1C_sub_stats(): m_core[%u] is NULL (cluster %u).\n",
+              i, m_cluster_id);
+      continue;
+    }
     m_core[i]->get_L1C_sub_stats(temp_css);
     total_css += temp_css;
   }

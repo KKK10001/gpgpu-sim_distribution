@@ -38,13 +38,17 @@
 #include "../tr1_hash_map.h"
 #include "gpu-misc.h"
 #include "mem_fetch.h"
+#include "shader_trace.h"
 
 #include <iostream>
 #include "addrdec.h"
 
 #define MAX_DEFAULT_CACHE_SIZE_MULTIBLIER 4
 
-enum cache_block_state { INVALID = 0, RESERVED, VALID, MODIFIED };
+enum cache_block_state { 
+  INVALID = 0, RESERVED, VALID, MODIFIED,
+  NUM_CACHE_BLOCK_STATES
+ };
 
 enum cache_request_status {
   HIT = 0,
@@ -60,6 +64,27 @@ enum cache_request_status {
   WR_SECTOR_MISS,
   MSHR_HIT,
   NUM_CACHE_REQUEST_STATUS
+};
+
+enum replacement_policy_t { LRU, FIFO };
+
+enum write_policy_t {
+  READ_ONLY,
+  WRITE_BACK,
+  WRITE_THROUGH,
+  WRITE_EVICT,
+  LOCAL_WB_GLOBAL_WT,
+  NUM_WRITE_POLICIES
+};
+
+enum allocation_policy_t { ON_MISS, ON_FILL, STREAMING };
+
+enum write_allocate_policy_t {
+  NO_WRITE_ALLOCATE,
+  WRITE_ALLOCATE,
+  FETCH_ON_WRITE,
+  LAZY_FETCH_ON_READ,
+  NUM_WRITE_ALLOCATE_POLICIES
 };
 
 enum cache_reservation_fail_reason {
@@ -127,6 +152,8 @@ struct cache_event {
 };
 
 const char *cache_request_status_str(enum cache_request_status status);
+const char* write_policy_str(enum write_policy_t wp);
+const char* write_allocate_policy_str(enum write_allocate_policy_t wap);
 
 struct cache_block_t {
   cache_block_t() {
@@ -147,8 +174,8 @@ struct cache_block_t {
 
   virtual enum cache_block_state get_status(
       mem_access_sector_mask_t sector_mask) = 0;
-  virtual void set_status(enum cache_block_state m_status,
-                          mem_access_sector_mask_t sector_mask) = 0;
+  virtual unsigned set_status(enum cache_block_state m_status,
+                          mem_access_sector_mask_t sector_mask) = 0;  
   virtual void set_byte_mask(mem_fetch *mf) = 0;
   virtual void set_byte_mask(mem_access_byte_mask_t byte_mask) = 0;
   virtual mem_access_byte_mask_t get_dirty_byte_mask() = 0;
@@ -220,10 +247,16 @@ struct line_cache_block : public cache_block_t {
       mem_access_sector_mask_t sector_mask) {
     return m_status;
   }
-  virtual void set_status(enum cache_block_state status,
+
+  virtual std::string get_sector_status(unsigned sidx) {
+    return "xx -> impl in derived class";
+  }
+
+  virtual unsigned set_status(enum cache_block_state status,
                           mem_access_sector_mask_t sector_mask) {
     m_status = status;
-  }
+    return 0;
+  }  
   virtual void set_byte_mask(mem_fetch *mf) {
     m_dirty_byte_mask = m_dirty_byte_mask | mf->get_access_byte_mask();
   }
@@ -401,7 +434,9 @@ struct sector_cache_block : public cache_block_t {
   virtual bool is_modified_line() {
     // if any of the sector is modified, then the line is modified
     for (unsigned i = 0; i < SECTOR_CHUNCK_SIZE; ++i) {
-      if (m_status[i] == MODIFIED) return true;
+      if (m_status[i] == MODIFIED) {
+        return true;
+      }
     }
     return false;
   }
@@ -413,11 +448,13 @@ struct sector_cache_block : public cache_block_t {
     return m_status[sidx];
   }
 
-  virtual void set_status(enum cache_block_state status,
-                          mem_access_sector_mask_t sector_mask) {
+  // Added return type for a chain-style calling
+  virtual unsigned set_status(enum cache_block_state status,
+                        mem_access_sector_mask_t sector_mask) {
     unsigned sidx = get_sector_index(sector_mask);
     m_status[sidx] = status;
-  }
+    return sidx;
+  }  
 
   virtual void set_byte_mask(mem_fetch *mf) {
     m_dirty_byte_mask = m_dirty_byte_mask | mf->get_access_byte_mask();
@@ -493,6 +530,20 @@ struct sector_cache_block : public cache_block_t {
            m_status[0], m_status[1], m_status[2], m_status[3]);
   }
 
+  virtual std::string get_sector_status(unsigned sidx) {
+    switch (m_status[sidx])
+    {
+    case INVALID:
+      return "INVALID";
+    case VALID:
+      return "VALID";
+    case MODIFIED:
+      return "MODIFIED";
+    default:
+      return "UNKNOWN";
+    }
+  }
+
  private:
   unsigned m_sector_alloc_time[SECTOR_CHUNCK_SIZE];
   unsigned m_last_sector_access_time[SECTOR_CHUNCK_SIZE];
@@ -515,25 +566,6 @@ struct sector_cache_block : public cache_block_t {
     }
     return SECTOR_CHUNCK_SIZE;  // error
   }
-};
-
-enum replacement_policy_t { LRU, FIFO };
-
-enum write_policy_t {
-  READ_ONLY,
-  WRITE_BACK,
-  WRITE_THROUGH,
-  WRITE_EVICT,
-  LOCAL_WB_GLOBAL_WT
-};
-
-enum allocation_policy_t { ON_MISS, ON_FILL, STREAMING };
-
-enum write_allocate_policy_t {
-  NO_WRITE_ALLOCATE,
-  WRITE_ALLOCATE,
-  FETCH_ON_WRITE,
-  LAZY_FETCH_ON_READ
 };
 
 enum mshr_config_t {
@@ -591,6 +623,11 @@ class cache_config {
       exit_parse_error();
     }
 
+    // for debug
+    std::string rp_str = "LRU";
+    std::string wp_str = "READ_ONLY";
+    std::string wap_str = "NO_WRITE_ALLOCATE";
+
     switch (ct) {
       case 'N':
         m_cache_type = NORMAL;
@@ -604,9 +641,11 @@ class cache_config {
     switch (rp) {
       case 'L':
         m_replacement_policy = LRU;
+        rp_str = "LRU";
         break;
       case 'F':
         m_replacement_policy = FIFO;
+        rp_str = "FIFO";
         break;
       default:
         exit_parse_error();
@@ -614,18 +653,23 @@ class cache_config {
     switch (wp) {
       case 'R':
         m_write_policy = READ_ONLY;
+        wp_str = "READ_ONLY";
         break;
       case 'B':
         m_write_policy = WRITE_BACK;
+        wp_str = "WRITE_BACK";
         break;
       case 'T':
         m_write_policy = WRITE_THROUGH;
+        wp_str = "WRITE_THROUGH";
         break;
       case 'E':
         m_write_policy = WRITE_EVICT;
+        wp_str = "WRITE_EVICT";
         break;
       case 'L':
         m_write_policy = LOCAL_WB_GLOBAL_WT;
+        wp_str = "LOCAL_WB_GLOBAL_WT";
         break;
       default:
         exit_parse_error();
@@ -698,15 +742,19 @@ class cache_config {
     switch (wap) {
       case 'N':
         m_write_alloc_policy = NO_WRITE_ALLOCATE;
+        wap_str = "NO_WRITE_ALLOCATE";
         break;
       case 'W':
         m_write_alloc_policy = WRITE_ALLOCATE;
+        wap_str = "WRITE_ALLOCATE";
         break;
       case 'F':
         m_write_alloc_policy = FETCH_ON_WRITE;
+        wap_str = "FETCH_ON_WRITE";
         break;
       case 'L':
         m_write_alloc_policy = LAZY_FETCH_ON_READ;
+        wap_str = "LAZY_FETCH_ON_READ";
         break;
       default:
         exit_parse_error();
@@ -772,6 +820,19 @@ class cache_config {
         break;
       default:
         exit_parse_error();
+    }
+
+    printf("Replacement Policy (rp)=%s\n"
+      "Write Policy (wp)=%s\n"
+      "Write Allocate Policy (wap)=%s\n",
+      rp_str.c_str(), wp_str.c_str(), wap_str.c_str()
+    );
+    if (DTRACE(CACHE_CONFIG)) {
+      fprintf(Trace::out, "Replacement Policy (rp)=%s\n"
+        "Write Policy (wp)=%s\n"
+        "Write Allocate Policy (wap)=%s\n",
+        rp_str.c_str(), wp_str.c_str(), wap_str.c_str()
+      );
     }
   }
   bool disabled() const { return m_disabled; }
@@ -1312,6 +1373,36 @@ bool was_writeallocate_sent(const std::list<cache_event> &events);
 /// Implements common functions for read_only_cache and data_cache
 /// Each subclass implements its own 'access' function
 class baseline_cache : public cache_t {
+  /// Sub-class containing all metadata for port bandwidth management
+  class bandwidth_management {
+    public:
+      bandwidth_management(cache_config &config);
+
+      /// use the data port based on the outcome and events generated by the
+      /// mem_fetch request
+      void use_data_port(mem_fetch *mf, enum cache_request_status outcome,
+                        const std::list<cache_event> &events, bool is_wr = false);
+
+      /// use the fill port
+      void use_fill_port(mem_fetch *mf);
+
+      /// called every cache cycle to free up the ports
+      void replenish_port_bandwidth();
+
+      /// query for data port availability
+      bool data_port_free() const;
+      /// query for fill port availability
+      bool fill_port_free() const;
+
+    protected:
+      const cache_config &m_config;
+
+      int m_data_port_occupied_cycles;  //< Number of cycle that the data port
+                                        // remains used
+      int m_fill_port_occupied_cycles;  //< Number of cycle that the fill port
+                                        // remains used
+  };
+
  public:
   baseline_cache(const char *name, cache_config &config, int core_id,
                  int type_id, mem_fetch_interface *memport,
@@ -1319,10 +1410,10 @@ class baseline_cache : public cache_t {
                  gpgpu_sim *gpu)
       : m_config(config),
         m_tag_array(new tag_array(config, core_id, type_id)),
-        m_mshrs(config.m_mshr_entries, config.m_mshr_max_merge),
-        m_bandwidth_management(config),
+        m_mshrs(config.m_mshr_entries, config.m_mshr_max_merge),        
         m_level(level),
-        m_gpu(gpu) {
+        m_gpu(gpu),
+        m_bandwidth_management(config) {
     init(name, config, memport, status);
   }
 
@@ -1479,36 +1570,6 @@ class baseline_cache : public cache_t {
                          bool &do_miss, bool &wb, evicted_block_info &evicted,
                          std::list<cache_event> &events, bool read_only,
                          bool wa);
-
-  /// Sub-class containing all metadata for port bandwidth management
-  class bandwidth_management {
-   public:
-    bandwidth_management(cache_config &config);
-
-    /// use the data port based on the outcome and events generated by the
-    /// mem_fetch request
-    void use_data_port(mem_fetch *mf, enum cache_request_status outcome,
-                       const std::list<cache_event> &events, bool is_wr = false);
-
-    /// use the fill port
-    void use_fill_port(mem_fetch *mf);
-
-    /// called every cache cycle to free up the ports
-    void replenish_port_bandwidth();
-
-    /// query for data port availability
-    bool data_port_free() const;
-    /// query for fill port availability
-    bool fill_port_free() const;
-
-   protected:
-    const cache_config &m_config;
-
-    int m_data_port_occupied_cycles;  //< Number of cycle that the data port
-                                      // remains used
-    int m_fill_port_occupied_cycles;  //< Number of cycle that the fill port
-                                      // remains used
-  };
 
   bandwidth_management m_bandwidth_management;
 };

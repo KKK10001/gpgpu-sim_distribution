@@ -44,6 +44,7 @@ typedef void *yyscan_t;
 
 #include "../../libcuda/gpgpu_context.h"
 #include "cuda-sim.h"
+#include "../gpgpu-sim/shader_trace.h"
 
 #define STR_SIZE 1024
 
@@ -1470,6 +1471,10 @@ ptx_instruction::ptx_instruction(
   // Trim tabs
   m_source.erase(std::remove(m_source.begin(), m_source.end(), '\t'),
                  m_source.end());
+  
+  if (DTRACE(PTX_INST)) {
+    fprintf(Trace::out, "ptx_inst: %s\n", m_source.c_str());
+  }
 
   if (opcode == CALL_OP) {
     const operand_info &target = func_addr();
@@ -1496,18 +1501,22 @@ void ptx_instruction::print_insn(FILE *fp) const {
   fprintf(fp, "%s", to_string().c_str());
 }
 
+std::string ptx_instruction::get_insn_string() const {
+  return to_string();
+}
+
 std::string ptx_instruction::to_string() const {
   char buf[STR_SIZE];
   unsigned used_bytes = 0;
   if (!is_label()) {
     used_bytes += snprintf(buf + used_bytes, STR_SIZE - used_bytes,
-                           " PC=0x%03llx ", m_PC);
+                           " pc=0x%03llx ", m_PC);
   } else {
     used_bytes +=
         snprintf(buf + used_bytes, STR_SIZE - used_bytes, "                ");
   }
   used_bytes +=
-      snprintf(buf + used_bytes, STR_SIZE - used_bytes, "(%s:%d) %s",
+      snprintf(buf + used_bytes, STR_SIZE - used_bytes, "(%s:%d) %s\n",
                m_source_file.c_str(), m_source_line, m_source.c_str());
   return std::string(buf);
 }

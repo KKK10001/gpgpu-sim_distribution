@@ -28,3 +28,28 @@ libcudart.so.12!gpgpu_sim::cycle(gpgpu_sim * const this) (\home\kuanbba\dev\acce
 libcudart.so.12!gpgpu_sim_thread_concurrent(void * ctx_ptr) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpusim_entrypoint.cc:146)
 libpthread.so.0!start_thread(void * arg) (\build\glibc-B3wQXB\glibc-2.31\nptl\pthread_create.c:477)
 libc.so.6!clone() (\build\glibc-B3wQXB\glibc-2.31\sysdeps\unix\sysv\linux\x86_64\clone.S:95)
+
+// 初始化的Seg Fault
+libcudart.so!gpgpu_sim::active(gpgpu_sim * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\gpu-sim.cc:1158)
+<function called from gdb> (Unknown Source:0)
+libpthread.so.0!__GI___pthread_mutex_lock(pthread_mutex_t * mutex) (\build\glibc-B3wQXB\glibc-2.31\nptl\pthread_mutex_lock.c:67)
+libcudart.so!stream_manager::empty_protected(stream_manager * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\stream_manager.cc:466)
+<function called from gdb> (Unknown Source:0)
+libcudart.so!gpgpu_t::gpgpu_t(gpgpu_t * const this, const gpgpu_functional_sim_config & config, gpgpu_context * ctx) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\abstract_hardware_model.cc:187)
+libcudart.so!gpgpu_sim::gpgpu_sim(gpgpu_sim * const this, const gpgpu_sim_config & config, gpgpu_context * ctx) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\gpu-sim.cc:987)
+trace_gpgpu_sim::trace_gpgpu_sim(trace_gpgpu_sim * const this, const gpgpu_sim_config & config, gpgpu_context * ctx) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\trace-driven\trace_driven.h:173)
+accel_sim_framework::gpgpu_trace_sim_init_perf_model(accel_sim_framework * const this, int argc, const char ** argv, gpgpu_context * m_gpgpu_context, trace_config * m_config) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\accel-sim.cc:231)
+accel_sim_framework::accel_sim_framework(accel_sim_framework * const this, int argc, const char ** argv) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\accel-sim.cc:30)
+main(int argc, const char ** argv) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\main.cc:29)
+
+
+libcudart.so!gpgpu_sim::active(gpgpu_sim * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\gpu-sim.cc:1158)
+<function called from gdb> (Unknown Source:0)
+libpthread.so.0!__GI___pthread_mutex_lock(pthread_mutex_t * mutex) (\build\glibc-B3wQXB\glibc-2.31\nptl\pthread_mutex_lock.c:67)
+libcudart.so!stream_manager::empty_protected(stream_manager * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\stream_manager.cc:466)
+<function called from gdb> (Unknown Source:0)
+libcudart.so!gpgpu_sim::gpgpu_sim(gpgpu_sim * const this, const gpgpu_sim_config & config, gpgpu_context * ctx) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\gpu-sim.cc:988)
+trace_gpgpu_sim::trace_gpgpu_sim(trace_gpgpu_sim * const this, const gpgpu_sim_config & config, gpgpu_context * ctx) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\trace-driven\trace_driven.h:173)
+accel_sim_framework::gpgpu_trace_sim_init_perf_model(accel_sim_framework * const this, int argc, const char ** argv, gpgpu_context * m_gpgpu_context, trace_config * m_config) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\accel-sim.cc:231)
+accel_sim_framework::accel_sim_framework(accel_sim_framework * const this, int argc, const char ** argv) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\accel-sim.cc:30)
+main(int argc, const char ** argv) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\main.cc:29)

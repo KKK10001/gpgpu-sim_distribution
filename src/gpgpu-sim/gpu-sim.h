@@ -758,6 +758,9 @@ class gpgpu_sim : public gpgpu_t {
   unsigned long long gpu_tot_sim_insn;
   unsigned long long gpu_sim_insn_last_update;
   unsigned gpu_sim_insn_last_update_sid;
+  std::unordered_map<op_type, unsigned long long> gpu_sim_tot_uarch_op_lat;
+  std::unordered_map<op_type, unsigned long long> gpu_sim_tot_uarch_op_insts;
+
   occupancy_stats gpu_occupancy;
   occupancy_stats gpu_tot_occupancy;
 

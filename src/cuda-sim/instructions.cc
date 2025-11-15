@@ -197,11 +197,13 @@ void ptx_thread_info::print_reg_thread(char *fname) {
 
     reg_map_t::const_iterator it;
     for (it = reg.begin(); it != reg.end(); ++it) {
-      const std::string &name = it->first->name();
-      const std::string &dec = it->first->decl_location();
-      unsigned size = it->first->get_size_in_bytes();
-      fprintf(fp, "%s %llu %s %d\n", name.c_str(), it->second, dec.c_str(),
-              size);
+      [[maybe_unused]] const std::string &name = it->first->name();
+      [[maybe_unused]] const std::string &dec = it->first->decl_location();
+      [[maybe_unused]] unsigned size = it->first->get_size_in_bytes();
+      // 2024-11-14 Temporarily commented to remove the warning: 
+      // "it->second" that is incompatiable with %llu
+      // fprintf(fp, "%s %llu %s %d\n", name.c_str(), it->second, dec.c_str(),
+      //         size);
     }
     // m_regs.pop_back();
   }
