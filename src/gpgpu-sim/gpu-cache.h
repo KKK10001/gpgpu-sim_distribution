@@ -52,16 +52,10 @@ enum cache_block_state {
 
 enum cache_request_status {
   HIT = 0,
-  RD_HIT, 
-  WR_HIT,
   HIT_RESERVED,
   MISS,
-  RD_MISS,
-  WR_MISS,
   RESERVATION_FAIL,
   SECTOR_MISS,
-  RD_SECTOR_MISS,
-  WR_SECTOR_MISS,
   MSHR_HIT,
   NUM_CACHE_REQUEST_STATUS
 };
@@ -1163,10 +1157,6 @@ class mshr_table {
 struct cache_sub_stats {
   unsigned long long accesses;
   unsigned long long misses;
-  unsigned long long reads;
-  unsigned long long rd_misses;
-  unsigned long long writes;
-  unsigned long long wr_misses;
   unsigned long long pending_hits;
   unsigned long long res_fails;
 
@@ -1177,11 +1167,7 @@ struct cache_sub_stats {
   cache_sub_stats() { clear(); }
   void clear() {
     accesses = 0;
-    reads = 0;
-    writes = 0;
     misses = 0;
-    rd_misses = 0;
-    wr_misses = 0;
     pending_hits = 0;
     res_fails = 0;
     port_available_cycles = 0;
@@ -1194,12 +1180,6 @@ struct cache_sub_stats {
     ///
     accesses += css.accesses;
     misses += css.misses;
-
-    reads += css.reads;
-    rd_misses += css.rd_misses;
-    writes += css.writes;
-    wr_misses += css.wr_misses;
-    
     pending_hits += css.pending_hits;
     res_fails += css.res_fails;
     port_available_cycles += css.port_available_cycles;
@@ -1215,12 +1195,6 @@ struct cache_sub_stats {
     cache_sub_stats ret;
     ret.accesses = accesses + cs.accesses;
     ret.misses = misses + cs.misses;
-
-    ret.reads = reads + cs.reads;
-    ret.rd_misses = rd_misses + cs.rd_misses;
-    ret.writes = writes + cs.writes;
-    ret.wr_misses = wr_misses + cs.wr_misses;
-
     ret.pending_hits = pending_hits + cs.pending_hits;
     ret.res_fails = res_fails + cs.res_fails;
     ret.port_available_cycles =
@@ -1343,10 +1317,9 @@ class cache_stats {
   std::map<unsigned long long, std::vector<std::vector<unsigned long long>>>
       m_stats;
   // AerialVision cache stats (per-window)
-  std::map<unsigned long long, std::vector<std::vector<unsigned long long>>>
-      m_stats_pw;
-  std::map<unsigned long long, std::vector<std::vector<unsigned long long>>>
-      m_fail_stats;
+  std::map<unsigned long long, std::vector<std::vector<unsigned long long>>> m_stats_pw;
+  std::map<unsigned long long, std::vector<std::vector<unsigned long long>>> m_fail_stats;
+  std::map<unsigned long long, std::vector<unsigned long long>> m_fail_stats_total;
 
   unsigned long long m_cache_port_available_cycles;
   unsigned long long m_cache_data_port_busy_cycles;

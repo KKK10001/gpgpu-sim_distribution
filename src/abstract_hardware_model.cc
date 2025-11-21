@@ -211,14 +211,19 @@ gpgpu_t::gpgpu_t(const gpgpu_functional_sim_config &config, gpgpu_context *ctx)
   tot_l1d_lat_from_sched_to_access = 0;
   tot_l1d_accesses = 0; 
   avg_l1d_lat_from_sched_to_access = 0.0f;
+  tot_l1d_hits = 0;
 
   tot_l1d_wr_lat_from_sched = 0;
   tot_l1d_writes = 0;
   avg_l1d_wr_lat_from_sched = 0.0f;
+  tot_l1d_wr_hits = 0;
+  l1d_wr_hit_rate = 0.0f;
 
   tot_l1d_rd_lat_from_sched = 0;
   tot_l1d_reads = 0;
   avg_l1d_rd_lat_from_sched = 0.0f;
+  tot_l1d_rd_hits = 0;
+  l1d_rd_hit_rate = 0.0f;
 
   avg_alu_lat = 0.0f;
 

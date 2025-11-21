@@ -607,14 +607,19 @@ class gpgpu_t {
   unsigned long long tot_l1d_lat_from_sched_to_access;
   unsigned long long tot_l1d_accesses;
   float avg_l1d_lat_from_sched_to_access;
+  unsigned long long tot_l1d_hits;
 
   unsigned long long tot_l1d_wr_lat_from_sched;
   unsigned long long tot_l1d_writes;
   float avg_l1d_wr_lat_from_sched;
+  unsigned long long tot_l1d_wr_hits;
+  float l1d_wr_hit_rate;
 
   unsigned long long tot_l1d_rd_lat_from_sched;
   unsigned long long tot_l1d_reads;  
   float avg_l1d_rd_lat_from_sched;
+  unsigned long long tot_l1d_rd_hits;
+  float l1d_rd_hit_rate;
 
   std::unordered_map<unsigned long long /* pc */, unsigned long long /* cycle */> sched_cycle;
   float avg_alu_lat; // from scheduling to wb

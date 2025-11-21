@@ -1010,6 +1010,10 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
   gpu_tot_sim_insn = 0;
   gpu_tot_issued_cta = 0;
   gpu_completed_cta = 0;
+
+  gpu_sim_tot_uarch_op_lat.clear();
+  gpu_sim_tot_uarch_op_insts.clear();
+
   m_total_cta_launched = 0;
   gpu_deadlock = false;
 
@@ -1306,6 +1310,9 @@ void gpgpu_sim::update_stats() {
   m_total_cta_launched = 0;
   gpu_completed_cta = 0;
   gpu_occupancy = occupancy_stats();
+
+  gpu_sim_tot_uarch_op_lat.clear();
+  gpu_sim_tot_uarch_op_insts.clear();  
 }
 
 PowerscalingCoefficients *gpgpu_sim::get_scaling_coeffs() {
@@ -1526,30 +1533,42 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
   printf("gpu_stall_dramfull = %d\n", gpu_stall_dramfull);
   printf("gpu_stall_icnt2sh    = %d\n", gpu_stall_icnt2sh);
 
-  // printf("partiton_reqs_in_parallel = %lld\n", partiton_reqs_in_parallel);
-  // printf("partiton_reqs_in_parallel_total    = %lld\n",
-  // partiton_reqs_in_parallel_total );
   printf("partiton_level_parallism = %12.4f\n",
          (float)partiton_reqs_in_parallel / gpu_sim_cycle);
   printf("partiton_level_parallism_total  = %12.4f\n",
          (float)(partiton_reqs_in_parallel + partiton_reqs_in_parallel_total) /
              (gpu_tot_sim_cycle + gpu_sim_cycle));
-  // printf("partiton_reqs_in_parallel_util = %lld\n",
-  // partiton_reqs_in_parallel_util);
-  // printf("partiton_reqs_in_parallel_util_total    = %lld\n",
-  // partiton_reqs_in_parallel_util_total ); printf("gpu_sim_cycle_parition_util
-  // = %lld\n", gpu_sim_cycle_parition_util);
-  // printf("gpu_tot_sim_cycle_parition_util    = %lld\n",
-  // gpu_tot_sim_cycle_parition_util );
   printf("partiton_level_parallism_util = %12.4f\n",
          (float)partiton_reqs_in_parallel_util / gpu_sim_cycle_parition_util);
   printf("partiton_level_parallism_util_total  = %12.4f\n",
          (float)(partiton_reqs_in_parallel_util +
                  partiton_reqs_in_parallel_util_total) /
              (gpu_sim_cycle_parition_util + gpu_tot_sim_cycle_parition_util));
-  // printf("partiton_replys_in_parallel = %lld\n",
-  // partiton_replys_in_parallel); printf("partiton_replys_in_parallel_total =
-  // %lld\n", partiton_replys_in_parallel_total );
+
+  printf("-------------------------- Insts Lat --------------------------\n");
+  for (size_t i = 0; i < gpu_sim_tot_uarch_op_lat.size(); i++)
+  {
+    auto it = gpu_sim_tot_uarch_op_lat.find(op_type(i));
+    // if (it != gpu_sim_tot_uarch_op_lat.end()) {
+      float curr_avg_uarch_op_lat =
+          (float)(gpu_sim_tot_uarch_op_lat[op_type(i)]) / gpu_sim_tot_uarch_op_insts[op_type(i)];
+      printf("avg_lat[%s] = %12.4f cycles\n",
+              uarch_op_str(op_type(i)), curr_avg_uarch_op_lat);
+    // }
+  }  
+
+  printf("-------------------------- L1D stats --------------------------\n");
+  avg_l1d_lat_from_sched_to_access = (float)(tot_l1d_lat_from_sched_to_access) / tot_l1d_accesses;
+  printf("avg_l1d_lat_from_sched_to_access = %12.4f cycles\n", avg_l1d_lat_from_sched_to_access);
+  avg_l1d_wr_lat_from_sched = (float)(tot_l1d_wr_lat_from_sched) / tot_l1d_writes;
+  printf("avg_l1d_wr_lat_from_sched = %12.4f cycles\n", avg_l1d_wr_lat_from_sched);
+  avg_l1d_rd_lat_from_sched = (float)(tot_l1d_rd_lat_from_sched) / tot_l1d_reads;
+  printf("avg_l1d_rd_lat_from_sched = %12.4f cycles\n", avg_l1d_rd_lat_from_sched);
+  l1d_wr_hit_rate = (float)(tot_l1d_wr_hits) / tot_l1d_writes;
+  printf("l1d_wr_hit_rate = %12.4f\n", l1d_wr_hit_rate);
+  l1d_rd_hit_rate = (float)(tot_l1d_rd_hits) / tot_l1d_reads;
+  printf("l1d_rd_hit_rate = %12.4f\n", l1d_rd_hit_rate);
+
   printf("L2_BW  = %12.4f GB/Sec\n",
          ((float)(partiton_replys_in_parallel * 32) /
           (gpu_sim_cycle * m_config.core_period)) /
@@ -1568,7 +1587,6 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
   printf("gpu_total_sim_rate=%u\n",
          (unsigned)((gpu_tot_sim_insn + gpu_sim_insn) / elapsed_time));
 
-  // shader_print_l1_miss_stat( stdout );
   shader_print_cache_stats(stdout);
 
   cache_stats core_cache_stats;

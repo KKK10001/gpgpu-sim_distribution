@@ -53,3 +53,27 @@ trace_gpgpu_sim::trace_gpgpu_sim(trace_gpgpu_sim * const this, const gpgpu_sim_c
 accel_sim_framework::gpgpu_trace_sim_init_perf_model(accel_sim_framework * const this, int argc, const char ** argv, gpgpu_context * m_gpgpu_context, trace_config * m_config) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\accel-sim.cc:231)
 accel_sim_framework::accel_sim_framework(accel_sim_framework * const this, int argc, const char ** argv) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\accel-sim.cc:30)
 main(int argc, const char ** argv) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\main.cc:29)
+
+给输出stats赋值的链路
+libcudart.so!cache_stats::inc_stats(cache_stats * const this, int access_type, int access_outcome, unsigned long long streamID) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\gpu-cache.cc:800)
+libcudart.so!data_cache::access(data_cache * const this, new_addr_type addr, mem_fetch * mf, unsigned long long time, std::__cxx11::list<cache_event, std::allocator<cache_event> > & events) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\gpu-cache.cc:2185)
+libcudart.so!l1_cache::access(l1_cache * const this, new_addr_type addr, mem_fetch * mf, unsigned long long time, std::__cxx11::list<cache_event, std::allocator<cache_event> > & events) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\gpu-cache.cc:2236)
+libcudart.so!ldst_unit::L1_latency_queue_cycle(ldst_unit * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\shader.cc:2425)
+libcudart.so!ldst_unit::cycle(ldst_unit * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\shader.cc:3377)
+libcudart.so!shader_core_ctx::execute(shader_core_ctx * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\shader.cc:2016)
+libcudart.so!shader_core_ctx::cycle(shader_core_ctx * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\shader.cc:4189)
+libcudart.so!simt_core_cluster::core_cycle(simt_core_cluster * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\shader.cc:5000)
+libcudart.so!gpgpu_sim::cycle(gpgpu_sim * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\gpu-sim.cc:2141)
+accel_sim_framework::simulate(accel_sim_framework * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\accel-sim.cc:160)
+accel_sim_framework::simulation_loop(accel_sim_framework * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\accel-sim.cc:75)
+main(int argc, const char ** argv) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\main.cc:30)
+
+对L1D进行初始化配置的链路(包括m_miss_queue_size)
+cache_config::init(cache_config * const this, char * config, FuncCache status) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\gpu-cache.h:607)
+l1d_cache_config::init(l1d_cache_config * const this, char * config, FuncCache status) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\gpu-cache.h:975)
+shader_core_config::init(shader_core_config * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\shader.h:1582)
+gpgpu_sim_config::init(gpgpu_sim_config * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\gpu-sim.h:423)
+accel_sim_framework::gpgpu_trace_sim_init_perf_model(accel_sim_framework * const this, int argc, const char ** argv, gpgpu_context * m_gpgpu_context, trace_config * m_config) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\accel-sim.cc:226)
+accel_sim_framework::accel_sim_framework(accel_sim_framework * const this, int argc, const char ** argv) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\accel-sim.cc:29)
+main(int argc, const char ** argv) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\main.cc:29)
+
