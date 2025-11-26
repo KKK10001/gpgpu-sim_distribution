@@ -82,12 +82,46 @@ enum write_allocate_policy_t {
 };
 
 enum cache_reservation_fail_reason {
-  LINE_ALLOC_FAIL = 0,  // all line are reserved
-  MISS_QUEUE_FULL,      // MISS queue (i.e. interconnect or DRAM) is full
-  MSHR_ENRTY_FAIL,
-  MSHR_MERGE_ENRTY_FAIL,
+  LINE_ALLOC_FAIL = 0,  // done. all line are reserved
+  MSHR_ENTRY_FAIL,      // done.
+  MISS_QUEUE_FULL,      // done. MISS queue (i.e. interconnect or DRAM) is full
+  MSHR_MERGE_ENTRY_FAIL,// done.
   MSHR_RW_PENDING,
   NUM_CACHE_RESERVATION_FAIL_STATUS
+};
+
+enum line_alloc_fail_driver {
+  LINE_ALLOC_FAIL__RD_ONLY_MISS = 0,
+  LINE_ALLOC_FAIL__RD_PROBE_MISS,
+  LINE_ALLOC_FAIL__WR_PROBE_MISS,
+  NUM_LINE_ALLOC_FAIL_DRIVER
+};
+
+enum mshr_entry_fail_driver {
+  MSHR_ENTRY_FAIL__RD_MISS = 0,
+  MSHR_ENTRY_FAIL__WR_ALLOC_MISS,
+  MSHR_ENTRY_FAIL__WR_ALLOC_MISS_FETCH_ON_WR,
+  NUM_MSHR_ENTRY_FAIL_DRIVER
+};
+
+enum miss_queue_full_driver {
+  WR_THROUGH_HIT = 0,
+  WR_EVICT_HIT,
+  WR_ALLOC_MISS, // data_cache::wr_miss_wa_naive
+  WR_ALLOC_MISS_FETCH_ON_WR_WHOLE_LINE,
+  WR_ALLOC_MISS_FETCH_ON_WR_PARTIAL_LINE,
+  WR_ALLOC_MISS_LAZY_FETCH_ON_RD,
+  WR_MISS_NO_WR_ALLOC,
+  RD_MISS,
+  RD_ONLY_MISS,
+  NUM_MISS_QUEUE_FULL_DRIVER
+};
+
+enum mshr_merge_entry_fail_driver {
+  MSHR_MERGE_ENTRY_FAIL__RD_MISS = 0,
+  MSHR_MERGE_ENTRY_FAIL__WR_ALLOC_MISS,
+  MSHR_MERGE_ENTRY_FAIL__WR_ALLOC_MISS_FETCH_ON_WR,
+  NUM_MSHR_MERGE_ENTRY_FAIL_DRIVER
 };
 
 enum cache_event_type {
@@ -1126,6 +1160,7 @@ class mshr_table {
     assert(m_max_merged == max_merged &&
            "Change of MSHR parameters between kernels is not allowed");
   }
+  unsigned get_max_merged() const { return m_max_merged; }
 
  private:
   // finite sized, fully associative table, with a finite maximum number of
@@ -1282,7 +1317,7 @@ class cache_stats {
   void inc_stats_pw(int access_type, int access_outcome,
                     unsigned long long streamID);
   void inc_fail_stats(int access_type, int fail_outcome,
-                      unsigned long long streamID);
+                      unsigned long long streamID, int fail_driver = -1);
   enum cache_request_status select_stats_status(
       enum cache_request_status probe, enum cache_request_status access) const;
   unsigned long long &operator()(int access_type, int access_outcome,
@@ -1291,6 +1326,12 @@ class cache_stats {
   unsigned long long operator()(int access_type, int access_outcome,
                                 bool fail_outcome,
                                 unsigned long long streamID) const;
+
+  unsigned long long operator()(int access_type, int access_outcome,
+                                bool is_fail_outcome,
+                                int fail_driver,
+                                unsigned long long streamID) const;
+
   cache_stats operator+(const cache_stats &cs);
   cache_stats &operator+=(const cache_stats &cs);
   void print_stats(FILE *fout, unsigned long long streamID,
@@ -1319,6 +1360,10 @@ class cache_stats {
   // AerialVision cache stats (per-window)
   std::map<unsigned long long, std::vector<std::vector<unsigned long long>>> m_stats_pw;
   std::map<unsigned long long, std::vector<std::vector<unsigned long long>>> m_fail_stats;
+  std::map<unsigned long long, std::vector<std::vector<unsigned long long>>> m_line_alloc_fail;
+  std::map<unsigned long long, std::vector<std::vector<unsigned long long>>> m_mshr_entry_fail;
+  std::map<unsigned long long, std::vector<std::vector<unsigned long long>>> m_miss_q_full;
+  std::map<unsigned long long, std::vector<std::vector<unsigned long long>>> m_mshr_merge_entry_fail;
   std::map<unsigned long long, std::vector<unsigned long long>> m_fail_stats_total;
 
   unsigned long long m_cache_port_available_cycles;
@@ -1387,12 +1432,25 @@ class baseline_cache : public cache_t {
         m_level(level),
         m_gpu(gpu),
         m_bandwidth_management(config) {
+    // for debug
+    printf("baseline_cache {mshrs_entries = %u, mshr_max_merge = %u}\n", 
+      config.m_mshr_entries, config.m_mshr_max_merge);
+
     init(name, config, memport, status);
   }
 
   void init(const char *name, const cache_config &config,
             mem_fetch_interface *memport, enum mem_fetch_status status) {
     m_name = name;
+    m_is_l1d = false;
+    m_is_l2  = false;
+    if (m_name.find("L1D") != std::string::npos) {
+      m_is_l1d = true;        
+    } else if (m_name.find("L2") != std::string::npos) {
+      m_is_l2 = true;
+    }
+    fprintf(Trace::out, "init cache: %s\n", m_name.c_str());
+
     assert(config.m_mshr_type == ASSOC || config.m_mshr_type == SECTOR_ASSOC);
     m_memport = memport;
     m_miss_queue_status = status;
@@ -1488,6 +1546,8 @@ class baseline_cache : public cache_t {
 
  protected:
   std::string m_name;
+  bool m_is_l1d;
+  bool m_is_l2;
   cache_config &m_config;
   tag_array *m_tag_array;
   mshr_table m_mshrs;
@@ -1530,6 +1590,10 @@ class baseline_cache : public cache_t {
   /// Checks whether this request can be handled on this cycle. num_miss equals
   /// max # of misses to be handled on this cycle
   bool miss_queue_full(unsigned num_miss) {
+    if (DTRACE(MEM_STALL_GLOBAL)) {
+      std::string cache_type = m_is_l1d ? "L1D" : (m_is_l2 ? "L2" : "other L1");
+      fprintf(Trace::out, "miss_queue_full at %s\n", cache_type.c_str());
+    }
     return ((m_miss_queue.size() + num_miss) >= m_config.m_miss_queue_size);
   }
   /// Read miss handler without writeback

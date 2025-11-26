@@ -113,15 +113,77 @@ const char* write_allocate_policy_str(enum write_allocate_policy_t wap) {
 
 const char *cache_fail_status_str(enum cache_reservation_fail_reason status) {
   static const char *static_cache_reservation_fail_reason_str[] = {
-      "LINE_ALLOC_FAIL", "MISS_QUEUE_FULL", "MSHR_ENRTY_FAIL",
-      "MSHR_MERGE_ENRTY_FAIL", "MSHR_RW_PENDING"};
-
+    "LINE_ALLOC_FAIL",
+    "MSHR_ENTRY_FAIL",
+    "MISS_QUEUE_FULL",
+    "MSHR_MERGE_ENTRY_FAIL",
+    "MSHR_RW_PENDING"
+    };
+  
   assert(sizeof(static_cache_reservation_fail_reason_str) /
              sizeof(const char *) ==
          NUM_CACHE_RESERVATION_FAIL_STATUS);
   assert(status < NUM_CACHE_RESERVATION_FAIL_STATUS);
 
   return static_cache_reservation_fail_reason_str[status];
+}
+
+const char *line_alloc_fail_driver_str(enum line_alloc_fail_driver driver) {
+  static const char *static_line_alloc_fail_driver_str[] = {
+    "LINE_ALLOC_FAIL__RD_ONLY_MISS",
+    "LINE_ALLOC_FAIL__RD_PROBE_MISS",
+    "LINE_ALLOC_FAIL__WR_PROBE_MISS" };    
+
+  assert(sizeof(static_line_alloc_fail_driver_str) / sizeof(const char *) ==
+         NUM_LINE_ALLOC_FAIL_DRIVER);
+  assert(driver < NUM_LINE_ALLOC_FAIL_DRIVER);
+
+  return static_line_alloc_fail_driver_str[driver];
+}
+
+const char *mshr_entry_fail_driver_str(enum mshr_entry_fail_driver driver) {
+  static const char *static_mshr_entry_fail_driver_str[] = {
+  "MSHR_ENTRY_FAIL__RD_MISS",
+  "MSHR_ENTRY_FAIL__WR_ALLOC_MISS",
+  "MSHR_ENTRY_FAIL__WR_ALLOC_MISS_FETCH_ON_WR"};
+
+  assert(sizeof(static_mshr_entry_fail_driver_str) / sizeof(const char *) ==
+         NUM_MSHR_ENTRY_FAIL_DRIVER);
+  assert(driver < NUM_MSHR_ENTRY_FAIL_DRIVER);
+
+  return static_mshr_entry_fail_driver_str[driver];
+}
+
+const char *miss_queue_full_driver_str(enum miss_queue_full_driver driver) {
+  static const char *static_mshr_queue_full_driver_str[] = {
+    "WR_THROUGH_HIT",
+    "WR_EVICT_HIT",
+    "WR_ALLOC_MISS",
+    "WR_ALLOC_MISS_FETCH_ON_WR_WHOLE_LINE",
+    "WR_ALLOC_MISS_FETCH_ON_WR_PARTIAL_LINE",
+    "WR_ALLOC_MISS_LAZY_FETCH_ON_RD",
+    "WR_MISS_NO_WR_ALLOC",
+    "RD_MISS",
+    "RD_ONLY_MISS"};
+
+  assert(sizeof(static_mshr_queue_full_driver_str) / sizeof(const char *) ==
+         NUM_MISS_QUEUE_FULL_DRIVER);
+  assert(driver < NUM_MISS_QUEUE_FULL_DRIVER);
+
+  return static_mshr_queue_full_driver_str[driver];
+}
+
+const char *mshr_merge_entry_fail_driver_str(enum mshr_merge_entry_fail_driver driver) {
+  static const char *static_mshr_merge_entry_fail_driver_str[] = {
+    "RD_MISS",
+    "WR_ALLOC_MISS",
+    "WR_ALLOC_MISS_FETCH_ON_WR_PARTIAL_LINE"};
+
+  assert(sizeof(static_mshr_merge_entry_fail_driver_str) / sizeof(const char *) ==
+         NUM_MSHR_MERGE_ENTRY_FAIL_DRIVER);
+  assert(driver < NUM_MSHR_MERGE_ENTRY_FAIL_DRIVER);
+
+  return static_mshr_merge_entry_fail_driver_str[driver];
 }
 
 unsigned l1d_cache_config::set_bank(new_addr_type addr) const {
@@ -741,6 +803,10 @@ void cache_stats::clear() {
   m_stats.clear();
   m_stats_pw.clear();
   m_fail_stats.clear();
+  m_line_alloc_fail.clear();
+  m_mshr_entry_fail.clear();
+  m_miss_q_full.clear();
+  m_mshr_merge_entry_fail.clear();
   m_fail_stats_total.clear();
 
   m_cache_port_available_cycles = 0;
@@ -797,26 +863,99 @@ void cache_stats::inc_stats_pw(int access_type, int access_outcome,
   m_stats_pw.at(streamID)[access_type][access_outcome]++;
 }
 
-void cache_stats::inc_fail_stats(int access_type, int fail_outcome,
-                                 unsigned long long streamID) {
+void cache_stats::inc_fail_stats(
+  int access_type, int fail_outcome, 
+  unsigned long long streamID, int fail_driver) {
+
   if (!check_fail_valid(access_type, fail_outcome))
     assert(0 && "Unknown cache access type or access fail");
 
   if (m_fail_stats.find(streamID) == m_fail_stats.end()) {
-    std::vector<std::vector<unsigned long long>> new_val;
+    std::vector<std::vector<unsigned long long>> new_val;    
     new_val.resize(NUM_MEM_ACCESS_TYPE);
     for (unsigned j = 0; j < NUM_MEM_ACCESS_TYPE; ++j) {
       new_val[j].resize(NUM_CACHE_RESERVATION_FAIL_STATUS, 0);
     }
+        
     m_fail_stats.insert(std::pair<unsigned long long,
                         std::vector<std::vector<unsigned long long>>>(
                         streamID, new_val));
     m_fail_stats_total.insert(std::pair<unsigned long long,
                                   std::vector<unsigned long long>>(
         streamID, std::vector<unsigned long long>(NUM_MEM_ACCESS_TYPE, 0)));
-  }
-  m_fail_stats.at(streamID)[access_type][fail_outcome]++;
+  } // if (m_fail_stats.find(streamID) == m_fail_stats.end()) { ---> Create new entry
+  m_fail_stats.at(streamID)[access_type][fail_outcome]++;  
   m_fail_stats_total.at(streamID)[access_type]++;
+
+  if (m_line_alloc_fail.find(streamID) == m_line_alloc_fail.end()) {
+    std::vector<std::vector<unsigned long long>> new_line_alloc_fail_driver;
+    new_line_alloc_fail_driver.resize(NUM_MEM_ACCESS_TYPE);
+    for (unsigned j = 0; j < NUM_MEM_ACCESS_TYPE; ++j) {
+      new_line_alloc_fail_driver[j].resize(NUM_LINE_ALLOC_FAIL_DRIVER, 0);
+    }    
+    m_line_alloc_fail.insert(std::pair<unsigned long long,
+      std::vector<std::vector<unsigned long long>>>(streamID, new_line_alloc_fail_driver));
+  }
+  if (m_mshr_entry_fail.find(streamID) == m_mshr_entry_fail.end()) {
+    std::vector<std::vector<unsigned long long>> new_mshr_entry_fail_driver;
+    new_mshr_entry_fail_driver.resize(NUM_MEM_ACCESS_TYPE);
+    for (unsigned j = 0; j < NUM_MEM_ACCESS_TYPE; ++j) {
+      new_mshr_entry_fail_driver[j].resize(NUM_MSHR_ENTRY_FAIL_DRIVER, 0);
+    }    
+    m_mshr_entry_fail.insert(std::pair<unsigned long long,
+      std::vector<std::vector<unsigned long long>>>(streamID, new_mshr_entry_fail_driver));
+  }
+  if (m_miss_q_full.find(streamID) == m_miss_q_full.end()) {
+    std::vector<std::vector<unsigned long long>> new_miss_q_full_driver;
+    new_miss_q_full_driver.resize(NUM_MEM_ACCESS_TYPE);
+    for (unsigned j = 0; j < NUM_MEM_ACCESS_TYPE; ++j) {
+      new_miss_q_full_driver[j].resize(NUM_MISS_QUEUE_FULL_DRIVER, 0);
+    }    
+    m_miss_q_full.insert(std::pair<unsigned long long,
+      std::vector<std::vector<unsigned long long>>>(streamID, new_miss_q_full_driver));
+  }
+  if (m_mshr_merge_entry_fail.find(streamID) == m_mshr_merge_entry_fail.end()) {
+    std::vector<std::vector<unsigned long long>> new_mshr_merge_entry_fail_driver;
+    new_mshr_merge_entry_fail_driver.resize(NUM_MEM_ACCESS_TYPE);
+    for (unsigned j = 0; j < NUM_MEM_ACCESS_TYPE; ++j) {
+      new_mshr_merge_entry_fail_driver[j].resize(NUM_MSHR_MERGE_ENTRY_FAIL_DRIVER, 0);
+    }    
+    m_mshr_merge_entry_fail.insert(std::pair<unsigned long long,
+      std::vector<std::vector<unsigned long long>>>(streamID, new_mshr_merge_entry_fail_driver));
+  }    
+
+  if (fail_driver != -1) {
+    if (static_cast<cache_reservation_fail_reason>(fail_outcome) == LINE_ALLOC_FAIL) {
+      m_line_alloc_fail.at(streamID)[access_type][fail_driver]++;
+      if (DTRACE(LINE_ALLOC_FAIL_DRIVER)) {
+        fprintf(Trace::out, "m_line_alloc_fail[%s][LINE_ALLOC_FAIL][%s]++\n",
+          mem_access_type_str(static_cast<mem_access_type>(access_type)),
+          line_alloc_fail_driver_str(static_cast<line_alloc_fail_driver>(fail_driver)));
+      }
+    } else if (static_cast<cache_reservation_fail_reason>(fail_outcome) == MSHR_ENTRY_FAIL) {
+      m_mshr_entry_fail.at(streamID)[access_type][fail_driver]++;
+      if (DTRACE(MSHR_ENTRY_FAIL_DRIVER)) {
+        fprintf(Trace::out, "m_mshr_entry_fail[%s][MSHR_ENTRY_FAIL][%s]++\n",
+          mem_access_type_str(static_cast<mem_access_type>(access_type)),
+          mshr_entry_fail_driver_str(static_cast<mshr_entry_fail_driver>(fail_driver)));
+      }      
+    } else if (static_cast<cache_reservation_fail_reason>(fail_outcome) == MISS_QUEUE_FULL) {
+      m_miss_q_full.at(streamID)[access_type][fail_driver]++;
+      if (DTRACE(MISS_QUEUE_FULL_DRIVER)) {
+        fprintf(Trace::out, "m_miss_q_full[%s][MISS_QUEUE_FULL][%s]++\n",
+          mem_access_type_str(static_cast<mem_access_type>(access_type)),
+          miss_queue_full_driver_str(static_cast<miss_queue_full_driver>(fail_driver)));
+      }      
+    } else if (static_cast<cache_reservation_fail_reason>(fail_outcome) == MSHR_MERGE_ENTRY_FAIL) {
+      m_mshr_merge_entry_fail.at(streamID)[access_type][fail_driver]++;
+      if (DTRACE(MSHR_MERGE_FAIL_DRIVER)) {
+        fprintf(Trace::out, "m_mshr_merge_entry_fail[%s][MSHR_MERGE_ENTRY_FAIL][%s]++\n",
+          mem_access_type_str(static_cast<mem_access_type>(access_type)),
+          mshr_merge_entry_fail_driver_str(static_cast<mshr_merge_entry_fail_driver>(fail_driver)));
+      }
+    }
+
+  }
 }
 
 enum cache_request_status cache_stats::select_stats_status(
@@ -826,6 +965,7 @@ enum cache_request_status cache_stats::select_stats_status(
   /// HIT_RESERVED is considered as a MISS in the cores, however, it should be
   /// counted as a HIT_RESERVED in the caches.
   ///
+
   if (probe == HIT_RESERVED && access != RESERVATION_FAIL) {
     return probe;
   } else if ((probe == SECTOR_MISS) && (access == MISS)) {
@@ -856,6 +996,24 @@ unsigned long long &cache_stats::operator()(int access_type, int access_outcome,
   }
 }
 
+unsigned long long cache_stats::operator()(
+  int access_type, 
+  int access_outcome,
+  bool is_fail_outcome,  
+  int fail_driver, unsigned long long streamID) const {
+
+  assert(is_fail_outcome == true);
+  if (static_cast<cache_reservation_fail_reason>(access_outcome) == LINE_ALLOC_FAIL) {
+    return m_line_alloc_fail.at(streamID)[access_type][fail_driver];     
+  } else if (static_cast<cache_reservation_fail_reason>(access_outcome) == MSHR_ENTRY_FAIL) {
+    return m_mshr_entry_fail.at(streamID)[access_type][fail_driver];
+  } else if (static_cast<cache_reservation_fail_reason>(access_outcome) == MISS_QUEUE_FULL) {
+    return m_miss_q_full.at(streamID)[access_type][fail_driver];     
+  } else if (static_cast<cache_reservation_fail_reason>(access_outcome) == MSHR_MERGE_ENTRY_FAIL) {
+    return m_mshr_merge_entry_fail.at(streamID)[access_type][fail_driver];
+  }
+}
+
 unsigned long long cache_stats::operator()(int access_type, int access_outcome,
                                            bool fail_outcome,
                                            unsigned long long streamID) const {
@@ -865,6 +1023,21 @@ unsigned long long cache_stats::operator()(int access_type, int access_outcome,
   if (fail_outcome) {
     if (!check_fail_valid(access_type, access_outcome))
       assert(0 && "Unknown cache access type or fail outcome");
+
+    // for debug 12-24
+    if (m_fail_stats.at(streamID)[access_type][access_outcome]) {
+      printf("return non-zero m_fail_stats.at(%d)[%d][%d] = %llu\n",
+            (int)streamID,
+            access_type, 
+            access_outcome,
+            m_fail_stats.at(streamID)[access_type][access_outcome]);
+    } else {
+      // printf("return zero m_fail_stats.at(%d)[%d][%d] = %llu -> no inc on m_fail_stats\n",
+      //       (int)streamID,
+      //       access_type, 
+      //       access_outcome,
+      //       m_fail_stats.at(streamID)[access_type][access_outcome]);      
+    }
 
     return m_fail_stats.at(streamID)[access_type][access_outcome];
   } else {
@@ -883,35 +1056,49 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
   for (auto iter = m_stats.begin(); iter != m_stats.end(); ++iter) {
     unsigned long long streamID = iter->first;
     ret.m_stats.insert(std::pair<unsigned long long,
-                                 std::vector<std::vector<unsigned long long>>>(
-        streamID, m_stats.at(streamID)));
+      std::vector<std::vector<unsigned long long>>>(streamID, m_stats.at(streamID)));
   }
   for (auto iter = m_stats_pw.begin(); iter != m_stats_pw.end(); ++iter) {
     unsigned long long streamID = iter->first;
-    ret.m_stats_pw.insert(
-        std::pair<unsigned long long,
-                  std::vector<std::vector<unsigned long long>>>(
-            streamID, m_stats_pw.at(streamID)));
+    ret.m_stats_pw.insert(std::pair<unsigned long long,
+      std::vector<std::vector<unsigned long long>>>(streamID, m_stats_pw.at(streamID)));
   }
+
   for (auto iter = m_fail_stats.begin(); iter != m_fail_stats.end(); ++iter) {
     unsigned long long streamID = iter->first;
-    ret.m_fail_stats.insert(
-        std::pair<unsigned long long,
-                  std::vector<std::vector<unsigned long long>>>(
-                  streamID, m_fail_stats.at(streamID)));               
+    ret.m_fail_stats.insert(std::pair<unsigned long long,
+      std::vector<std::vector<unsigned long long>>>(streamID, m_fail_stats.at(streamID)));
   }
+  for (auto iter = m_line_alloc_fail.begin(); iter != m_line_alloc_fail.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    ret.m_line_alloc_fail.insert(std::pair<unsigned long long,
+      std::vector<std::vector<unsigned long long>>>(streamID, m_line_alloc_fail.at(streamID)));
+  }  
+  for (auto iter = m_mshr_entry_fail.begin(); iter != m_mshr_entry_fail.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    ret.m_mshr_entry_fail.insert(std::pair<unsigned long long,
+      std::vector<std::vector<unsigned long long>>>(streamID, m_mshr_entry_fail.at(streamID)));
+  }    
+  for (auto iter = m_miss_q_full.begin(); iter != m_miss_q_full.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    ret.m_miss_q_full.insert(std::pair<unsigned long long,
+      std::vector<std::vector<unsigned long long>>>(streamID, m_miss_q_full.at(streamID)));
+  }  
+  for (auto iter = m_mshr_merge_entry_fail.begin(); iter != m_mshr_merge_entry_fail.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    ret.m_mshr_merge_entry_fail.insert(std::pair<unsigned long long,
+      std::vector<std::vector<unsigned long long>>>(streamID, m_mshr_merge_entry_fail.at(streamID)));
+  }
+
   for (auto iter = cs.m_stats.begin(); iter != cs.m_stats.end(); ++iter) {
     unsigned long long streamID = iter->first;
     if (ret.m_stats.find(streamID) == ret.m_stats.end()) {
-      ret.m_stats.insert(
-          std::pair<unsigned long long,
-                    std::vector<std::vector<unsigned long long>>>(
-              streamID, cs.m_stats.at(streamID)));
+      ret.m_stats.insert(std::pair<unsigned long long,
+          std::vector<std::vector<unsigned long long>>>(streamID, cs.m_stats.at(streamID)));
     } else {
       for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
         for (unsigned status = 0; status < NUM_CACHE_REQUEST_STATUS; ++status) {
-          ret.m_stats.at(streamID)[type][status] +=
-              cs(type, status, false, streamID);
+          ret.m_stats.at(streamID)[type][status] += cs(type, status, false, streamID);
         }
       }
     }
@@ -919,15 +1106,12 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
   for (auto iter = cs.m_stats_pw.begin(); iter != cs.m_stats_pw.end(); ++iter) {
     unsigned long long streamID = iter->first;
     if (ret.m_stats_pw.find(streamID) == ret.m_stats_pw.end()) {
-      ret.m_stats_pw.insert(
-          std::pair<unsigned long long,
-                    std::vector<std::vector<unsigned long long>>>(
-              streamID, cs.m_stats_pw.at(streamID)));
+      ret.m_stats_pw.insert(std::pair<unsigned long long,
+          std::vector<std::vector<unsigned long long>>>(streamID, cs.m_stats_pw.at(streamID)));
     } else {
       for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
         for (unsigned status = 0; status < NUM_CACHE_REQUEST_STATUS; ++status) {
-          ret.m_stats_pw.at(streamID)[type][status] +=
-              cs(type, status, false, streamID);
+          ret.m_stats_pw.at(streamID)[type][status] += cs(type, status, false, streamID);
         }
       }
     }
@@ -941,12 +1125,74 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
     } else {
       for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
         for (unsigned status = 0; status < NUM_CACHE_RESERVATION_FAIL_STATUS; ++status) {
+          // for debug 11-24
+          printf("ret.m_fail_stats.at(%d)[%d][%d] += cs(%d, %d, true, %d);\n",
+            (int)streamID, type, status, type, status, (int)streamID);
+
           ret.m_fail_stats.at(streamID)[type][status] += cs(type, status, true, streamID);
           ret.m_fail_stats_total.at(streamID)[type] += cs(type, status, true, streamID);          
         }        
       }
     }
   }
+
+  for (auto iter = cs.m_line_alloc_fail.begin(); iter != cs.m_line_alloc_fail.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    if (ret.m_line_alloc_fail.find(streamID) == ret.m_line_alloc_fail.end()) {
+      ret.m_line_alloc_fail.insert(std::pair<unsigned long long,
+        std::vector<std::vector<unsigned long long>>>(streamID, cs.m_line_alloc_fail.at(streamID)));
+    } else {
+      for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
+        for (unsigned driver = 0; driver < NUM_LINE_ALLOC_FAIL_DRIVER; ++driver) {
+          // Should increment here otherwise the final stats would be much less than recorded
+          ret.m_line_alloc_fail.at(streamID)[type][driver] += cs(type, LINE_ALLOC_FAIL, true, driver, streamID);
+        }        
+      }
+    }
+  }  
+  for (auto iter = cs.m_mshr_entry_fail.begin(); iter != cs.m_mshr_entry_fail.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    if (ret.m_mshr_entry_fail.find(streamID) == ret.m_mshr_entry_fail.end()) {
+      ret.m_mshr_entry_fail.insert(std::pair<unsigned long long,
+        std::vector<std::vector<unsigned long long>>>(streamID, cs.m_mshr_entry_fail.at(streamID)));
+    } else {
+      for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
+        for (unsigned driver = 0; driver < NUM_MSHR_ENTRY_FAIL_DRIVER; ++driver) {
+          // Should increment here otherwise the final stats would be much less than recorded
+          ret.m_mshr_entry_fail.at(streamID)[type][driver] += cs(type, MSHR_ENTRY_FAIL, true, driver, streamID);
+        }        
+      }
+    }
+  }  
+  for (auto iter = cs.m_miss_q_full.begin(); iter != cs.m_miss_q_full.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    if (ret.m_miss_q_full.find(streamID) == ret.m_miss_q_full.end()) {
+      ret.m_miss_q_full.insert(std::pair<unsigned long long,
+        std::vector<std::vector<unsigned long long>>>(streamID, cs.m_miss_q_full.at(streamID)));
+    } else {
+      for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
+        for (unsigned driver = 0; driver < NUM_MISS_QUEUE_FULL_DRIVER; ++driver) {
+          // Should increment here otherwise the final stats would be much less than recorded
+          ret.m_miss_q_full.at(streamID)[type][driver] += cs(type, MISS_QUEUE_FULL, true, driver, streamID);
+        }        
+      }
+    }
+  }  
+  for (auto iter = cs.m_mshr_merge_entry_fail.begin(); iter != cs.m_mshr_merge_entry_fail.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    if (ret.m_mshr_merge_entry_fail.find(streamID) == ret.m_mshr_merge_entry_fail.end()) {
+      ret.m_mshr_merge_entry_fail.insert(std::pair<unsigned long long,
+        std::vector<std::vector<unsigned long long>>>(streamID, cs.m_mshr_merge_entry_fail.at(streamID)));
+    } else {
+      for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
+        for (unsigned driver = 0; driver < NUM_MSHR_MERGE_ENTRY_FAIL_DRIVER; ++driver) {
+          // Should increment here otherwise the final stats would be much less than recorded
+          ret.m_mshr_merge_entry_fail.at(streamID)[type][driver] += cs(type, MSHR_MERGE_ENTRY_FAIL, true, driver, streamID);
+        }        
+      }
+    }
+  }    
+
   ret.m_cache_port_available_cycles =
       m_cache_port_available_cycles + cs.m_cache_port_available_cycles;
   ret.m_cache_data_port_busy_cycles =
@@ -993,13 +1239,10 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
   for (auto iter = cs.m_fail_stats.begin(); iter != cs.m_fail_stats.end(); ++iter) {
     unsigned long long streamID = iter->first;
     if (m_fail_stats.find(streamID) == m_fail_stats.end()) {
-      m_fail_stats.insert(
-          std::pair<unsigned long long,
-                    std::vector<std::vector<unsigned long long>>>(
-              streamID, cs.m_fail_stats.at(streamID)));            
+      m_fail_stats.insert(std::pair<unsigned long long,
+          std::vector<std::vector<unsigned long long>>>(streamID, cs.m_fail_stats.at(streamID)));            
       m_fail_stats_total.insert(std::pair<unsigned long long,
-                                    std::vector<unsigned long long>>(
-          streamID, cs.m_fail_stats_total.at(streamID)));
+          std::vector<unsigned long long>>(streamID, cs.m_fail_stats_total.at(streamID)));
     } else {
       for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
         for (unsigned status = 0; status < NUM_CACHE_RESERVATION_FAIL_STATUS; ++status) {
@@ -1008,7 +1251,61 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
         }
       }
     }
+  } // for (auto iter = cs.m_fail_stats.begin(); iter != cs.m_fail_stats.end(); ++iter) {
+
+  for (auto iter = cs.m_line_alloc_fail.begin(); iter != cs.m_line_alloc_fail.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    if (m_line_alloc_fail.find(streamID) == m_line_alloc_fail.end()) {
+      m_line_alloc_fail.insert(std::pair<unsigned long long,
+          std::vector<std::vector<unsigned long long>>>(streamID, cs.m_line_alloc_fail.at(streamID)));
+    } else {
+      for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
+        for (unsigned driver = 0; driver < NUM_LINE_ALLOC_FAIL_DRIVER; ++driver) {          
+          m_line_alloc_fail.at(streamID)[type][driver] += cs(type, LINE_ALLOC_FAIL, true, driver, streamID);
+        }
+      }
+    }
+  }  
+  for (auto iter = cs.m_mshr_entry_fail.begin(); iter != cs.m_mshr_entry_fail.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    if (m_mshr_entry_fail.find(streamID) == m_mshr_entry_fail.end()) {
+      m_mshr_entry_fail.insert(std::pair<unsigned long long,
+          std::vector<std::vector<unsigned long long>>>(streamID, cs.m_mshr_entry_fail.at(streamID)));
+    } else {
+      for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
+        for (unsigned driver = 0; driver < NUM_MSHR_ENTRY_FAIL_DRIVER; ++driver) {          
+          m_mshr_entry_fail.at(streamID)[type][driver] += cs(type, MSHR_ENTRY_FAIL, true, driver, streamID);
+        }
+      }
+    }
+  }  
+  for (auto iter = cs.m_miss_q_full.begin(); iter != cs.m_miss_q_full.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    if (m_miss_q_full.find(streamID) == m_miss_q_full.end()) {
+      m_miss_q_full.insert(std::pair<unsigned long long,
+          std::vector<std::vector<unsigned long long>>>(streamID, cs.m_miss_q_full.at(streamID)));
+    } else {
+      for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
+        for (unsigned driver = 0; driver < NUM_MISS_QUEUE_FULL_DRIVER; ++driver) {          
+          m_miss_q_full.at(streamID)[type][driver] += cs(type, MISS_QUEUE_FULL, true, driver, streamID);
+        }
+      }
+    }
   }
+  for (auto iter = cs.m_mshr_merge_entry_fail.begin(); iter != cs.m_mshr_merge_entry_fail.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    if (m_mshr_merge_entry_fail.find(streamID) == m_mshr_merge_entry_fail.end()) {
+      m_mshr_merge_entry_fail.insert(std::pair<unsigned long long,
+          std::vector<std::vector<unsigned long long>>>(streamID, cs.m_mshr_merge_entry_fail.at(streamID)));
+    } else {
+      for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
+        for (unsigned driver = 0; driver < NUM_MSHR_MERGE_ENTRY_FAIL_DRIVER; ++driver) {          
+          m_mshr_merge_entry_fail.at(streamID)[type][driver] += cs(type, MSHR_MERGE_ENTRY_FAIL, true, driver, streamID);
+        }
+      }
+    }
+  }
+
   m_cache_port_available_cycles += cs.m_cache_port_available_cycles;
   m_cache_data_port_busy_cycles += cs.m_cache_data_port_busy_cycles;
   m_cache_fill_port_busy_cycles += cs.m_cache_fill_port_busy_cycles;
@@ -1087,10 +1384,88 @@ void cache_stats::print_fail_stats(FILE *fout, unsigned long long streamID,
               mem_access_type_str((enum mem_access_type)type),
               cache_fail_status_str((enum cache_reservation_fail_reason)fail),
               (float)m_fail_stats.at(streamid)[type][fail] /
-                  (float)m_fail_stats_total.at(streamid)[type]);              
-        }
-      } // for (unsigned fail = 0; fail < NUM_CACHE_RESERVATION_FAIL_STATUS; ++fail) {
+                  (float)m_fail_stats_total.at(streamid)[type]);
 
+          if (static_cast<cache_reservation_fail_reason>(fail) == LINE_ALLOC_FAIL) {
+            for (unsigned driver = 0; driver < NUM_LINE_ALLOC_FAIL_DRIVER; ++driver) {
+              if (m_line_alloc_fail.at(streamid)[type][driver] > 0) {
+                fprintf(
+                    fout, "\t%s[%s][%s][%s] = %llu\n", m_cache_name.c_str(),
+                    mem_access_type_str((enum mem_access_type)type),                    
+                    cache_fail_status_str((enum cache_reservation_fail_reason)fail),
+                    line_alloc_fail_driver_str((enum line_alloc_fail_driver)driver),
+                    m_line_alloc_fail.at(streamid)[type][driver]);
+
+                fprintf(
+                    fout, "\t%s[%s][%s][%s].dist = %f\n", m_cache_name.c_str(),
+                    mem_access_type_str((enum mem_access_type)type),
+                    cache_fail_status_str((enum cache_reservation_fail_reason)fail),
+                    line_alloc_fail_driver_str((enum line_alloc_fail_driver)driver),
+                    (float)m_line_alloc_fail.at(streamid)[type][driver] /
+                        (float)m_fail_stats.at(streamid)[type][cache_reservation_fail_reason::LINE_ALLOC_FAIL]);
+              }
+            } // for (unsigned driver = 0; driver < NUM_MSHR_MERGE_ENTRY_FAIL_DRIVER; ++driver) {
+          } else if (static_cast<cache_reservation_fail_reason>(fail) == MSHR_ENTRY_FAIL) {
+            for (unsigned driver = 0; driver < NUM_MSHR_ENTRY_FAIL_DRIVER; ++driver) {
+              if (m_mshr_entry_fail.at(streamid)[type][driver] > 0) {
+                fprintf(
+                    fout, "\t%s[%s][%s][%s] = %llu\n", m_cache_name.c_str(),
+                    mem_access_type_str((enum mem_access_type)type),                    
+                    cache_fail_status_str((enum cache_reservation_fail_reason)fail),
+                    mshr_entry_fail_driver_str((enum mshr_entry_fail_driver)driver),
+                    m_mshr_entry_fail.at(streamid)[type][driver]);
+
+                fprintf(
+                    fout, "\t%s[%s][%s][%s].dist = %f\n", m_cache_name.c_str(),
+                    mem_access_type_str((enum mem_access_type)type),
+                    cache_fail_status_str((enum cache_reservation_fail_reason)fail),
+                    mshr_entry_fail_driver_str((enum mshr_entry_fail_driver)driver),
+                    (float)m_mshr_entry_fail.at(streamid)[type][driver] /
+                        (float)m_fail_stats.at(streamid)[type][cache_reservation_fail_reason::MSHR_ENTRY_FAIL]);
+              }
+            } // for (unsigned driver = 0; driver < NUM_MSHR_ENTRY_FAIL_DRIVER; ++driver) {
+          } else if (static_cast<cache_reservation_fail_reason>(fail) == MISS_QUEUE_FULL) {
+            for (unsigned driver = 0; driver < NUM_MISS_QUEUE_FULL_DRIVER; ++driver) {
+              if (m_miss_q_full.at(streamid)[type][driver] > 0) {
+                fprintf(
+                    fout, "\t%s[%s][%s][%s] = %llu\n", m_cache_name.c_str(),
+                    mem_access_type_str((enum mem_access_type)type),                    
+                    cache_fail_status_str((enum cache_reservation_fail_reason)fail),
+                    miss_queue_full_driver_str((enum miss_queue_full_driver)driver),
+                    m_miss_q_full.at(streamid)[type][driver]);
+
+                fprintf(
+                    fout, "\t%s[%s][%s][%s].dist = %f\n", m_cache_name.c_str(),
+                    mem_access_type_str((enum mem_access_type)type),
+                    cache_fail_status_str((enum cache_reservation_fail_reason)fail),
+                    miss_queue_full_driver_str((enum miss_queue_full_driver)driver),
+                    (float)m_miss_q_full.at(streamid)[type][driver] /
+                        (float)m_fail_stats.at(streamid)[type][cache_reservation_fail_reason::MISS_QUEUE_FULL]);
+              }
+            } // for (unsigned driver = 0; driver < NUM_MISS_QUEUE_FULL_DRIVER; ++driver) {
+          } else if (static_cast<cache_reservation_fail_reason>(fail) == MSHR_MERGE_ENTRY_FAIL) {
+            for (unsigned driver = 0; driver < NUM_MSHR_MERGE_ENTRY_FAIL_DRIVER; ++driver) {
+              if (m_mshr_merge_entry_fail.at(streamid)[type][driver] > 0) {
+                fprintf(
+                    fout, "\t%s[%s][%s][%s] = %llu\n", m_cache_name.c_str(),
+                    mem_access_type_str((enum mem_access_type)type),                    
+                    cache_fail_status_str((enum cache_reservation_fail_reason)fail),
+                    mshr_merge_entry_fail_driver_str((enum mshr_merge_entry_fail_driver)driver),
+                    m_mshr_merge_entry_fail.at(streamid)[type][driver]);
+
+                fprintf(
+                    fout, "\t%s[%s][%s][%s].dist = %f\n", m_cache_name.c_str(),
+                    mem_access_type_str((enum mem_access_type)type),
+                    cache_fail_status_str((enum cache_reservation_fail_reason)fail),
+                    mshr_merge_entry_fail_driver_str((enum mshr_merge_entry_fail_driver)driver),
+                    (float)m_mshr_merge_entry_fail.at(streamid)[type][driver] /
+                        (float)m_fail_stats.at(streamid)[type][cache_reservation_fail_reason::MSHR_MERGE_ENTRY_FAIL]);
+              }
+            } // for (unsigned driver = 0; driver < NUM_MSHR_MERGE_ENTRY_FAIL_DRIVER; ++driver) {
+          }
+          
+        } // if (m_fail_stats.at(streamid)[type][fail] > 0) {
+      } // for (unsigned fail = 0; fail < NUM_CACHE_RESERVATION_FAIL_STATUS; ++fail) {
     } // for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
   }
 }
@@ -1502,14 +1877,17 @@ void baseline_cache::send_read_request(new_addr_type addr,
     if (!wa) events.push_back(cache_event(READ_REQUEST_SENT));
 
     do_miss = true;
-  } else if (mshr_hit && !mshr_avail)
-    m_stats.inc_fail_stats(mf->get_access_type(), MSHR_MERGE_ENRTY_FAIL,
-                           mf->get_streamID());
-  else if (!mshr_hit && !mshr_avail)
-    m_stats.inc_fail_stats(mf->get_access_type(), MSHR_ENRTY_FAIL,
-                           mf->get_streamID());
-  else
+  } else if (mshr_hit && !mshr_avail) {
+    m_stats.inc_fail_stats(mf->get_access_type(), MSHR_MERGE_ENTRY_FAIL,
+                           mf->get_streamID(), 
+                           mshr_merge_entry_fail_driver::MSHR_MERGE_ENTRY_FAIL__RD_MISS);
+  } else if (!mshr_hit && !mshr_avail) {
+    m_stats.inc_fail_stats(mf->get_access_type(), MSHR_ENTRY_FAIL, 
+                           mf->get_streamID(),
+                           mshr_entry_fail_driver::MSHR_ENTRY_FAIL__RD_MISS);
+  } else {
     assert(0);
+  }    
 }
 
 /// Sends write request to lower level memory (write or writeback)
@@ -1567,8 +1945,15 @@ cache_request_status data_cache::wr_hit_wt(new_addr_type addr,
                                            std::list<cache_event> &events,
                                            enum cache_request_status status) {
   if (miss_queue_full(0)) {
+    if (DTRACE(MISS_QUEUE_FULL_DRIVER)) {      
+      if (m_is_l1d) {        
+        fprintf(Trace::out, "L1D WR_THROUGH_HIT called MISS_QUEUE_FULL\n");
+        fprintf(Trace::out, "Total_core_cache_fail_stats_breakdown[%s][MISS_QUEUE_FULL]++\n",
+        mem_access_type_str(mf->get_access_type()));
+      }      
+    }
     m_stats.inc_fail_stats(mf->get_access_type(), MISS_QUEUE_FULL,
-                           mf->get_streamID());
+                           mf->get_streamID(), miss_queue_full_driver::WR_THROUGH_HIT);
     return RESERVATION_FAIL;  // cannot handle request this cycle
   }
 
@@ -1596,8 +1981,16 @@ cache_request_status data_cache::wr_hit_we(new_addr_type addr,
                                            std::list<cache_event> &events,
                                            enum cache_request_status status) {
   if (miss_queue_full(0)) {
+    if (DTRACE(MISS_QUEUE_FULL_DRIVER)) {      
+      if (m_is_l1d) {        
+        fprintf(Trace::out, "L1D WR_EVICT_HIT called [%s][MISS_QUEUE_FULL]\n",
+          mem_access_type_str(mf->get_access_type()));        
+        fprintf(Trace::out, "Total_core_cache_fail_stats_breakdown[%s][MISS_QUEUE_FULL]++\n",
+        mem_access_type_str(mf->get_access_type()));
+      }    
+    }    
     m_stats.inc_fail_stats(mf->get_access_type(), MISS_QUEUE_FULL,
-                           mf->get_streamID());
+                           mf->get_streamID(), miss_queue_full_driver::WR_EVICT_HIT);
     return RESERVATION_FAIL;  // cannot handle request this cycle
   }
 
@@ -1645,18 +2038,28 @@ enum cache_request_status data_cache::wr_miss_wa_naive(
        !(!mshr_hit && mshr_avail &&
          (m_miss_queue.size() < m_config.m_miss_queue_size)))) {
     // check what is the exactly the failure reason
-    if (miss_queue_full(2))
+    if (miss_queue_full(2)) {
+      if (DTRACE(MISS_QUEUE_FULL_DRIVER)) {        
+        if (m_is_l1d) {        
+          fprintf(Trace::out, "L1D WR_ALLOC_MISS called [%s][MISS_QUEUE_FULL]\n",
+            mem_access_type_str(mf->get_access_type()));           
+          fprintf(Trace::out, "Total_core_cache_fail_stats_breakdown[%s][MISS_QUEUE_FULL]++\n",
+          mem_access_type_str(mf->get_access_type()));
+        }           
+      }
       m_stats.inc_fail_stats(mf->get_access_type(), MISS_QUEUE_FULL,
-                             mf->get_streamID());
-    else if (mshr_hit && !mshr_avail)
-      m_stats.inc_fail_stats(mf->get_access_type(), MSHR_MERGE_ENRTY_FAIL,
-                             mf->get_streamID());
-    else if (!mshr_hit && !mshr_avail)
-      m_stats.inc_fail_stats(mf->get_access_type(), MSHR_ENRTY_FAIL,
-                             mf->get_streamID());
-    else
+                             mf->get_streamID(), miss_queue_full_driver::WR_ALLOC_MISS);
+    } else if (mshr_hit && !mshr_avail) {
+      m_stats.inc_fail_stats(mf->get_access_type(), MSHR_MERGE_ENTRY_FAIL,
+                             mf->get_streamID(), 
+                             mshr_merge_entry_fail_driver::MSHR_MERGE_ENTRY_FAIL__WR_ALLOC_MISS);
+    } else if (!mshr_hit && !mshr_avail) {
+      m_stats.inc_fail_stats(mf->get_access_type(), MSHR_ENTRY_FAIL,
+                             mf->get_streamID(),
+                             mshr_entry_fail_driver::MSHR_ENTRY_FAIL__WR_ALLOC_MISS);
+    } else {
       assert(0);
-
+    }
     return RESERVATION_FAIL;
   }
 
@@ -1722,8 +2125,17 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
     // reserve mshr
 
     if (miss_queue_full(0)) {
+      if (DTRACE(MISS_QUEUE_FULL_DRIVER)) {        
+        if (m_is_l1d) {        
+          fprintf(Trace::out, "L1D WR_ALLOC_MISS_FETCH_ON_WR_WHOLE_LINE called [%s][MISS_QUEUE_FULL]\n",
+            mem_access_type_str(mf->get_access_type()));           
+          fprintf(Trace::out, "Total_core_cache_fail_stats_breakdown[%s][MISS_QUEUE_FULL]++\n",
+          mem_access_type_str(mf->get_access_type()));
+        }        
+      }
       m_stats.inc_fail_stats(mf->get_access_type(), MISS_QUEUE_FULL,
-                             mf->get_streamID());
+                             mf->get_streamID(), 
+                             miss_queue_full_driver::WR_ALLOC_MISS_FETCH_ON_WR_WHOLE_LINE);
       return RESERVATION_FAIL;  // cannot handle request this cycle
     }
 
@@ -1769,18 +2181,30 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
          !(!mshr_hit && mshr_avail &&
            (m_miss_queue.size() < m_config.m_miss_queue_size)))) {
       // check what is the exactly the failure reason
-      if (miss_queue_full(1))
+      if (miss_queue_full(1)) {
+        if (DTRACE(MISS_QUEUE_FULL_DRIVER)) {          
+          if (m_is_l1d) {        
+            fprintf(Trace::out, "L1D WR_ALLOC_MISS_FETCH_ON_WR_PARTIAL_LINE called [%s][MISS_QUEUE_FULL]\n",
+              mem_access_type_str(mf->get_access_type()));
+            fprintf(Trace::out, "Total_core_cache_fail_stats_breakdown[%s][MISS_QUEUE_FULL]++\n",
+            mem_access_type_str(mf->get_access_type()));
+          } 
+        }
         m_stats.inc_fail_stats(mf->get_access_type(), MISS_QUEUE_FULL,
-                               mf->get_streamID());
-      else if (mshr_hit && !mshr_avail)
-        m_stats.inc_fail_stats(mf->get_access_type(), MSHR_MERGE_ENRTY_FAIL,
-                               mf->get_streamID());
-      else if (!mshr_hit && !mshr_avail)
-        m_stats.inc_fail_stats(mf->get_access_type(), MSHR_ENRTY_FAIL,
-                               mf->get_streamID());
-      else
+                               mf->get_streamID(), 
+                               miss_queue_full_driver::WR_ALLOC_MISS_FETCH_ON_WR_PARTIAL_LINE);
+      } else if (mshr_hit && !mshr_avail) {
+        m_stats.inc_fail_stats(mf->get_access_type(), MSHR_MERGE_ENTRY_FAIL,
+                               mf->get_streamID(),
+                               mshr_merge_entry_fail_driver::MSHR_MERGE_ENTRY_FAIL__WR_ALLOC_MISS_FETCH_ON_WR
+                              );
+      } else if (!mshr_hit && !mshr_avail) {
+        m_stats.inc_fail_stats(mf->get_access_type(), MSHR_ENTRY_FAIL,
+                               mf->get_streamID(),
+                               mshr_entry_fail_driver::MSHR_ENTRY_FAIL__WR_ALLOC_MISS_FETCH_ON_WR);
+      } else {
         assert(0);
-
+      }
       return RESERVATION_FAIL;
     }
 
@@ -1851,8 +2275,17 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
   // mshr
 
   if (miss_queue_full(0)) {
+    if (DTRACE(MISS_QUEUE_FULL_DRIVER)) {      
+      if (m_is_l1d) {        
+        fprintf(Trace::out, "L1D WR_ALLOC_MISS_LAZY_FETCH_ON_RD called [%s][MISS_QUEUE_FULL]\n",
+          mem_access_type_str(mf->get_access_type()));        
+        fprintf(Trace::out, "Total_core_cache_fail_stats_breakdown[%s][MISS_QUEUE_FULL]++\n",
+        mem_access_type_str(mf->get_access_type()));
+      }  
+    }
     m_stats.inc_fail_stats(mf->get_access_type(), MISS_QUEUE_FULL,
-                           mf->get_streamID());
+                           mf->get_streamID(), 
+                           miss_queue_full_driver::WR_ALLOC_MISS_LAZY_FETCH_ON_RD);
     return RESERVATION_FAIL;  // cannot handle request this cycle
   }
 
@@ -1949,8 +2382,17 @@ enum cache_request_status data_cache::wr_miss_no_wa(
     new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
     std::list<cache_event> &events, enum cache_request_status status) {
   if (miss_queue_full(0)) {
+    if (DTRACE(MISS_QUEUE_FULL_DRIVER)) {      
+      if (m_is_l1d) {        
+        fprintf(Trace::out, "L1D WR_MISS_NO_WR_ALLOC called [%s][MISS_QUEUE_FULL]\n",
+          mem_access_type_str(mf->get_access_type())); 
+        fprintf(Trace::out, "Total_core_cache_fail_stats_breakdown[%s][MISS_QUEUE_FULL]++\n",
+        mem_access_type_str(mf->get_access_type()));
+      } 
+    }
     m_stats.inc_fail_stats(mf->get_access_type(), MISS_QUEUE_FULL,
-                           mf->get_streamID());
+                           mf->get_streamID(), 
+                           miss_queue_full_driver::WR_MISS_NO_WR_ALLOC);
     return RESERVATION_FAIL;  // cannot handle request this cycle
   }
 
@@ -1994,8 +2436,16 @@ enum cache_request_status data_cache::rd_miss_base(
   if (miss_queue_full(1)) {
     // cannot handle request this cycle
     // (might need to generate two requests)
+    if (DTRACE(MISS_QUEUE_FULL_DRIVER)) {      
+      if (m_is_l1d) {        
+        fprintf(Trace::out, "L1D RD_MISS called [%s][MISS_QUEUE_FULL]\n",
+          mem_access_type_str(mf->get_access_type())); 
+        fprintf(Trace::out, "Total_core_cache_fail_stats_breakdown[%s][MISS_QUEUE_FULL]++\n",
+        mem_access_type_str(mf->get_access_type()));
+      }  
+    }
     m_stats.inc_fail_stats(mf->get_access_type(), MISS_QUEUE_FULL,
-                           mf->get_streamID());
+                           mf->get_streamID(), miss_queue_full_driver::RD_MISS);
     return RESERVATION_FAIL;
   }
 
@@ -2054,12 +2504,20 @@ enum cache_request_status read_only_cache::access(
       }        
     } else {
       cache_status = RESERVATION_FAIL;
+      if (DTRACE(MISS_QUEUE_FULL_DRIVER)) {        
+        if (m_is_l1d) {        
+          fprintf(Trace::out, "L1D RD_ONLY_MISS called [%s][MISS_QUEUE_FULL]\n",
+            mem_access_type_str(mf->get_access_type())); 
+          fprintf(Trace::out, "Total_core_cache_fail_stats_breakdown[%s][MISS_QUEUE_FULL]++\n",
+          mem_access_type_str(mf->get_access_type()));
+        }      
+      }
       m_stats.inc_fail_stats(mf->get_access_type(), MISS_QUEUE_FULL,
-                             mf->get_streamID());
+                             mf->get_streamID(), miss_queue_full_driver::RD_ONLY_MISS);
     }
   } else {
     m_stats.inc_fail_stats(mf->get_access_type(), LINE_ALLOC_FAIL,
-                           mf->get_streamID());
+                           mf->get_streamID(), line_alloc_fail_driver::LINE_ALLOC_FAIL__RD_ONLY_MISS);
   }
 
   m_stats.inc_stats(mf->get_access_type(),
@@ -2094,7 +2552,7 @@ enum cache_request_status data_cache::process_tag_probe(
       // the only reason for reservation fail here is LINE_ALLOC_FAIL (i.e all
       // lines are reserved)
       m_stats.inc_fail_stats(mf->get_access_type(), LINE_ALLOC_FAIL,
-                             mf->get_streamID());
+                             mf->get_streamID(), line_alloc_fail_driver::LINE_ALLOC_FAIL__WR_PROBE_MISS);
     }
   } else {  // Read
     if (probe_status == HIT) {
@@ -2105,7 +2563,7 @@ enum cache_request_status data_cache::process_tag_probe(
       // the only reason for reservation fail here is LINE_ALLOC_FAIL (i.e all
       // lines are reserved)
       m_stats.inc_fail_stats(mf->get_access_type(), LINE_ALLOC_FAIL,
-                             mf->get_streamID());
+                             mf->get_streamID(), line_alloc_fail_driver::LINE_ALLOC_FAIL__RD_PROBE_MISS);
     }
   }
 
