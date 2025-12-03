@@ -90,7 +90,7 @@ const char* cache_block_state_str(enum cache_block_state state) {
 const char* write_policy_str(enum write_policy_t wp) {
   static const char* static_write_policy_str[] = {
       "READ_ONLY", "WRITE_BACK", "WRITE_THROUGH", "WRITE_EVICT",
-      "LOCAL_WB_GLOBAL_WT"};
+      "LOCAL_WB_GLOBAL_WE"};
 
   assert(sizeof(static_write_policy_str) / sizeof(const char*) ==
          NUM_WRITE_POLICIES);

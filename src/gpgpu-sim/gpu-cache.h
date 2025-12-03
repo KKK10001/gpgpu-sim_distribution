@@ -67,7 +67,7 @@ enum write_policy_t {
   WRITE_BACK,
   WRITE_THROUGH,
   WRITE_EVICT,
-  LOCAL_WB_GLOBAL_WT,
+  LOCAL_WB_GLOBAL_WE,
   NUM_WRITE_POLICIES
 };
 
@@ -696,8 +696,8 @@ class cache_config {
         wp_str = "WRITE_EVICT";
         break;
       case 'L':
-        m_write_policy = LOCAL_WB_GLOBAL_WT;
-        wp_str = "LOCAL_WB_GLOBAL_WT";
+        m_write_policy = LOCAL_WB_GLOBAL_WE;
+        wp_str = "LOCAL_WB_GLOBAL_WE";
         break;
       default:
         exit_parse_error();
@@ -1679,7 +1679,7 @@ class data_cache : public baseline_cache {
       case WRITE_EVICT:
         m_wr_hit = &data_cache::wr_hit_we;
         break;
-      case LOCAL_WB_GLOBAL_WT:
+      case LOCAL_WB_GLOBAL_WE:
         m_wr_hit = &data_cache::wr_hit_global_we_local_wb;
         break;
       default:
