@@ -1038,6 +1038,12 @@ class l2_cache_config : public cache_config {
   linear_to_raw_address_translation *m_address_mapping;
 };
 
+class prefetcher {
+  public:
+    prefetcher();
+    ~prefetcher();
+};
+
 class tag_array {
  public:
   // Use this constructor
@@ -1451,6 +1457,8 @@ class baseline_cache : public cache_t {
     }
     fprintf(Trace::out, "init cache: %s\n", m_name.c_str());
 
+    m_l1d_rd_miss_addresses.clear();
+
     assert(config.m_mshr_type == ASSOC || config.m_mshr_type == SECTOR_ASSOC);
     m_memport = memport;
     m_miss_queue_status = status;
@@ -1544,10 +1552,11 @@ class baseline_cache : public cache_t {
     init(name, config, memport, status);
   }
 
- protected:
+ protected:  
   std::string m_name;
   bool m_is_l1d;
   bool m_is_l2;
+  std::vector<new_addr_type> m_l1d_rd_miss_addresses;
   cache_config &m_config;
   tag_array *m_tag_array;
   mshr_table m_mshrs;
@@ -1607,6 +1616,17 @@ class baseline_cache : public cache_t {
                          bool &do_miss, bool &wb, evicted_block_info &evicted,
                          std::list<cache_event> &events, bool read_only,
                          bool wa);
+
+  virtual void dump_cache_access_info(
+    const char* caller,
+    new_addr_type addr, mem_fetch *mf, unsigned time, 
+    enum cache_request_status status,
+    bool dump_inst_str = false);                     
+
+  virtual void dump_cache_fill_info(
+    const char* caller,
+    new_addr_type addr, mem_fetch *mf, unsigned time, 
+    bool dump_inst_str = false);     
 
   bandwidth_management m_bandwidth_management;
 };
@@ -1738,7 +1758,7 @@ class data_cache : public baseline_cache {
                                               enum cache_request_status status,
                                               new_addr_type addr,
                                               unsigned cache_index,
-                                              mem_fetch *mf, unsigned time,
+                                              mem_fetch *mf, unsigned long long time,
                                               std::list<cache_event> &events);
 
  protected:
@@ -1808,23 +1828,30 @@ class data_cache : public baseline_cache {
   // Currently no separate functions for reads
   /******* Read-hit configs *******/
   enum cache_request_status (data_cache::*m_rd_hit)(
-      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
+      new_addr_type addr, unsigned cache_index, mem_fetch *mf, 
+      unsigned long long time,
       std::list<cache_event> &events, enum cache_request_status status);
   enum cache_request_status rd_hit_base(new_addr_type addr,
                                         unsigned cache_index, mem_fetch *mf,
-                                        unsigned time,
+                                        unsigned long long time,
                                         std::list<cache_event> &events,
                                         enum cache_request_status status);
 
   /******* Read-miss configs *******/
   enum cache_request_status (data_cache::*m_rd_miss)(
-      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
+      new_addr_type addr, unsigned cache_index, mem_fetch *mf, 
+      unsigned long long time,
       std::list<cache_event> &events, enum cache_request_status status);
   enum cache_request_status rd_miss_base(new_addr_type addr,
                                          unsigned cache_index, mem_fetch *mf,
-                                         unsigned time,
+                                         unsigned long long time,
                                          std::list<cache_event> &events,
                                          enum cache_request_status status);
+  // void dump_cache_access_info(
+  //   const char* caller,
+  //   new_addr_type addr, mem_fetch *mf, unsigned time, 
+  //   enum cache_request_status status,
+  //   bool dump_inst_str = false);
 };
 
 /// This is meant to model the first level data cache in Fermi.

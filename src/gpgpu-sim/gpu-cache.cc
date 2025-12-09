@@ -76,6 +76,22 @@ const char *cache_request_status_str(enum cache_request_status status) {
   return static_cache_request_status_str[status];
 }
 
+//
+const char *mf_request_type_str(enum mf_type type) {
+  static const char *static_mf_request_type_str[] = {
+    "READ_REQUEST",
+    "WRITE_REQUEST",
+    "READ_REPLY",
+    "WRITE_ACK"
+};
+
+  assert(sizeof(static_mf_request_type_str) / sizeof(const char *) ==
+         NUM_MF_TYPE);
+  assert(type < NUM_MF_TYPE);
+
+  return static_mf_request_type_str[type];
+}
+
 const char* cache_block_state_str(enum cache_block_state state) {
   static const char *static_cache_block_state_str[] = {
       "INVALID", "RESERVED", "VALID", "MODIFIED"};
@@ -1631,6 +1647,54 @@ void cache_stats::sample_cache_port_utility(bool data_port_busy,
   }
 }
 
+void baseline_cache::dump_cache_access_info(
+  const char* caller,
+  new_addr_type addr, mem_fetch *mf, unsigned time, 
+  enum cache_request_status status,
+  bool dump_inst_str) {
+
+  new_addr_type block_addr = m_config.block_addr(addr);
+
+  std::pair<uint64_t,uint64_t> byte_mask_hi_lo = to_u64_pair(mf->get_access_byte_mask());
+
+  fprintf(Trace::out,
+      "%llu %s%s%s %s %s addr: %#llx block_addr: %#llx "
+      "byte_mask: 0x%016lx%016lx\n",
+      (unsigned long long)time,
+      caller,
+      dump_inst_str ? m_gpu->gpgpu_ctx->func_sim->ptx_get_insn_str(mf->get_inst().pc).c_str() : "",      
+      m_is_l1d ? "L1D" : m_is_l2 ? "L2C" : "xx$",
+      mf_request_type_str(mf->get_type()),
+      cache_request_status_str(status), 
+      (unsigned long long)mf->get_addr(),
+      (unsigned long long)block_addr,
+      byte_mask_hi_lo.first, byte_mask_hi_lo.second
+    );
+}
+
+void baseline_cache::dump_cache_fill_info(
+  const char* caller,
+  new_addr_type addr, mem_fetch *mf, unsigned time, 
+  bool dump_inst_str) {
+
+  new_addr_type block_addr = m_config.block_addr(addr);
+
+  std::pair<uint64_t,uint64_t> byte_mask_hi_lo = to_u64_pair(mf->get_access_byte_mask());
+
+  fprintf(Trace::out,
+      "%llu %s%s%s %s addr: %#llx block_addr: %#llx "
+      "byte_mask: 0x%016lx%016lx\n",
+      (unsigned long long)time,
+      caller,
+      dump_inst_str ? m_gpu->gpgpu_ctx->func_sim->ptx_get_insn_str(mf->get_inst().pc).c_str() : "",      
+      m_is_l1d ? "L1D" : m_is_l2 ? "L2C" : "xx$",
+      mf_request_type_str(mf->get_type()),
+      (unsigned long long)mf->get_addr(),
+      (unsigned long long)block_addr,
+      byte_mask_hi_lo.first, byte_mask_hi_lo.second
+    );
+}
+
 baseline_cache::bandwidth_management::bandwidth_management(cache_config &config)
     : m_config(config) {
   m_data_port_occupied_cycles = 0;
@@ -1741,12 +1805,17 @@ void baseline_cache::fill(mem_fetch *mf, unsigned time) {
   assert(e->second.m_valid);
   mf->set_data_size(e->second.m_data_size);
   mf->set_addr(e->second.m_addr);
-  if (m_config.m_alloc_policy == ON_MISS)
+  if (m_config.m_alloc_policy == ON_MISS) {
+    if (DTRACE(CACHE_MISS)) {      
+      dump_cache_fill_info("::fill ", e->second.m_addr, mf, time);
+    }
     m_tag_array->fill(e->second.m_cache_index, time, mf);
+  }    
   else if (m_config.m_alloc_policy == ON_FILL) {
     m_tag_array->fill(e->second.m_block_addr, time, mf, mf->is_write());
-  } else
+  } else {
     abort();
+  }    
   bool has_atomic = false;
   m_mshrs.mark_ready(e->second.m_block_addr, has_atomic);
   if (has_atomic) {
@@ -2298,6 +2367,22 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
 
   cache_request_status req_status =
       m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
+
+  // if (DTRACE(SIMPLE_PREFETCH)) {
+  //   if (req_status == cache_request_status::MISS ||
+  //       req_status == cache_request_status::SECTOR_MISS) {
+  //     fprintf(Trace::out,
+  //             "%llu:%s%s %s %s addr:%#llx block_addr:%#llx cache_index:%u\n",
+  //             (unsigned long long)time,
+  //             m_gpu->gpgpu_ctx->func_sim->ptx_get_insn_str(mf->get_inst().pc).c_str(),
+  //             m_is_l1d ? "L1D" : m_is_l2 ? "L2C" : "xx$",
+  //             mf_request_type_str(mf->get_type()),
+  //             cache_request_status_str(req_status), 
+  //             (unsigned long long)mf->get_addr(),
+  //             (unsigned long long)block_addr, cache_index);
+  //   }
+  // }
+
   assert(req_status != HIT);
   cache_block_t *block = m_tag_array->get_block(cache_index);
   if (!block->is_modified_line()) {
@@ -2332,12 +2417,12 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
   uint64_t lo = hilo2.second;  
   if (DTRACE(CACHELINE_STATUS)) {
     fprintf(Trace::out,
-            "%llu:%s%s addr:%#llx m_sector[sidx:%u] (%s->%s) "
+            "%llu:%s%s %s %s addr:%#llx m_sector[sidx:%u] (%s->%s) "
             "dirty_byte_mask=0x%016llx%016llx is_readable=%u\n",
             (unsigned long long)(m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle),
-            m_gpu->gpgpu_ctx->func_sim->ptx_get_insn_str(
-                mf->get_inst().pc)
-                .c_str(),
+            m_gpu->gpgpu_ctx->func_sim->ptx_get_insn_str(mf->get_inst().pc).c_str(),
+            m_is_l1d ? "L1D" : m_is_l2 ? "L2C" : "xx$",
+            mf_request_type_str(mf->get_type()),
             cache_request_status_str(req_status),
             (unsigned long long)block_addr, sidx,
             cache_block_state_str(prev_blk_state),
@@ -2408,7 +2493,8 @@ enum cache_request_status data_cache::wr_miss_no_wa(
 /// Baseline read hit: Update LRU status of block.
 // Special case for atomic instructions -> Mark block as modified
 enum cache_request_status data_cache::rd_hit_base(
-    new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
+    new_addr_type addr, unsigned cache_index, mem_fetch *mf, 
+    unsigned long long time,
     std::list<cache_event> &events, enum cache_request_status status) {
   new_addr_type block_addr = m_config.block_addr(addr);
   m_tag_array->access(block_addr, time, cache_index, mf);
@@ -2431,8 +2517,36 @@ enum cache_request_status data_cache::rd_hit_base(
 /// Baseline read miss: Send read request to lower level memory,
 // perform write-back as necessary
 enum cache_request_status data_cache::rd_miss_base(
-    new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
+    new_addr_type addr, unsigned cache_index, mem_fetch *mf, 
+    unsigned long long time,
     std::list<cache_event> &events, enum cache_request_status status) {
+
+  new_addr_type block_addr = m_config.block_addr(addr);  
+  
+  if (status == cache_request_status::MISS || \
+      status == cache_request_status::SECTOR_MISS) {
+
+    if (DTRACE(CACHE_MISS)) {
+      dump_cache_access_info("::rd_miss_base ", addr, mf, time, status);
+    }
+
+    m_l1d_rd_miss_addresses.push_back(addr);
+
+    if (DTRACE(SIMPLE_PREFETCH)) {
+      fprintf(Trace::out, "%llu added new addr: %#llx "
+        "into m_l1d_rd_miss_addresses (size %zu->%zu)\n", 
+        time, addr, 
+        m_l1d_rd_miss_addresses.size() - 1, m_l1d_rd_miss_addresses.size());
+      
+      fprintf(Trace::out, "m_l1d_rd_miss_addresses holds:\n");
+      for (size_t i = 0; i < m_l1d_rd_miss_addresses.size(); i++)
+      {
+        fprintf(Trace::out, "m_l1d_rd_miss_addresses[%u] = %#llx\n", 
+          (unsigned)i, m_l1d_rd_miss_addresses[i]);
+      } 
+    }
+  }
+
   if (miss_queue_full(1)) {
     // cannot handle request this cycle
     // (might need to generate two requests)
@@ -2449,7 +2563,6 @@ enum cache_request_status data_cache::rd_miss_base(
     return RESERVATION_FAIL;
   }
 
-  new_addr_type block_addr = m_config.block_addr(addr);
   bool do_miss = false;
   bool wb = false;
   evicted_block_info evicted;
@@ -2534,7 +2647,7 @@ enum cache_request_status read_only_cache::access(
 //  The access fucntion calls this function
 enum cache_request_status data_cache::process_tag_probe(
     bool wr, enum cache_request_status probe_status, new_addr_type addr,
-    unsigned cache_index, mem_fetch *mf, unsigned time,
+    unsigned cache_index, mem_fetch *mf, unsigned long long time,
     std::list<cache_event> &events) {
   // Each function pointer ( m_[rd/wr]_[hit/miss] ) is set in the
   // data_cache constructor to reflect the corresponding cache configuration
@@ -2576,7 +2689,7 @@ enum cache_request_status data_cache::process_tag_probe(
 // Differentiation between the two caches is done through configuration
 // of caching policies.
 // Both the L1 and L2 override this function to provide a means of
-// performing actions specific to each cache when such actions are implemnted.
+// performing actions specific to each cache when such actions are implemented.
 enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
                                              unsigned long long time,
                                              std::list<cache_event> &events) {  
@@ -2596,8 +2709,26 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
                        m_stats.select_stats_status(probe_status, access_status),
                        mf->get_streamID());
 
-  std::string cache_level = !m_level ? "L1D" : "L2";
-  if (cache_level == "L1D") {
+  if (DTRACE(CACHE_ACCESS)) {
+    assert((m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle) == time);
+
+    dump_cache_access_info("::access ", addr, mf, time, access_status);
+    // uint64_t lat_from_sched_to_access = time - m_gpu->sched_cycle[mf->get_pc()];
+    // fprintf(Trace::out, "%llu: %s L1D " // grep "wr L1D" or "rd L1D"
+    //               "pc=%#llx addr=0x%llx block_addr=0x%llx "
+    //               "probe_status=%s access_status=%s access_type=%s "
+    //               "lat_from_sched_to_access=%llu (%llu - %llu)\n",
+    //               (unsigned long long)time, wr ? "wr" : "rd",                     
+    //               (unsigned long long)mf->get_pc(),
+    //               (unsigned long long)addr, (unsigned long long)block_addr,
+    //               cache_request_status_str(probe_status), 
+    //               cache_request_status_str(access_status),
+    //               mem_access_type_str(mf->get_access_type()),
+    //               (unsigned long long)lat_from_sched_to_access, (unsigned long long)time, (unsigned long long)m_gpu->sched_cycle[mf->get_pc()]
+    //             );
+  }
+
+  if (m_is_l1d) {
     uint64_t lat_from_sched_to_access = time - m_gpu->sched_cycle[mf->get_pc()];
     m_gpu->tot_l1d_accesses++;
     m_gpu->tot_l1d_lat_from_sched_to_access += lat_from_sched_to_access;
@@ -2607,22 +2738,6 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
     } else {
       m_gpu->tot_l1d_reads++;
       m_gpu->tot_l1d_rd_lat_from_sched += lat_from_sched_to_access;
-    }
-    if (DTRACE(L1D_ACCESS)) {
-      assert((m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle) == time);
-      uint64_t lat_from_sched_to_access = time - m_gpu->sched_cycle[mf->get_pc()];
-      fprintf(Trace::out, "%llu: %s L1D " // grep "wr L1D" or "rd L1D"
-                    "pc=%#llx addr=0x%llx block_addr=0x%llx "
-                    "probe_status=%s access_status=%s access_type=%s "
-                    "lat_from_sched_to_access=%llu (%llu - %llu)\n",
-                    (unsigned long long)time, wr ? "wr" : "rd",                     
-                    (unsigned long long)mf->get_pc(),
-                    (unsigned long long)addr, (unsigned long long)block_addr,
-                    cache_request_status_str(probe_status), 
-                    cache_request_status_str(access_status),
-                    mem_access_type_str(mf->get_access_type()),
-                    (unsigned long long)lat_from_sched_to_access, (unsigned long long)time, (unsigned long long)m_gpu->sched_cycle[mf->get_pc()]
-                  );
     }
   }
 
@@ -2636,10 +2751,6 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
 enum cache_request_status l1_cache::access(new_addr_type addr, mem_fetch *mf,
                                            unsigned long long time,
                                            std::list<cache_event> &events) {
-  if (DTRACE(L1D_ACCESS)) {
-    fprintf(Trace::out, "%llu: global monitor: access L1D addr=0x%llx\n",
-                  time, addr);
-  }
   return data_cache::access(addr, mf, time, events);
 }
 

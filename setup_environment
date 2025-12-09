@@ -186,12 +186,12 @@ fi
 
 export GPGPU_LIB="$GPGPUSIM_ROOT/lib/$GPGPUSIM_CONFIG"
 echo "GPGPU_LIB="$GPGPU_LIB
-# 检查当前库的 SONAME
-readelf -d "$GPGPU_LIB/libcudart.so" | grep SONAME || true
-# 把SONAME设置为带主版本号（按你的CUDA版本改为.12或实际主版本）
-patchelf --set-soname libcudart.so.12 "$GPGPU_LIB/libcudart.so"
-# 再次确认 SONAME 已修改
-readelf -d "$GPGPU_LIB/libcudart.so" | grep SONAME
+# 如果已生成库，则更新并检查 SONAME，避免在首次构建前失败
+if [ -f "$GPGPU_LIB/libcudart.so" ]; then
+	readelf -d "$GPGPU_LIB/libcudart.so" | grep SONAME || true
+	patchelf --set-soname libcudart.so.12 "$GPGPU_LIB/libcudart.so"
+	readelf -d "$GPGPU_LIB/libcudart.so" | grep SONAME
+fi
 
 echo "setup_environment succeeded";
 

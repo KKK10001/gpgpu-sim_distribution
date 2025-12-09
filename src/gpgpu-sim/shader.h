@@ -1345,6 +1345,7 @@ class shader_core_mem_fetch_allocator;
 class cache_t;
 
 class ldst_unit : public pipelined_simd_unit {
+  friend class l1_cache; // to enable L1D to access the PF related rd miss addresses
  public:
   ldst_unit(mem_fetch_interface *icnt,
             shader_core_mem_fetch_allocator *mf_allocator,
@@ -1457,7 +1458,7 @@ class ldst_unit : public pipelined_simd_unit {
 
   tex_cache *m_L1T;        // texture cache
   read_only_cache *m_L1C;  // constant cache
-  l1_cache *m_L1D;         // data cache
+  l1_cache *m_L1D;         // data cache  
   std::map<unsigned /*warp_id*/,
            std::map<unsigned /*regnum*/, unsigned /*count*/>>
       m_pending_writes;
@@ -1482,6 +1483,7 @@ class ldst_unit : public pipelined_simd_unit {
 
   std::vector<std::deque<mem_fetch *>> l1_latency_queue;
   void L1_latency_queue_cycle();
+  unsigned int m_cnt_l1d_run_cycles;
 
   // Track last-seen address and PC for pending long-latency load by (warp,reg)
   std::map<std::pair<unsigned,int>, std::pair<unsigned long long, unsigned>>

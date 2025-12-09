@@ -1548,13 +1548,10 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
   printf("-------------------------- Insts Lat --------------------------\n");
   for (size_t i = 0; i < gpu_sim_tot_uarch_op_lat.size(); i++)
   {
-    auto it = gpu_sim_tot_uarch_op_lat.find(op_type(i));
-    // if (it != gpu_sim_tot_uarch_op_lat.end()) {
-      float curr_avg_uarch_op_lat =
-          (float)(gpu_sim_tot_uarch_op_lat[op_type(i)]) / gpu_sim_tot_uarch_op_insts[op_type(i)];
-      printf("avg_lat[%s] = %12.4f cycles\n",
-              uarch_op_str(op_type(i)), curr_avg_uarch_op_lat);
-    // }
+    float curr_avg_uarch_op_lat =
+        (float)(gpu_sim_tot_uarch_op_lat[op_type(i)]) / gpu_sim_tot_uarch_op_insts[op_type(i)];
+    printf("avg_lat[%s] = %12.4f cycles\n",
+            uarch_op_str(op_type(i)), curr_avg_uarch_op_lat);
   }  
 
   printf("-------------------------- L1D stats --------------------------\n");

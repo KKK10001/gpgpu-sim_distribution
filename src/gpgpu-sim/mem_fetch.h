@@ -37,7 +37,8 @@ enum mf_type {
   READ_REQUEST = 0,
   WRITE_REQUEST,
   READ_REPLY,  // send to shader
-  WRITE_ACK
+  WRITE_ACK,
+  NUM_MF_TYPE
 };
 
 #define MF_TUP_BEGIN(X) enum X {

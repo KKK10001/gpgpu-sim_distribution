@@ -2338,15 +2338,12 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
   if (inst.accessq_empty()) return result;
 
   if (m_config->m_L1D_config.l1_latency > 0) {
-    for (unsigned int j = 0; j < m_config->m_L1D_config.l1_banks;
-         j++) {  // We can handle at max l1_banks reqs per cycle
+    for (unsigned int j = 0; j < m_config->m_L1D_config.l1_banks; j++) {  // We can handle at max l1_banks reqs per cycle
 
       if (inst.accessq_empty()) return result;
 
-      mem_fetch *mf =
-          m_mf_allocator->alloc(inst, inst.accessq_back(),
-                                m_core->get_gpu()->gpu_sim_cycle +
-                                    m_core->get_gpu()->gpu_tot_sim_cycle);
+      mem_fetch *mf = m_mf_allocator->alloc(inst, inst.accessq_back(),
+                      m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle);
       unsigned bank_id = m_config->m_L1D_config.set_bank(mf->get_addr());
       assert(bank_id < m_config->m_L1D_config.l1_banks);
 
@@ -2410,23 +2407,12 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
 }
 
 void ldst_unit::L1_latency_queue_cycle() {
-  for (unsigned int j = 0; j < m_config->m_L1D_config.l1_banks; j++) {
-    if ((l1_latency_queue[j][0]) != NULL) {
-      mem_fetch *mf_next = l1_latency_queue[j][0];
-      std::list<cache_event> events;      
-
-      enum cache_request_status status =
-          m_L1D->access(mf_next->get_addr(), mf_next,
-                        m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle,
-                        events);
-
-      if (DTRACE(L1D_ACCESS)) {
-        fprintf(Trace::out, "%llu: L1D Access (%s) addr=0x%llx byte_mask:%s\n",
-                m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
-                cache_request_status_str(status),
-                mf_next->get_addr(), mf_next->get_access_byte_mask().to_string().c_str()
-        );
-      }
+  unsigned long long time = m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle;
+  for (unsigned int bank_id = 0; bank_id < m_config->m_L1D_config.l1_banks; bank_id++) {    
+    if ((l1_latency_queue[bank_id][0]) != NULL) {
+      mem_fetch *mf_next = l1_latency_queue[bank_id][0];
+      std::list<cache_event> events;
+      enum cache_request_status status = m_L1D->access(mf_next->get_addr(), mf_next, time, events);
 
       bool write_sent = was_write_sent(events);
       bool read_sent = was_read_sent(events);
@@ -2438,7 +2424,7 @@ void ldst_unit::L1_latency_queue_cycle() {
           m_gpu->tot_l1d_rd_hits++;
         }
         assert(!read_sent);
-        l1_latency_queue[j][0] = NULL;
+        l1_latency_queue[bank_id][0] = NULL;
         if (mf_next->get_inst().is_load()) {
           for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++)
             if (mf_next->get_inst().out[r] > 0) {
@@ -2463,9 +2449,7 @@ void ldst_unit::L1_latency_queue_cycle() {
                   __last_unblock_cause__.reg = mf_next->get_inst().out[r];
                   __last_unblock_cause__.pc = mf_next->get_inst().pc;
                   __last_unblock_cause__.addr = (unsigned long long)mf_next->get_addr();
-                  __last_unblock_cause__.cycle =
-                      (unsigned long long)(m_core->get_gpu()->gpu_sim_cycle +
-                                           m_core->get_gpu()->gpu_tot_sim_cycle);
+                  __last_unblock_cause__.cycle = time;
                   __last_unblock_cause__.cause_tag = "L1D_HIT";
                   // attach causal chain if available
                   auto key = std::make_pair(__last_unblock_cause__.warp, __last_unblock_cause__.reg);
@@ -2513,13 +2497,11 @@ void ldst_unit::L1_latency_queue_cycle() {
         assert(!write_sent);
       } else {
         assert(status == MISS || status == SECTOR_MISS || status == HIT_RESERVED);
-        l1_latency_queue[j][0] = NULL;
+        l1_latency_queue[bank_id][0] = NULL;
         if (m_config->m_L1D_config.get_write_policy() != WRITE_THROUGH &&
             mf_next->get_inst().is_store() &&
-            (m_config->m_L1D_config.get_write_allocate_policy() ==
-                 FETCH_ON_WRITE ||
-             m_config->m_L1D_config.get_write_allocate_policy() ==
-                 LAZY_FETCH_ON_READ) &&
+            (m_config->m_L1D_config.get_write_allocate_policy() == FETCH_ON_WRITE ||
+             m_config->m_L1D_config.get_write_allocate_policy() == LAZY_FETCH_ON_READ) &&
             !was_writeallocate_sent(events)) {
           unsigned dec_ack =
               (m_config->m_L1D_config.get_mshr_type() == SECTOR_ASSOC)
@@ -2547,19 +2529,24 @@ void ldst_unit::L1_latency_queue_cycle() {
           }
         }
       }
-    } // Finished m_L1D->accessing for l1_latency_queue[j][0]
+    } else {
+      if (DTRACE(L1D_ACCESS)) {
+        fprintf(Trace::out, "%llu l1_latency_queue[bank:%u][0] is NULL\n", time, bank_id);
+        fprintf(Trace::out, "%llu l1_latency_queue[bank:%u][0] is NULL\n", time, bank_id);
+      }
+    }
 
     if (DTRACE(L1D_ACCESS)) {
       std::vector<std::pair<unsigned, mem_fetch*>> pending_accesses;
       for (unsigned stage = 0; stage <= m_config->m_L1D_config.l1_latency - 1; ++stage) {
-        if (l1_latency_queue[j][stage] != NULL) {
-          mem_fetch* mf = l1_latency_queue[j][stage];
+        if (l1_latency_queue[bank_id][stage] != NULL) {
+          mem_fetch* mf = l1_latency_queue[bank_id][stage];
           pending_accesses.push_back(std::make_pair(stage, mf));
         }
       }
       if (pending_accesses.size()) {
         fprintf(Trace::out, "%llu: Before squeezing, l1_lat_q[bank:%u][%u] holds: {",
-          m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, j, m_config->m_L1D_config.l1_latency);
+          m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, bank_id, m_config->m_L1D_config.l1_latency);
         for (unsigned idx = 0; idx < pending_accesses.size(); ++idx) {
           std::string tail_sym = idx == pending_accesses.size() - 1 ? "" : ", ";
           fprintf(Trace::out, "<stage:%u pc:%#llx addr:%#llx>%s", 
@@ -2569,27 +2556,27 @@ void ldst_unit::L1_latency_queue_cycle() {
         }
         fprintf(Trace::out, "}\n");
       }
-    }
+    } // if (DTRACE(L1D_ACCESS))
 
     // squeezing bubbles
     for (unsigned stage = 0; stage < m_config->m_L1D_config.l1_latency - 1; ++stage) {
-      if (l1_latency_queue[j][stage] == NULL) {
-        l1_latency_queue[j][stage] = l1_latency_queue[j][stage + 1];
-        l1_latency_queue[j][stage + 1] = NULL;
+      if (l1_latency_queue[bank_id][stage] == NULL) {
+        l1_latency_queue[bank_id][stage] = l1_latency_queue[bank_id][stage + 1];
+        l1_latency_queue[bank_id][stage + 1] = NULL;
       }
     }
 
     if (DTRACE(L1D_ACCESS)) {
       std::vector<std::pair<unsigned, mem_fetch*>> pending_accesses;
       for (unsigned stage = 0; stage <= m_config->m_L1D_config.l1_latency - 1; ++stage) {
-        if (l1_latency_queue[j][stage] != NULL) {
-          mem_fetch* mf = l1_latency_queue[j][stage];
+        if (l1_latency_queue[bank_id][stage] != NULL) {
+          mem_fetch* mf = l1_latency_queue[bank_id][stage];
           pending_accesses.push_back(std::make_pair(stage, mf));
         }
       }
       if (pending_accesses.size()) {
         fprintf(Trace::out, "%llu: After squeezing, l1_lat_q[bank:%u][%u] holds: {",
-          m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, j, m_config->m_L1D_config.l1_latency);
+          m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, bank_id, m_config->m_L1D_config.l1_latency);
         for (unsigned idx = 0; idx < pending_accesses.size(); ++idx) {
           std::string tail_sym = idx == pending_accesses.size() - 1 ? "" : ", ";
           fprintf(Trace::out, "<stage:%u pc:%#llx addr:%#llx>%s", 
@@ -2600,7 +2587,7 @@ void ldst_unit::L1_latency_queue_cycle() {
         fprintf(Trace::out, "}\n");
       }
     }
-  } // for (unsigned int j = 0; j < m_config->m_L1D_config.l1_banks; j++) 
+  } // for (unsigned int bank_id = 0; bank_id < m_config->m_L1D_config.l1_banks; bank_id++) 
 }
 
 bool ldst_unit::constant_cycle(warp_inst_t &inst, mem_stage_stall_type &rc_fail,
@@ -3053,11 +3040,12 @@ ldst_unit::ldst_unit(mem_fetch_interface *icnt,
     l1_latency_queue.resize(m_config->m_L1D_config.l1_banks);
     assert(m_config->m_L1D_config.l1_latency > 0);
 
-    for (unsigned j = 0; j < m_config->m_L1D_config.l1_banks; j++)
-      l1_latency_queue[j].resize(m_config->m_L1D_config.l1_latency,
-                                 (mem_fetch *)NULL);
+    for (unsigned bank_id = 0; bank_id < m_config->m_L1D_config.l1_banks; bank_id++) {
+      l1_latency_queue[bank_id].resize(m_config->m_L1D_config.l1_latency, (mem_fetch *)NULL);
+    }      
   }
   m_name = "MEM ";
+  m_cnt_l1d_run_cycles = 0;
 }
 
 ldst_unit::ldst_unit(mem_fetch_interface *icnt,
@@ -3278,6 +3266,9 @@ inst->space.get_type() != shared_space) { unsigned warp_id = inst->warp_id();
 void ldst_unit::cycle() {
   writeback();
 
+  unsigned long long time = \
+    m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle;
+
   for (unsigned stage = 0; (stage + 1) < m_pipeline_depth; stage++)
     if (m_pipeline_reg[stage]->empty() && !m_pipeline_reg[stage + 1]->empty())
       move_warp(m_pipeline_reg[stage], m_pipeline_reg[stage + 1]);
@@ -3286,17 +3277,13 @@ void ldst_unit::cycle() {
     mem_fetch *mf = m_response_fifo.front();
     if (mf->get_access_type() == TEXTURE_ACC_R) {
       if (m_L1T->fill_port_free()) {
-        m_L1T->fill(mf, m_core->get_gpu()->gpu_sim_cycle +
-                            m_core->get_gpu()->gpu_tot_sim_cycle);
+        m_L1T->fill(mf, time);
         m_response_fifo.pop_front();
       }
     } else if (mf->get_access_type() == CONST_ACC_R) {
       if (m_L1C->fill_port_free()) {
-        mf->set_status(IN_SHADER_FETCHED,
-                       m_core->get_gpu()->gpu_sim_cycle +
-                           m_core->get_gpu()->gpu_tot_sim_cycle);
-        m_L1C->fill(mf, m_core->get_gpu()->gpu_sim_cycle +
-                            m_core->get_gpu()->gpu_tot_sim_cycle);
+        mf->set_status(IN_SHADER_FETCHED, time);
+        m_L1C->fill(mf, time);
         m_response_fifo.pop_front();
       }
     } else {
@@ -3316,15 +3303,12 @@ void ldst_unit::cycle() {
         if (CACHE_GLOBAL == mf->get_inst().cache_op || (m_L1D == NULL)) {
           bypassL1D = true;
         } else if (mf->get_access_type() == GLOBAL_ACC_R ||
-                   mf->get_access_type() ==
-                       GLOBAL_ACC_W) {  // global memory access
+                   mf->get_access_type() == GLOBAL_ACC_W) {  // global memory access
           if (m_core->get_config()->gmem_skip_L1D) bypassL1D = true;
         }
         if (bypassL1D) {
           if (m_next_global == NULL) {
-            mf->set_status(IN_SHADER_FETCHED,
-                           m_core->get_gpu()->gpu_sim_cycle +
-                               m_core->get_gpu()->gpu_tot_sim_cycle);
+            mf->set_status(IN_SHADER_FETCHED, time);
             m_response_fifo.pop_front();
             m_next_global = mf;
             // Return path via interconnect (bypass L1D): extend chain
@@ -3364,9 +3348,14 @@ void ldst_unit::cycle() {
   m_L1T->cycle();
   m_L1C->cycle();
   if (m_L1D) {
+    fprintf(Trace::out, "%llu Entering m_L1D->cycle() the %u times\n", time, m_cnt_l1d_run_cycles);
+    
     m_L1D->cycle();
     if (m_config->m_L1D_config.l1_latency > 0) {
+      fprintf(Trace::out, "%llu Entering L1_latency_queue_cycle() %u times\n", time, m_cnt_l1d_run_cycles);
+
       L1_latency_queue_cycle();
+      m_cnt_l1d_run_cycles++;
     }
   }
 
