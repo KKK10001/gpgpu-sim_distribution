@@ -1034,6 +1034,7 @@ class l2_cache_config : public cache_config {
   void init(linear_to_raw_address_translation *address_mapping);
   virtual unsigned set_index(new_addr_type addr) const;
 
+  bool m_disable_wr_merge;
  private:
   linear_to_raw_address_translation *m_address_mapping;
 };

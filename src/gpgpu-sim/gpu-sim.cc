@@ -253,6 +253,12 @@ void memory_config::reg_options(class OptionParser *opp) {
       " {<sector?>:<nsets>:<bsize>:<assoc>,<rep>:<wr>:<alloc>:<wr_alloc>:<set_"
       "index_fn>,<mshr>:<N>:<merge>,<mq>:<fifo_entry>,<data_port_width>",
       "S:32:128:24,L:B:m:L:P,A:192:4,32:0,32");
+
+  option_parser_register(
+      opp, "-disable_wr_merge", OPT_BOOL,
+      &m_L2_config.m_disable_wr_merge,      
+      "Whether disable write merge", "0"); // "1" is to simulate L1P5 in Arise2/3 with no write merge
+
   option_parser_register(opp, "-gpgpu_cache:dl2_texture_only", OPT_BOOL,
                          &m_L2_texure_only, "L2 cache used for texture only",
                          "1");
@@ -445,6 +451,7 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       opp, "-gpgpu_unified_l1d_size", OPT_UINT32,
       &m_L1D_config.m_unified_cache_size,
       "Size of unified data cache(L1D + shared memory) in KB", "0");
+
   option_parser_register(opp, "-gpgpu_adaptive_cache_config", OPT_BOOL,
                          &adaptive_cache_config, "adaptive_cache_config", "0");
   option_parser_register(
