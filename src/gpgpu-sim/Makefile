@@ -32,6 +32,7 @@ DEBUG?=0
 TRACE?=0
 
 ifeq ($(DEBUG),1)
+# 	CXXFLAGS = -fsanitize=address -Wall -DDEBUG
 	CXXFLAGS = -Wall -DDEBUG
 else
 	CXXFLAGS = -Wall
@@ -54,6 +55,9 @@ else
 endif
 
 CXXFLAGS += -I$(CUDA_INSTALL_PATH)/include
+# CXXFLAGS += -DARISE2_L1P5
+$(warning Makfile path = $(CURDIR))
+$(warning CXXFLAGS = $(CXXFLAGS))
 
 POWER_FLAGS=
 ifneq ($(GPGPUSIM_POWER_MODEL),)
@@ -104,4 +108,3 @@ $(OUTPUT_DIR)/../cuda-sim/ptx.tab.h:
 	make -C ../cuda-sim/ $(OUTPUT_DIR)/../cuda-sim/ptx.tab.c
 
 include $(OUTPUT_DIR)/Makefile.makedepend
-

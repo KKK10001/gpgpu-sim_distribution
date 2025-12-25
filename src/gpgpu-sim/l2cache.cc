@@ -86,12 +86,9 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
 
   m_sub_partition = new memory_sub_partition
       *[m_config->m_n_sub_partition_per_memory_channel];
-  for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel;
-       p++) {
-    unsigned sub_partition_id =
-        m_id * m_config->m_n_sub_partition_per_memory_channel + p;
-    m_sub_partition[p] =
-        new memory_sub_partition(sub_partition_id, m_config, stats, gpu);
+  for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel; p++) {
+    unsigned sub_partition_id = m_id * m_config->m_n_sub_partition_per_memory_channel + p;
+    m_sub_partition[p] = new memory_sub_partition(sub_partition_id, m_config, stats, gpu);
   }
 }
 
@@ -466,7 +463,7 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
   // L2 fill responses
   if (!m_config->m_L2_config.disabled()) {
     if (m_L2cache->access_ready() && !m_L2_icnt_queue->full()) {
-      mem_fetch *mf = m_L2cache->next_access();
+      mem_fetch *mf = m_L2cache->next_access("L2");
       if (mf->get_access_type() !=
           L2_WR_ALLOC_R) {  // Don't pass write allocate read request back to
                             // upper level cache
@@ -623,7 +620,9 @@ void memory_sub_partition::dram_L2_queue_push(class mem_fetch *mf) {
 void memory_sub_partition::print_cache_stat(unsigned &accesses,
                                             unsigned &misses) const {
   FILE *fp = stdout;
-  if (!m_config->m_L2_config.disabled()) m_L2cache->print(fp, accesses, misses);
+  if (!m_config->m_L2_config.disabled()) {
+    m_L2cache->print(fp, accesses, misses);
+  }
 }
 
 void memory_sub_partition::print(FILE *fp) const {
@@ -842,6 +841,7 @@ void memory_sub_partition::set_done(mem_fetch *mf) {
 void memory_sub_partition::accumulate_L2cache_stats(
     class cache_stats &l2_stats) const {
   if (!m_config->m_L2_config.disabled()) {
+    l2_stats.setCacheName("L2");
     l2_stats += m_L2cache->get_stats();
   }
 }

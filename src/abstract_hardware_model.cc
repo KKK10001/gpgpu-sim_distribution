@@ -567,6 +567,35 @@ void warp_inst_t::memory_coalescing_arch(bool is_write,
     sector_segment_size = true;
   }
 
+// #ifdef ARISE2_L1P5
+//   switch (data_size) {
+//     case 1:
+//       segment_size = 64;
+//       break;
+//     case 2:
+//       segment_size = sector_segment_size ? 64 : 64;
+//       break;
+//     case 4:
+//     case 8:
+//     case 16:
+//       segment_size = sector_segment_size ? 64 : 128;
+//       break;
+//   }
+// #else
+//   switch (data_size) {
+//     case 1:
+//       segment_size = 32;
+//       break;
+//     case 2:
+//       segment_size = sector_segment_size ? 32 : 64;
+//       break;
+//     case 4:
+//     case 8:
+//     case 16:
+//       segment_size = sector_segment_size ? 32 : 128;
+//       break;
+//   }
+// #endif
   switch (data_size) {
     case 1:
       segment_size = 32;

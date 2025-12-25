@@ -1404,7 +1404,7 @@ class ldst_unit : public pipelined_simd_unit {
   void get_cache_stats(unsigned &read_accesses, unsigned &write_accesses,
                        unsigned &read_misses, unsigned &write_misses,
                        unsigned cache_type);
-  void get_cache_stats(cache_stats &cs);
+  void get_cache_stats(cache_stats &cs, unsigned sm = 0);
 
   void get_L1D_sub_stats(struct cache_sub_stats &css) const;
   void get_L1C_sub_stats(struct cache_sub_stats &css) const;
@@ -1578,10 +1578,10 @@ class shader_core_config : public core_config {
 
     set_pipeline_latency();
 
-    m_L1I_config.init(m_L1I_config.m_config_string, FuncCachePreferNone);
-    m_L1T_config.init(m_L1T_config.m_config_string, FuncCachePreferNone);
-    m_L1C_config.init(m_L1C_config.m_config_string, FuncCachePreferNone);
-    m_L1D_config.init(m_L1D_config.m_config_string, FuncCachePreferNone);
+    m_L1I_config.init(m_L1I_config.m_config_string, FuncCachePreferNone, "L1I");
+    m_L1T_config.init(m_L1T_config.m_config_string, FuncCachePreferNone, "L1T");
+    m_L1C_config.init(m_L1C_config.m_config_string, FuncCachePreferNone, "L1C");
+    m_L1D_config.init(m_L1D_config.m_config_string, FuncCachePreferNone, "L1D");
     gpgpu_cache_texl1_linesize = m_L1T_config.get_line_sz();
     gpgpu_cache_constl1_linesize = m_L1C_config.get_line_sz();
     m_valid = true;
@@ -2149,7 +2149,7 @@ class shader_core_ctx : public core_t {
   void print_cache_stats(FILE *fp, unsigned &dl1_accesses,
                          unsigned &dl1_misses);
 
-  void get_cache_stats(cache_stats &cs);
+  void get_cache_stats(cache_stats &cs, unsigned sm = 0);
   void get_L1I_sub_stats(struct cache_sub_stats &css) const;
   void get_L1D_sub_stats(struct cache_sub_stats &css) const;
   void get_L1C_sub_stats(struct cache_sub_stats &css) const;

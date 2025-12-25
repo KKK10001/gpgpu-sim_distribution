@@ -1018,8 +1018,8 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
   gpu_tot_issued_cta = 0;
   gpu_completed_cta = 0;
 
-  gpu_sim_tot_uarch_op_lat.clear();
-  gpu_sim_tot_uarch_op_insts.clear();
+  // gpu_sim_tot_uarch_op_lat.clear();
+  // gpu_sim_tot_uarch_op_insts.clear();
 
   m_total_cta_launched = 0;
   gpu_deadlock = false;
@@ -1041,19 +1041,13 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
   // TODO: somehow move this logic to the sst_gpgpu_sim constructor?
   if (!m_config.is_SST_mode()) {
     // Init memory if not in SST mode
-    m_memory_partition_unit =
-        new memory_partition_unit *[m_memory_config->m_n_mem];
-    m_memory_sub_partition =
-        new memory_sub_partition *[m_memory_config->m_n_mem_sub_partition];
+    m_memory_partition_unit = new memory_partition_unit *[m_memory_config->m_n_mem];
+    m_memory_sub_partition  = new memory_sub_partition *[m_memory_config->m_n_mem_sub_partition];
     for (unsigned i = 0; i < m_memory_config->m_n_mem; i++) {
-      m_memory_partition_unit[i] =
-          new memory_partition_unit(i, m_memory_config, m_memory_stats, this);
-      for (unsigned p = 0;
-           p < m_memory_config->m_n_sub_partition_per_memory_channel; p++) {
-        unsigned submpid =
-            i * m_memory_config->m_n_sub_partition_per_memory_channel + p;
-        m_memory_sub_partition[submpid] =
-            m_memory_partition_unit[i]->get_sub_partition(p);
+      m_memory_partition_unit[i] = new memory_partition_unit(i, m_memory_config, m_memory_stats, this);
+      for (unsigned p = 0; p < m_memory_config->m_n_sub_partition_per_memory_channel; p++) {
+        unsigned submpid = i * m_memory_config->m_n_sub_partition_per_memory_channel + p;
+        m_memory_sub_partition[submpid] = m_memory_partition_unit[i]->get_sub_partition(p);
       }
     }
 
@@ -1318,17 +1312,21 @@ void gpgpu_sim::update_stats() {
   gpu_completed_cta = 0;
   gpu_occupancy = occupancy_stats();
 
-  gpu_sim_tot_uarch_op_lat.clear();
-  gpu_sim_tot_uarch_op_insts.clear();  
+  // gpu_sim_tot_uarch_op_lat.clear();
+  // gpu_sim_tot_uarch_op_insts.clear();  
 }
 
 PowerscalingCoefficients *gpgpu_sim::get_scaling_coeffs() {
   return m_gpgpusim_wrapper->get_scaling_coeffs();
 }
 
-void gpgpu_sim::print_stats(unsigned long long streamID) {
+void gpgpu_sim::print_stats(unsigned long long streamID, unsigned kernelID) {
   gpgpu_ctx->stats->ptx_file_line_stats_write_file();
-  gpu_print_stat(streamID);
+  if (DTRACE(KERNEL_STATS)) {
+    fprintf(Trace::out, "%llu gpu_print_stats(kernelID:%u, streamID:%llu)\n", 
+      gpu_tot_sim_cycle + gpu_sim_cycle, kernelID, streamID);
+  }
+  gpu_print_stat(kernelID, streamID);
 
   if (g_network_mode) {
     printf(
@@ -1512,13 +1510,13 @@ void gpgpu_sim::clear_executed_kernel_info() {
   m_executed_kernel_uids.clear();
 }
 
-void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
+void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
   FILE *statfout = stdout;
 
   std::string kernel_info_str = executed_kernel_info_string();
   fprintf(statfout, "%s", kernel_info_str.c_str());
 
-  printf("kernel_stream_id = %llu\n", streamID);
+  printf("kernelID = %u, kernel_stream_id = %llu\n", kernelID, streamID);
 
   printf("gpu_sim_cycle = %lld\n", gpu_sim_cycle);
   printf("gpu_sim_insn = %lld\n", gpu_sim_insn);
@@ -1552,14 +1550,14 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
                  partiton_reqs_in_parallel_util_total) /
              (gpu_sim_cycle_parition_util + gpu_tot_sim_cycle_parition_util));
 
-  printf("-------------------------- Insts Lat --------------------------\n");
-  for (size_t i = 0; i < gpu_sim_tot_uarch_op_lat.size(); i++)
-  {
-    float curr_avg_uarch_op_lat =
-        (float)(gpu_sim_tot_uarch_op_lat[op_type(i)]) / gpu_sim_tot_uarch_op_insts[op_type(i)];
-    printf("avg_lat[%s] = %12.4f cycles\n",
-            uarch_op_str(op_type(i)), curr_avg_uarch_op_lat);
-  }  
+  // printf("-------------------------- Insts Lat --------------------------\n");
+  // for (size_t i = 0; i < gpu_sim_tot_uarch_op_lat.size(); i++)
+  // {
+  //   float curr_avg_uarch_op_lat =
+  //       (float)(gpu_sim_tot_uarch_op_lat[op_type(i)]) / gpu_sim_tot_uarch_op_insts[op_type(i)];
+  //   printf("avg_lat[%s] = %12.4f cycles\n",
+  //           uarch_op_str(op_type(i)), curr_avg_uarch_op_lat);
+  // }  
 
   printf("-------------------------- L1D stats --------------------------\n");
   avg_l1d_lat_from_sched_to_access = (float)(tot_l1d_lat_from_sched_to_access) / tot_l1d_accesses;
@@ -1604,6 +1602,8 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
 
   printf("\nTotal_core_cache_fail_stats:\n");
   core_cache_stats.print_fail_stats(stdout, streamID, "Total_core_cache_fail_stats_breakdown");
+  printf("\nTotal_core_cache_mshr_stats:\n");
+  core_cache_stats.print_mshr_stats(stdout, streamID, "core_cache_mshr_stats");
   shader_print_scheduler_stat(stdout, false);
 
   m_shader_stats->print(stdout);
@@ -1646,11 +1646,12 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
 
     printf("\n========= L2 cache stats =========\n");
     for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
+      l2_stats.setSubPartition(i);
       m_memory_sub_partition[i]->accumulate_L2cache_stats(l2_stats);
       m_memory_sub_partition[i]->get_L2cache_sub_stats(l2_css);
 
       fprintf(stdout,
-              "L2_cache_bank[%d]: Access = %llu, Miss = %llu, Miss_rate = "
+              "L2_sub_partition[%d]: Access = %llu, Miss = %llu, Miss_rate = "
               "%.3lf, Pending_hits = %llu, Reservation_fails = %llu\n",
               i, l2_css.accesses, l2_css.misses,
               (double)l2_css.misses / (double)l2_css.accesses,
@@ -1672,8 +1673,9 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
       printf("L2_total_cache_breakdown:\n");
       l2_stats.print_stats(stdout, streamID, "L2_cache_stats_breakdown");
       printf("L2_total_cache_reservation_fail_breakdown:\n");
-      l2_stats.print_fail_stats(stdout, streamID,
-                                "L2_cache_stats_fail_breakdown");
+      l2_stats.print_fail_stats(stdout, streamID, "L2_cache_stats_fail_breakdown");
+      printf("L2_total_mshr_stats:\n");
+      l2_stats.print_mshr_stats(stdout, streamID, "L2_mshr_stats");
       total_l2_css.print_port_stats(stdout, "L2_cache");
     }
   }
@@ -2117,6 +2119,10 @@ void gpgpu_sim::cycle() {
         m_memory_sub_partition[i]->push(mf, gpu_sim_cycle + gpu_tot_sim_cycle);
         if (mf) partiton_reqs_in_parallel_per_cycle++;
       }
+      if (DTRACE(L2_SUB_PARTITION)) {
+        fprintf(Trace::out, "%llu L2 sub-partition[%u]->cache_cycle\n",
+                gpu_tot_sim_cycle + gpu_sim_cycle, i);
+      }
       m_memory_sub_partition[i]->cache_cycle(gpu_sim_cycle + gpu_tot_sim_cycle);
       if (m_config.g_power_simulation_enabled) {
         m_memory_sub_partition[i]->accumulate_L2cache_stats(
@@ -2139,6 +2145,10 @@ void gpgpu_sim::cycle() {
     m_power_stats->pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX].clear();
     for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
       if (m_cluster[i]->get_not_completed() || get_more_cta_left()) {
+        if (DTRACE(MAIN_PIPE)) {
+          fprintf(Trace::out, "%llu: Cluster %u core cycle\n",
+                  gpu_tot_sim_cycle + gpu_sim_cycle, i);
+        }
         m_cluster[i]->core_cycle();
         *active_sms += m_cluster[i]->get_n_active_sms();
       }

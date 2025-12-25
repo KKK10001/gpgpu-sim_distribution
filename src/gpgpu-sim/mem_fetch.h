@@ -107,6 +107,7 @@ class mem_fetch {
   unsigned get_timestamp() const { return m_timestamp; }
   unsigned get_return_timestamp() const { return m_timestamp2; }
   unsigned get_icnt_receive_time() const { return m_icnt_receive_time; }
+  unsigned long long get_status_change_time() const { return m_status_change; }
   unsigned long long get_streamID() const { return m_streamID; }
 
   enum mem_access_type get_access_type() const { return m_access.get_type(); }
@@ -130,6 +131,11 @@ class mem_fetch {
 
   mem_fetch *get_original_mf() { return original_mf; }
   mem_fetch *get_original_wr_mf() { return original_wr_mf; }
+
+  void setBankID(const unsigned bank_id) { m_bank = bank_id; }
+  unsigned getBankID() const { return m_bank; }
+  void setTime(const unsigned long long time) { m_time = time; }
+  unsigned long long getTime() const { return m_time; }
 
  private:
   // request source information
@@ -179,6 +185,8 @@ class mem_fetch {
                      // size), so the pointer refers to the original request
   mem_fetch *original_wr_mf;  // this pointer refers to the original write req,
                               // when fetch-on-write policy is used
+  unsigned m_bank; // hold the bank_id from L1D request
+  unsigned long long m_time; // hold the time when *mf being created from l1_latency_queue
 };
 
 #endif

@@ -77,3 +77,38 @@ accel_sim_framework::gpgpu_trace_sim_init_perf_model(accel_sim_framework * const
 accel_sim_framework::accel_sim_framework(accel_sim_framework * const this, int argc, const char ** argv) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\accel-sim.cc:29)
 main(int argc, const char ** argv) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\main.cc:29)
 
+/////////////////////////////////////// Refill L2 path ///////////////////////////////////////
+libcudart.so!memory_sub_partition::cache_cycle(memory_sub_partition * const this, unsigned int cycle) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\l2cache.cc:497)
+libcudart.so!gpgpu_sim::cycle(gpgpu_sim * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\gpu-sim.cc:2120)
+accel_sim_framework::simulate(accel_sim_framework * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\accel-sim.cc:165)
+accel_sim_framework::simulation_loop(accel_sim_framework * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\accel-sim.cc:75)
+main(int argc, const char ** argv) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\main.cc:30)
+
+::cache_cycle能够顺利调用的前提是满足(m_L2cache->fill_port_free())
+bool baseline_cache::bandwidth_management::fill_port_free() const {
+  return (m_fill_port_occupied_cycles == 0);
+}
+*.config中设定<data_port_width>, 对应源代码中的m_config.m_data_port_width
+m_config.get_atom_sz()返回的是完整的cacheline size
+void baseline_cache::bandwidth_management::use_fill_port(mem_fetch *mf) {
+  // assume filling the entire line with the returned request
+  // 计算得到回填完整的一条line所需的cycles
+  unsigned fill_cycles = m_config.get_atom_sz() / m_config.m_data_port_width;\
+  // 对所需的cycles进行累加，得到最终完成refill所需的总cycles
+  m_fill_port_occupied_cycles += fill_cycles;
+}
+
+libcudart.so!data_cache::update_m_readable(data_cache * const this, mem_fetch * mf, unsigned int cache_index) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\gpu-cache.cc:2244)
+libcudart.so!data_cache::wr_hit_wb(data_cache * const this, new_addr_type addr, unsigned int cache_index, mem_fetch * mf, unsigned int time, std::__cxx11::list<cache_event, std::allocator<cache_event> > & events, cache_request_status status) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\gpu-cache.cc:2273)
+libcudart.so!data_cache::process_tag_probe(data_cache * const this, bool wr, cache_request_status probe_status, new_addr_type addr, unsigned int cache_index, mem_fetch * mf, unsigned long long time, std::__cxx11::list<cache_event, std::allocator<cache_event> > & events) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\gpu-cache.cc:2927)
+libcudart.so!data_cache::access(data_cache * const this, new_addr_type addr, mem_fetch * mf, unsigned long long time, std::__cxx11::list<cache_event, std::allocator<cache_event> > & events) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\gpu-cache.cc:2971)
+libcudart.so!l1_cache::access(l1_cache * const this, new_addr_type addr, mem_fetch * mf, unsigned long long time, std::__cxx11::list<cache_event, std::allocator<cache_event> > & events) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\gpu-cache.cc:3023)
+libcudart.so!ldst_unit::L1_latency_queue_cycle(ldst_unit * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\shader.cc:2452)
+libcudart.so!ldst_unit::cycle(ldst_unit * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\shader.cc:3396)
+libcudart.so!shader_core_ctx::execute(shader_core_ctx * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\shader.cc:2019)
+libcudart.so!shader_core_ctx::cycle(shader_core_ctx * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\shader.cc:4200)
+libcudart.so!simt_core_cluster::core_cycle(simt_core_cluster * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\shader.cc:5017)
+libcudart.so!gpgpu_sim::cycle(gpgpu_sim * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\gpu-sim.cc:2150)
+accel_sim_framework::simulate(accel_sim_framework * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\accel-sim.cc:165)
+accel_sim_framework::simulation_loop(accel_sim_framework * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\accel-sim.cc:75)
+main(int argc, const char ** argv) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\main.cc:30)

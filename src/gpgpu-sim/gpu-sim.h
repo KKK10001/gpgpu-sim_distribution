@@ -607,7 +607,7 @@ class gpgpu_sim : public gpgpu_t {
            (m_config.gpu_max_completed_cta_opt &&
             (gpu_completed_cta >= m_config.gpu_max_completed_cta_opt));
   }
-  void print_stats(unsigned long long streamID);
+  void print_stats(unsigned long long streamID, unsigned kernelID = 0);
   void update_stats();
   void deadlock_check();
   void inc_completed_cta() { gpu_completed_cta++; }
@@ -636,7 +636,7 @@ class gpgpu_sim : public gpgpu_t {
   void decrement_kernel_latency();
 
   const gpgpu_sim_config &get_config() const { return m_config; }
-  void gpu_print_stat(unsigned long long streamID);
+  void gpu_print_stat(unsigned kernelID, unsigned long long streamID);
   void dump_pipeline(int mask, int s, int m) const;
 
   void perf_memcpy_to_gpu(size_t dst_start_addr, size_t count);
@@ -758,8 +758,8 @@ class gpgpu_sim : public gpgpu_t {
   unsigned long long gpu_tot_sim_insn;
   unsigned long long gpu_sim_insn_last_update;
   unsigned gpu_sim_insn_last_update_sid;
-  std::unordered_map<op_type, unsigned long long> gpu_sim_tot_uarch_op_lat;
-  std::unordered_map<op_type, unsigned long long> gpu_sim_tot_uarch_op_insts;
+  // std::unordered_map<op_type, unsigned long long> gpu_sim_tot_uarch_op_lat;
+  // std::unordered_map<op_type, unsigned long long> gpu_sim_tot_uarch_op_insts;
 
   occupancy_stats gpu_occupancy;
   occupancy_stats gpu_tot_occupancy;

@@ -92,8 +92,7 @@ new_addr_type linear_to_raw_address_translation::partition_address(
   }
 }
 
-void linear_to_raw_address_translation::addrdec_tlx(new_addr_type addr,
-                                                    addrdec_t *tlx) const {
+void linear_to_raw_address_translation::addrdec_tlx(new_addr_type addr, addrdec_t *tlx) const {
   unsigned long long int addr_for_chip, rest_of_addr, rest_of_addr_high_bits;
   if (!gap) {
     tlx->chip = addrdec_packbits(addrdec_mask[CHIP], addr, addrdec_mkhigh[CHIP],

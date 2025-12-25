@@ -632,16 +632,43 @@ class cache_config {
     m_is_streaming = false;
     m_wr_percent = 0;
   }
-  void init(char *config, FuncCache status) {
+  void init(char *config, FuncCache status, const char* cache_name = "") {
     cache_status = status;
+    m_cache_name = cache_name;
     assert(config);
     char ct, rp, wp, ap, mshr_type, wap, sif;
 
+    //  S:32:128:24  L : B: m: L: P, A:192:4,  32:0,  32
+    // %c:%u:%u:%u,  %c:%c:%c:%c:%c, %c:%u:%u, %u:%u, %u, 
     int ntok =
-        sscanf(config, "%c:%u:%u:%u,%c:%c:%c:%c:%c,%c:%u:%u,%u:%u,%u", &ct,
-               &m_nset, &m_line_sz, &m_assoc, &rp, &wp, &ap, &wap, &sif,
-               &mshr_type, &m_mshr_entries, &m_mshr_max_merge,
-               &m_miss_queue_size, &m_result_fifo_entries, &m_data_port_width);
+        sscanf(config, 
+              "%c:%u:%u:%u, %c:%c:%c:%c:%c, %c:%u:%u, %u:%u, %u", 
+              &ct, &m_nset, &m_line_sz, &m_assoc, 
+              &rp, &wp, &ap, &wap, &sif,
+              &mshr_type, &m_mshr_entries, &m_mshr_max_merge,
+              &m_miss_queue_size, &m_result_fifo_entries,
+              &m_data_port_width);
+    fprintf(Trace::out, "----------- %s cache_config is below -----------\n"
+      "%s\nsets = %u\nline_size = %uB\nassoc = %u\n"
+      "Replacement Policy (rp) = %c\n"
+      "Write Policy (wp) = %c\n"
+      "Allocation Policy (ap) = %c\n"
+      "Write Allocate Policy (wap) = %c\n"
+      "Set Index Function (sif) = %c\n"
+      "mshr_type = %c\n"
+      "m_mshr_entries = %u\n"
+      "m_mshr_max_merge = %u\n"
+      "m_miss_queue_size = %u\n"
+      "m_result_fifo_entries = %u\n"
+      "m_data_port_width = %uB\n",
+      cache_name, 
+      (ct == 'S') ? "SECTOR" : "NORMAL",
+      m_nset, m_line_sz, m_assoc, rp, wp, ap, wap, sif, mshr_type,
+      m_mshr_entries, m_mshr_max_merge, 
+      m_miss_queue_size, m_result_fifo_entries,
+      m_data_port_width
+    );
+    m_sector_size = m_line_sz / SECTOR_CHUNCK_SIZE;
 
     if (ntok < 12) {
       if (!strcmp(config, "none")) {
@@ -760,6 +787,20 @@ class cache_config {
     m_nset_log2 = LOGB2(m_nset);
     m_valid = true;
     m_atom_sz = (m_cache_type == SECTOR) ? SECTOR_SIZE : m_line_sz;
+
+// #ifdef ARISE2_L1P5
+//     std::cerr << "ARISE2_L1P5 defined\n";
+//     fprintf(Trace::out, "ARISE2_L1P5 defined\n");
+// #else
+//     std::cerr << "ARISE2_L1P5 not defined\n";
+//     fprintf(Trace::out, "ARISE2_L1P5 not defined\n");
+// #endif
+    // std::cerr << m_cache_name << " m_atom_sz = " << m_atom_sz << 
+    //   " SECTOR_SIZE = " << SECTOR_SIZE << "\n";
+    fprintf(Trace::out, "%s m_atom_sz = %u B, SECTOR_SIZE = %u B\n",
+      m_cache_name, m_atom_sz, SECTOR_SIZE
+    );
+
     m_sector_sz_log2 = LOGB2(SECTOR_SIZE);
     original_m_assoc = m_assoc;
 
@@ -817,9 +858,14 @@ class cache_config {
       bool cond = m_line_sz / SECTOR_SIZE == SECTOR_CHUNCK_SIZE &&
                   m_line_sz % SECTOR_SIZE == 0;
       if (!cond) {
+        std::cerr << "assert failed! " << cache_name << 
+          " (m_line_sz:" << m_line_sz << 
+          " / SECTOR_SIZE:" << SECTOR_SIZE << 
+          ") != SECTOR_CHUNCK_SIZE:" << SECTOR_CHUNCK_SIZE << "\n";
+
         std::cerr << "error: For sector cache, the simulator uses hard-coded "
-                     "SECTOR_SIZE and SECTOR_CHUNCK_SIZE. The line size "
-                     "must be product of both values.\n";
+                    "SECTOR_SIZE and SECTOR_CHUNCK_SIZE. The line size "
+                    "must be product of both values.\n";
         assert(0);
       }
     }
@@ -935,12 +981,15 @@ class cache_config {
   char *m_config_string;
   char *m_config_stringPrefL1;
   char *m_config_stringPrefShared;
-  FuncCache cache_status;
+  FuncCache cache_status;  
   unsigned m_wr_percent;
   write_allocate_policy_t get_write_allocate_policy() {
     return m_write_alloc_policy;
   }
   write_policy_t get_write_policy() { return m_write_policy; }
+
+  const char* getCacheName() const { return m_cache_name; }
+  const unsigned getSectorSize() const { return m_sector_size; }
 
  protected:
   void exit_parse_error() {
@@ -949,6 +998,8 @@ class cache_config {
     abort();
   }
 
+  const char* m_cache_name;
+  unsigned m_sector_size; // Globallly replace the hard-coded "SECTOR_SIZE"
   bool m_valid;
   bool m_disabled;
   unsigned m_line_sz;
@@ -1001,12 +1052,13 @@ class cache_config {
 
 class l1d_cache_config : public cache_config {
  public:
-  l1d_cache_config() : cache_config() {}
+  l1d_cache_config() : cache_config() {
+  }
   unsigned set_bank(new_addr_type addr) const;
-  void init(char *config, FuncCache status) {
+  void init(char *config, FuncCache status, const char* cache_name = "L1D") {
     l1_banks_byte_interleaving_log2 = LOGB2(l1_banks_byte_interleaving);
     l1_banks_log2 = LOGB2(l1_banks);
-    cache_config::init(config, status);
+    cache_config::init(config, status, cache_name);
   }
   unsigned l1_latency;
   unsigned l1_banks;
@@ -1030,12 +1082,15 @@ class l1d_cache_config : public cache_config {
 
 class l2_cache_config : public cache_config {
  public:
-  l2_cache_config() : cache_config() {}
+  l2_cache_config() : cache_config() {
+    cache_name = "L2";
+  }
   void init(linear_to_raw_address_translation *address_mapping);
   virtual unsigned set_index(new_addr_type addr) const;
 
   bool m_disable_wr_merge;
  private:
+  const char* cache_name;
   linear_to_raw_address_translation *m_address_mapping;
 };
 
@@ -1143,12 +1198,15 @@ class mshr_table {
   {
   }
 
+  /// Get MSHR occupancy
+  unsigned occupied_entries() const { return static_cast<unsigned>(m_data.size()); }
+  unsigned merged_slots(new_addr_type block_addr) { return m_data[block_addr].m_list.size(); }
   /// Checks if there is a pending request to the lower memory level already
   bool probe(new_addr_type block_addr) const;
   /// Checks if there is space for tracking a new memory access
   bool full(new_addr_type block_addr) const;
   /// Add or merge this access
-  void add(new_addr_type block_addr, mem_fetch *mf);
+  void add(new_addr_type block_addr, mem_fetch *mf, const char* cache_name="");
   /// Returns true if cannot accept new fill responses
   bool busy() const { return false; }
   /// Accept a new cache fill response: mark entry ready for processing
@@ -1156,8 +1214,8 @@ class mshr_table {
   /// Returns true if ready accesses exist
   bool access_ready() const { return !m_current_response.empty(); }
   /// Returns next ready access
-  mem_fetch *next_access();
-  void display(FILE *fp) const;
+  mem_fetch *next_access(const char* cache_name);
+  void display(FILE *fp, const char* cache_name= "") const;
   // Returns true if there is a pending read after write
   bool is_read_after_write_pending(new_addr_type block_addr);
 
@@ -1318,11 +1376,11 @@ class cache_stats {
   void clear();
   // Clear AerialVision cache stats after each window
   void clear_pw();
-  void inc_stats(int access_type, int access_outcome,
-                 unsigned long long streamID);
+  unsigned get_mshr_merge_dist_cnt(unsigned long long streamID, unsigned sm_id, unsigned warp_id);
+  void inc_mshr_stats(unsigned long long streamID, unsigned sm_id, unsigned warp_id);
+  void inc_stats(int access_type, int access_outcome, unsigned long long streamID);
   // Increment AerialVision cache stats
-  void inc_stats_pw(int access_type, int access_outcome,
-                    unsigned long long streamID);
+  void inc_stats_pw(int access_type, int access_outcome, unsigned long long streamID);
   void inc_fail_stats(int access_type, int fail_outcome,
                       unsigned long long streamID, int fail_driver = -1);
   enum cache_request_status select_stats_status(
@@ -1333,6 +1391,8 @@ class cache_stats {
   unsigned long long operator()(int access_type, int access_outcome,
                                 bool fail_outcome,
                                 unsigned long long streamID) const;
+  unsigned long long operator()(unsigned sm, unsigned warp,
+                                unsigned long long streamID) const;
 
   unsigned long long operator()(int access_type, int access_outcome,
                                 bool is_fail_outcome,
@@ -1342,9 +1402,11 @@ class cache_stats {
   cache_stats operator+(const cache_stats &cs);
   cache_stats &operator+=(const cache_stats &cs);
   void print_stats(FILE *fout, unsigned long long streamID,
-                   const char *cache_name = "Cache_stats") const;
+                   const char *cache_info = "Cache_stats") const;
   void print_fail_stats(FILE *fout, unsigned long long streamID,
-                        const char *cache_name = "Cache_fail_stats") const;
+                        const char *cache_info = "Cache_fail_stats") const;
+  void print_mshr_stats(FILE *fout, unsigned long long streamID,
+                        const char *cache_info = "mshr_stats") const;
 
   unsigned long long get_stats(enum mem_access_type *access_type,
                                unsigned num_access_type,
@@ -1357,13 +1419,20 @@ class cache_stats {
 
   void sample_cache_port_utility(bool data_port_busy, bool fill_port_busy);
 
+  void setCacheName(const char* cache_name) { m_cache_name = cache_name; }
+  const char* getCacheName() const { return m_cache_name; }  
+  void setSubPartition(const unsigned sub_partition) { m_sub_partition = sub_partition; }
+  const unsigned getSubPartition() const { return m_sub_partition; }
+
  private:
+  const char* m_cache_name;
+  unsigned m_sub_partition;
   bool check_valid(int type, int status) const;
+  bool check_valid(unsigned sm, unsigned warp) const;
   bool check_fail_valid(int type, int fail) const;
 
   // CUDA streamID -> cache stats[NUM_MEM_ACCESS_TYPE]
-  std::map<unsigned long long, std::vector<std::vector<unsigned long long>>>
-      m_stats;
+  std::map<unsigned long long, std::vector<std::vector<unsigned long long>>> m_stats;
   // AerialVision cache stats (per-window)
   std::map<unsigned long long, std::vector<std::vector<unsigned long long>>> m_stats_pw;
   std::map<unsigned long long, std::vector<std::vector<unsigned long long>>> m_fail_stats;
@@ -1372,6 +1441,10 @@ class cache_stats {
   std::map<unsigned long long, std::vector<std::vector<unsigned long long>>> m_miss_q_full;
   std::map<unsigned long long, std::vector<std::vector<unsigned long long>>> m_mshr_merge_entry_fail;
   std::map<unsigned long long, std::vector<unsigned long long>> m_fail_stats_total;
+  std::map<
+    unsigned long long /* streamID */, 
+    std::vector< /* SMs */
+      std::vector<unsigned> /* WARPs per SM */ >> m_mshr_occupancy_stats;
 
   unsigned long long m_cache_port_available_cycles;
   unsigned long long m_cache_data_port_busy_cycles;
@@ -1486,9 +1559,11 @@ class baseline_cache : public cache_t {
   bool waiting_for_fill(mem_fetch *mf);
   /// Are any (accepted) accesses that had to wait for memory now ready? (does
   /// not include accesses that "HIT")
-  bool access_ready() const { return m_mshrs.access_ready(); }
+  bool access_ready() const { 
+    return m_mshrs.access_ready(); 
+  }
   /// Pop next ready access (does not include accesses that "HIT")
-  mem_fetch *next_access() { return m_mshrs.next_access(); }
+  mem_fetch *next_access(const char* cache_name) { return m_mshrs.next_access(cache_name); }
   // flash invalidate all entries in cache
   void flush() { m_tag_array->flush(); }
   void invalidate() { m_tag_array->invalidate(); }
@@ -1601,19 +1676,19 @@ class baseline_cache : public cache_t {
   /// max # of misses to be handled on this cycle
   bool miss_queue_full(unsigned num_miss) {
     if (DTRACE(MEM_STALL_GLOBAL)) {
-      std::string cache_type = m_is_l1d ? "L1D" : (m_is_l2 ? "L2" : "other L1");
-      fprintf(Trace::out, "miss_queue_full at %s\n", cache_type.c_str());
+      std::string cache_name = m_is_l1d ? "L1D" : (m_is_l2 ? "L2" : "other L1");
+      fprintf(Trace::out, "miss_queue_full at %s\n", cache_name.c_str());
     }
     return ((m_miss_queue.size() + num_miss) >= m_config.m_miss_queue_size);
   }
   /// Read miss handler without writeback
   void send_read_request(new_addr_type addr, new_addr_type block_addr,
-                         unsigned cache_index, mem_fetch *mf, unsigned time,
+                         unsigned cache_index, mem_fetch *mf, unsigned long long time,
                          bool &do_miss, std::list<cache_event> &events,
                          bool read_only, bool wa);
   /// Read miss handler. Check MSHR hit or MSHR available
   void send_read_request(new_addr_type addr, new_addr_type block_addr,
-                         unsigned cache_index, mem_fetch *mf, unsigned time,
+                         unsigned cache_index, mem_fetch *mf, unsigned long long time,
                          bool &do_miss, bool &wb, evicted_block_info &evicted,
                          std::list<cache_event> &events, bool read_only,
                          bool wa);

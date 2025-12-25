@@ -35,6 +35,7 @@ TRACE?=1
 include ../version_detection.mk
 
 CXXFLAGS = -Wall -DDEBUG
+# CXXFLAGS = -fsanitize=address -Wall -DDEBUG
 CXXFLAGS += -DCUDART_VERSION=$(CUDART_VERSION)
 
 ifeq ($(GNUC_CPP0X), 1)
@@ -52,6 +53,9 @@ else
 endif
 
 CXXFLAGS += -I$(CUDA_INSTALL_PATH)/include
+# CXXFLAGS += -DARISE2_L1P5
+$(warning Makfile path = $(CURDIR))
+$(warning CXXFLAGS = $(CXXFLAGS))
 
 OPTFLAGS += -g3 -fPIC
 
@@ -84,3 +88,6 @@ option_parser.$(OEXT): option_parser.h
 
 include $(OUTPUT_DIR)/Makefile.makedepend
 
+# .PHONY: debug_flags
+# debug_flags:
+#     @echo "CXXFLAGS = $(CXXFLAGS)"

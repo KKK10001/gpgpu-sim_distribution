@@ -324,6 +324,18 @@ To build the doxygen generated documentations, run
 
 	make docs
 
+I suggest you always clean and then make
+
+	make clean && make -j64
+
+SECTOR_SIZE and SECTOR_CHUNCK_SIZE are hard-coded by default.</br>
+For correlation with Arise2 L1P5, conditional compilation is supported.</br>
+Add -D as below
+
+	# CXXFLAGS += -DARISE2_L1P5
+
+both to </br>$ACCELSIM_ROOT/gpgpu-sim/src/Makefile</br>and to</br>$ACCELSIM_ROOT/gpgpu-sim/src/gpgpu-sim/Makefile
+
 To clean the docs run
 
 	make cleandocs

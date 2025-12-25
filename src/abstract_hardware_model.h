@@ -783,10 +783,22 @@ class memory_space_t {
                     // manual, sec. 5.1.3)
 };
 
+// unsigned SECTOR_SIZE;
+// unsigned MAX_MEMORY_ACCESS_SIZE;
+
+// const char* arch_option = std::getenv("USE_ARISE_ARCH");
+// #ifdef ARISE2_L1P5
+// const unsigned SECTOR_SIZE = 64;        // sector is 64 bytes width
+// const unsigned MAX_MEMORY_ACCESS_SIZE = 256;
+// #else
+// const unsigned SECTOR_SIZE = 32;        // sector is 32 bytes width
+// const unsigned MAX_MEMORY_ACCESS_SIZE = 128;
+// #endif
+
+const unsigned SECTOR_SIZE = 32;        // sector is 32 bytes width
 const unsigned MAX_MEMORY_ACCESS_SIZE = 128;
 typedef std::bitset<MAX_MEMORY_ACCESS_SIZE> mem_access_byte_mask_t;
 const unsigned SECTOR_CHUNCK_SIZE = 4;  // four sectors
-const unsigned SECTOR_SIZE = 32;        // sector is 32 bytes width
 typedef std::bitset<SECTOR_CHUNCK_SIZE> mem_access_sector_mask_t;
 #define NO_PARTIAL_WRITE (mem_access_byte_mask_t())
 

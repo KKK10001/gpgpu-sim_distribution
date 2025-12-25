@@ -491,6 +491,12 @@ shader_core_ctx::shader_core_ctx(class gpgpu_sim *gpu,
   m_sid = shader_id;
   m_tpc = tpc_id;
 
+  if (DTRACE(SM_CTX)) {
+    fprintf(Trace::out, "%llu Created TPC:%u SM:%u\n",
+            m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
+            m_tpc, m_sid);
+  }
+
   if (get_gpu()->get_config().g_power_simulation_enabled) {
     scaling_coeffs = get_gpu()->get_scaling_coeffs();
   }
@@ -951,7 +957,8 @@ void shader_core_ctx::decode() {
 void shader_core_ctx::fetch() {
   if (!m_inst_fetch_buffer.m_valid) {
     if (m_L1I->access_ready()) {
-      mem_fetch *mf = m_L1I->next_access();
+      const char* cache_type = "L1I";
+      mem_fetch *mf = m_L1I->next_access(cache_type);
       m_warp[mf->get_wid()]->clear_imiss_pending();
       m_inst_fetch_buffer =
           ifetch_buffer_t(m_warp[mf->get_wid()]->get_pc(),
@@ -2066,11 +2073,35 @@ void ldst_unit::print_cache_stats(FILE *fp, unsigned &dl1_accesses,
   }
 }
 
-void ldst_unit::get_cache_stats(cache_stats &cs) {
+void ldst_unit::get_cache_stats(cache_stats &cs, unsigned sm) {  
   // Adds stats to 'cs' from each cache
-  if (m_L1D) cs += m_L1D->get_stats();
-  if (m_L1C) cs += m_L1C->get_stats();
-  if (m_L1T) cs += m_L1T->get_stats();
+  if (m_L1D) {
+    const char* cache_type = "L1D";
+    cs.setCacheName(cache_type);
+    if (DTRACE(DATA_CACHE_STATS) || DTRACE(CACHE_STATS)) {
+      fprintf(Trace::out, "%llu SM:%u m_L1D->get_stats()\n",
+        m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, sm);
+    }
+    cs += m_L1D->get_stats();
+  } 
+  if (m_L1C) {
+    const char* cache_type = "L1C";
+    cs.setCacheName(cache_type);
+    if (DTRACE(CACHE_STATS)) {
+      fprintf(Trace::out, "%llu SM:%u m_L1C->get_stats()\n",
+        m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, sm);
+    }
+    cs += m_L1C->get_stats();
+  }
+  if (m_L1T) {
+    const char* cache_type = "L1T";
+    cs.setCacheName(cache_type);
+    if (DTRACE(CACHE_STATS)) {
+      fprintf(Trace::out, "%llu SM:%u m_L1T->get_stats()\n",
+        m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, sm);
+    }    
+    cs += m_L1T->get_stats();
+  } 
 }
 
 void ldst_unit::get_L1D_sub_stats(struct cache_sub_stats &css) const {
@@ -2079,10 +2110,14 @@ void ldst_unit::get_L1D_sub_stats(struct cache_sub_stats &css) const {
   } 
 }
 void ldst_unit::get_L1C_sub_stats(struct cache_sub_stats &css) const {
-  if (m_L1C) m_L1C->get_sub_stats(css);
+  if (m_L1C) {
+    m_L1C->get_sub_stats(css);
+  } 
 }
 void ldst_unit::get_L1T_sub_stats(struct cache_sub_stats &css) const {
-  if (m_L1T) m_L1T->get_sub_stats(css);
+  if (m_L1T) {
+    m_L1T->get_sub_stats(css);
+  } 
 }
 
 // Add this function to unset depbar
@@ -2203,11 +2238,11 @@ void shader_core_ctx::writeback() {
     m_gpu->gpu_sim_insn_last_update_sid = m_sid;
     m_gpu->gpu_sim_insn_last_update     = m_gpu->gpu_sim_cycle;
 
-    op_type curr_op_type = (*preg)->op;
-    m_gpu->gpu_sim_tot_uarch_op_lat[curr_op_type] +=
-        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle -
-        m_gpu->sched_cycle[(*preg)->pc];
-    m_gpu->gpu_sim_tot_uarch_op_insts[curr_op_type]++;
+    // op_type curr_op_type = (*preg)->op;
+    // m_gpu->gpu_sim_tot_uarch_op_lat[curr_op_type] +=
+    //     m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle -
+    //     m_gpu->sched_cycle[(*preg)->pc];
+    // m_gpu->gpu_sim_tot_uarch_op_insts[curr_op_type]++;
     
     m_last_inst_gpu_sim_cycle     = m_gpu->gpu_sim_cycle;
     m_last_inst_gpu_tot_sim_cycle = m_gpu->gpu_tot_sim_cycle;
@@ -2412,6 +2447,8 @@ void ldst_unit::L1_latency_queue_cycle() {
     if ((l1_latency_queue[bank_id][0]) != NULL) {
       mem_fetch *mf_next = l1_latency_queue[bank_id][0];
       std::list<cache_event> events;
+      mf_next->setBankID(bank_id);
+      mf_next->setTime(time);
       enum cache_request_status status = m_L1D->access(mf_next->get_addr(), mf_next, time, events);
 
       bool write_sent = was_write_sent(events);
@@ -3192,7 +3229,8 @@ void ldst_unit::writeback() {
         break;
       case 2:  // const cache response
         if (m_L1C->access_ready()) {
-          mem_fetch *mf = m_L1C->next_access();
+          const char* cache_type = "L1C";
+          mem_fetch *mf = m_L1C->next_access(cache_type);
           m_next_wb = mf->get_inst();
           m_next_wb_source = "CONST_RETURN";
           delete mf;
@@ -3215,7 +3253,8 @@ void ldst_unit::writeback() {
         break;
       case 4:
         if (m_L1D && m_L1D->access_ready()) {
-          mem_fetch *mf = m_L1D->next_access();
+          const char* cache_type = "L1D";
+          mem_fetch *mf = m_L1D->next_access(cache_type);
           m_next_wb = mf->get_inst();
           m_next_wb_source = "L1D_FILL_RETURN";
           delete mf;
@@ -3348,11 +3387,11 @@ void ldst_unit::cycle() {
   m_L1T->cycle();
   m_L1C->cycle();
   if (m_L1D) {
-    fprintf(Trace::out, "%llu Entering m_L1D->cycle() the %u times\n", time, m_cnt_l1d_run_cycles);
+    // fprintf(Trace::out, "%llu Entering m_L1D->cycle() the %u times\n", time, m_cnt_l1d_run_cycles);
     
     m_L1D->cycle();
     if (m_config->m_L1D_config.l1_latency > 0) {
-      fprintf(Trace::out, "%llu Entering L1_latency_queue_cycle() %u times\n", time, m_cnt_l1d_run_cycles);
+      // fprintf(Trace::out, "%llu Entering L1_latency_queue_cycle() %u times\n", time, m_cnt_l1d_run_cycles);
 
       L1_latency_queue_cycle();
       m_cnt_l1d_run_cycles++;
@@ -4537,14 +4576,20 @@ void shader_core_ctx::print_cache_stats(FILE *fp, unsigned &dl1_accesses,
   m_ldst_unit->print_cache_stats(fp, dl1_accesses, dl1_misses);
 }
 
-void shader_core_ctx::get_cache_stats(cache_stats &cs) {
+void shader_core_ctx::get_cache_stats(cache_stats &cs, unsigned sm) {
   // Adds stats from each cache to 'cs'
+  const char* cache_type = "L1I";
+  cs.setCacheName(cache_type);
   cs += m_L1I->get_stats();          // Get L1I stats
-  m_ldst_unit->get_cache_stats(cs);  // Get L1D, L1C, L1T stats
+
+  // cache_type would be overwitten inside m_ldst_unit->get_cache_stats()
+  m_ldst_unit->get_cache_stats(cs, sm);  // Get L1D, L1C, L1T stats
 }
 
 void shader_core_ctx::get_L1I_sub_stats(struct cache_sub_stats &css) const {
-  if (m_L1I) m_L1I->get_sub_stats(css);
+  if (m_L1I) {
+    m_L1I->get_sub_stats(css);
+  } 
 }
 void shader_core_ctx::get_L1D_sub_stats(struct cache_sub_stats &css) const {
   m_ldst_unit->get_L1D_sub_stats(css);
@@ -5344,7 +5389,11 @@ void simt_core_cluster::get_icnt_stats(long &n_simt_to_mem,
 
 void simt_core_cluster::get_cache_stats(cache_stats &cs) const {
   for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; ++i) {
-    m_core[i]->get_cache_stats(cs);
+    if (DTRACE(M_STATS)) { // 12-22
+      fprintf(Trace::out, "%llu m_core[%u]->get_cache_stats\n",
+        m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, i);
+    }
+    m_core[i]->get_cache_stats(cs, i);
   }
 }
 
