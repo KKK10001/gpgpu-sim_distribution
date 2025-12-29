@@ -204,7 +204,9 @@ class memory_sub_partition {
   void force_l2_tag_update(new_addr_type addr, unsigned time,
                            mem_access_sector_mask_t mask) {
     m_L2cache->force_tag_access(addr, m_memcpy_cycle_offset + time, mask);
+  #ifndef EXCLUDE_MEMCPY_CYCLES_FROM_CACHE_TIMING
     m_memcpy_cycle_offset += 1;
+  #endif
   }
 
  private:

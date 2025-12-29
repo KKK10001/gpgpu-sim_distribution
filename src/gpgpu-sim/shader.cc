@@ -2533,7 +2533,13 @@ void ldst_unit::L1_latency_queue_cycle() {
         assert(!read_sent);
         assert(!write_sent);
       } else {
-        assert(status == MISS || status == SECTOR_MISS || status == HIT_RESERVED);
+        assert(status == MISS || status == SECTOR_MISS || status == HIT_RESERVED);        
+        
+        if (DTRACE(CACHE_EVENT)) {
+          m_L1D->dumpCacheEvent(time, "Finished m_L1D->access", 
+            cache_request_status_str(cache_request_status(status)), mf_next);
+        }
+
         l1_latency_queue[bank_id][0] = NULL;
         if (m_config->m_L1D_config.get_write_policy() != WRITE_THROUGH &&
             mf_next->get_inst().is_store() &&

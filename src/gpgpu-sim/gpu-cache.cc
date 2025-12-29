@@ -85,6 +85,21 @@ const char *cache_request_status_str(enum cache_request_status status) {
   return static_cache_request_status_str[status];
 }
 
+const char *mshr_config_t_str(enum mshr_config_t type) {
+  static const char *static_mshr_config_t_str[] = {
+    "TEX_FIFO",
+    "ASSOC",
+    "SECTOR_TEX_FIFO",
+    "SECTOR_ASSOC"
+  };
+
+  assert(sizeof(static_mshr_config_t_str) / sizeof(const char *) ==
+         NUM_MSHR_CONFIGS);
+  assert(type < NUM_MSHR_CONFIGS);
+
+  return static_mshr_config_t_str[type];
+}
+
 //
 const char *mf_request_type_str(enum mf_type type) {
   static const char *static_mf_request_type_str[] = {
@@ -748,12 +763,12 @@ bool mshr_table::full(new_addr_type block_addr) const {
 }
 
 /// Add or merge this access
-void mshr_table::add(new_addr_type block_addr, mem_fetch *mf, const char* cache_type) {
-  [[maybe_unused]] bool add_new_entry = !m_data.count(block_addr) ? true : false; // for debug
+void mshr_table::add(new_addr_type block_addr, mem_fetch *mf, bool& is_new_entry, const char* cache_type) {
+  is_new_entry = !m_data.count(block_addr) ? true : false; // for debug
   [[maybe_unused]] const unsigned prev_size = m_data.size(); // for debug
 
   m_data[block_addr].m_list.push_back(mf);
-  
+
   assert(m_data.size() <= m_num_entries);
   assert(m_data[block_addr].m_list.size() <= m_max_merged);
   // indicate that this MSHR entry contains an atomic operation
@@ -867,6 +882,7 @@ void mshr_table::display(FILE *fp, const char* cache_type) const {
     }
   }
 }
+
 /***************************************************************** Caches
  * *****************************************************************/
 cache_stats::cache_stats() {
@@ -1425,12 +1441,12 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
     } else {
       for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
         for (unsigned status = 0; status < NUM_CACHE_RESERVATION_FAIL_STATUS; ++status) {
-          unsigned orig_fail_stats = m_fail_stats.at(streamID)[type][status];
+          unsigned long long orig_fail_stats = m_fail_stats.at(streamID)[type][status];
           m_fail_stats.at(streamID)[type][status] += cs(type, status, true, streamID);
           m_fail_stats_total.at(streamID)[type] += cs(type, status, true, streamID);
           if (DTRACE(M_STATS)) {
             fprintf(Trace::out, "%s %s"
-              "m_fail_stats[streamID:%llu][type:%u][status:%u](%u->%u) += cs(%u, %u, true, %llu)\n",
+              "m_fail_stats[streamID:%llu][type:%u][status:%u](%llu->%llu) += cs(%u, %u, true, %llu)\n",
               local_cache_type,
               !strcmp(local_cache_type, "L2") ? l2_prefix.c_str() : "",
               streamID, type, status,
@@ -1898,20 +1914,20 @@ void baseline_cache::dump_cache_access_info(
 
   // std::pair<std::bitset<128>, std::bitset<128>> u128_pair = to_u128_pair(mf->get_access_byte_mask());  
 
-  // std::pair<uint64_t,uint64_t> byte_mask_hi_lo = to_u64_pair(mf->get_access_byte_mask());
-  // fprintf(Trace::out,
-  //     "%llu %s%s%s %s %s addr: %#llx block_addr: %#llx "
-  //     "byte_mask: 0x%016lx%016lx\n",
-  //     (unsigned long long)time,
-  //     caller,
-  //     dump_inst_str ? m_gpu->gpgpu_ctx->func_sim->ptx_get_insn_str(mf->get_inst().pc).c_str() : "",      
-  //     m_is_l1d ? "L1D" : m_is_l2 ? "L2C" : "xx$",
-  //     mf_request_type_str(mf->get_type()),
-  //     cache_request_status_str(status), 
-  //     (unsigned long long)mf->get_addr(),
-  //     (unsigned long long)block_addr,
-  //     byte_mask_hi_lo.first, byte_mask_hi_lo.second
-  //   );
+  std::pair<uint64_t,uint64_t> byte_mask_hi_lo = to_u64_pair(mf->get_access_byte_mask());
+  fprintf(Trace::out,
+      "%llu %s%s%s %s %s addr: %#llx block_addr: %#llx "
+      "byte_mask: 0x%016lx%016lx\n",
+      (unsigned long long)time,
+      caller,
+      dump_inst_str ? m_gpu->gpgpu_ctx->func_sim->ptx_get_insn_str(mf->get_inst().pc).c_str() : "",      
+      m_is_l1d ? "L1D" : m_is_l2 ? "L2C" : "xx$",
+      mf_request_type_str(mf->get_type()),
+      cache_request_status_str(status), 
+      (unsigned long long)mf->get_addr(),
+      (unsigned long long)block_addr,
+      byte_mask_hi_lo.first, byte_mask_hi_lo.second
+    );
 }
 
 void baseline_cache::dump_cache_fill_info(
@@ -2050,9 +2066,15 @@ void baseline_cache::fill(mem_fetch *mf, unsigned time) {
     if (DTRACE(CACHE_MISS)) {      
       dump_cache_fill_info("::fill ", e->second.m_addr, mf, time);
     }
+    if (DTRACE(CACHE_EVENT)) {
+      dumpCacheEvent(time, "::fill", "ap:ON_MISS m_tag_array->fill", mf);
+    }    
     m_tag_array->fill(e->second.m_cache_index, time, mf);
   }    
   else if (m_config.m_alloc_policy == ON_FILL) {
+    if (DTRACE(CACHE_EVENT)) {
+      dumpCacheEvent(time, "::fill", "ap:ON_FILL m_tag_array->fill", mf);
+    }     
     m_tag_array->fill(e->second.m_block_addr, time, mf, mf->is_write());
   } else {
     abort();
@@ -2065,9 +2087,8 @@ void baseline_cache::fill(mem_fetch *mf, unsigned time) {
     if (!block->is_modified_line()) {
       m_tag_array->inc_dirty();
     }
-    block->set_status(MODIFIED,
-                      mf->get_access_sector_mask());  // mark line as dirty for
-                                                      // atomic operation
+    // mark line as dirty for atomic operation
+    block->set_status(MODIFIED, mf->get_access_sector_mask());
     block->set_byte_mask(mf);
   }
   m_extra_mf_fields.erase(mf);
@@ -2090,6 +2111,70 @@ void baseline_cache::display_state(FILE *fp) const {
   fprintf(fp, "Cache %s:\n", m_name.c_str());
   m_mshrs.display(fp);
   fprintf(fp, "\n");
+}
+
+void baseline_cache::dumpCacheEvent(
+  unsigned long long time, const char* stage, const char* event, mem_fetch *mf) {
+
+  const char* cache_name = m_config.getCacheName();
+  std::string l2_prefix = "";
+  if (strcmp(cache_name, "L2") == 0) {
+    l2_prefix = "SG";
+    l2_prefix += std::to_string(mf->getSubPartition());
+    l2_prefix += " ";      
+  }
+  fprintf(Trace::out, "%llu %s %sstage(%s) cache_event(%s) "
+    "mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s}\n", 
+    time, cache_name, l2_prefix.c_str(), stage, event,
+    mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(), // mf info
+    mem_access_type_str(mem_access_type(mf->get_access_type()))
+  );
+}
+
+void baseline_cache::dumpMSHREvent(
+  unsigned long long time, mem_fetch *mf, new_addr_type mshr_addr, bool is_new_entry) {
+
+  const char* cache_name = m_config.getCacheName();
+  std::string l2_prefix = "";
+  if (strcmp(cache_name, "L2") == 0) {
+    l2_prefix = "SG";
+    l2_prefix += std::to_string(mf->getSubPartition());
+    l2_prefix += " ";      
+  }  
+  const char* action = is_new_entry ? "Created" : "Inserted";
+  fprintf(Trace::out, "%llu %s %s"
+    "%s mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s} %s MSHR[mshr_addr:%#llx] "
+    "entries: {occupancy=(%u/%u)=%f}; slots: {occupancy=(%u/%u)=%f}\n",
+    time, cache_name, l2_prefix.c_str(), action,
+    mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(), // mf info
+    mem_access_type_str(mem_access_type(mf->get_access_type())),
+    is_new_entry ? "in" : "into",
+    mshr_addr, 
+    m_mshrs.occupied_entries(), m_config.m_mshr_entries,
+    m_mshrs.occupied_entries() / (float)m_config.m_mshr_entries,
+    m_mshrs.merged_slots(mshr_addr), m_mshrs.get_max_merged(),
+    m_mshrs.merged_slots(mshr_addr) / (float)m_mshrs.get_max_merged()
+  );
+}
+
+void baseline_cache::dumpMissQueue(unsigned long long time, const char* stage, mem_fetch *mf) {
+
+  const char* cache_name = m_config.getCacheName();
+  std::string l2_prefix = "";
+  if (strcmp(cache_name, "L2") == 0) {
+    l2_prefix = "SG";
+    l2_prefix += std::to_string(mf->getSubPartition());
+    l2_prefix += " ";      
+  }
+  fprintf(Trace::out, "%llu %s %s%s "
+    "mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s} "
+    "-> MissQueue: {occupancy=(%lu/%u)=%f}\n",
+    time, cache_name, l2_prefix.c_str(), stage,
+    mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(), // mf info
+    mem_access_type_str(mem_access_type(mf->get_access_type())),
+    m_miss_queue.size(), m_config.m_miss_queue_size,
+    m_miss_queue.size() / (float)m_config.m_miss_queue_size
+  );
 }
 
 void baseline_cache::inc_aggregated_stats(cache_request_status status,
@@ -2176,13 +2261,21 @@ void baseline_cache::send_read_request(new_addr_type addr,
       m_mshrs.display(Trace::out, cache_type);      
     }
 
-    m_mshrs.add(mshr_addr, mf, cache_type); // orig GPGPU-SIM logic
+    [[maybe_unused]] bool is_l2 = !strcmp(m_config.getCacheName(), "L2");
+    bool is_new_mshr_entry = false;
+    m_mshrs.add(mshr_addr, mf, is_new_mshr_entry, cache_type); // orig GPGPU-SIM logic
+
+    if (DTRACE(CACHE_EVENT) || DTRACE(MSHR_EVENT)) {
+      dumpMSHREvent(time, mf, mshr_addr, is_new_mshr_entry);
+    }
 
     m_stats.inc_mshr_stats(mf->get_streamID(), mf->get_sid(), mf->get_wid());
     if (DTRACE(CACHE_REQ_DIST) || DTRACE(MSHR_ACCESS)) {
       assert(last_occupied_entries == m_mshrs.occupied_entries());
       fprintf(Trace::out, "%llu TPC:%u SM:%u WARP:%u "
-        "%s MSHR Hit (occupied:%u free:%u occupancy:%f) (merged:%u free:%u occupancy:%f) "
+        "%s MSHR Hit "
+        "entries: {occupied:%u free:%u occupancy:%f} "
+        "slots: {merged:%u free:%u occupancy:%f} "
         "Added slot {mshr_addr: %#llx, addr: %#llx} "
         "m_mshr_occupancy_stats[streamID:%llu][sm:%u][warp:%u] = %u\n", 
         time, mf->get_tpc(), mf->get_sid(), mf->get_wid(),
@@ -2221,9 +2314,15 @@ void baseline_cache::send_read_request(new_addr_type addr,
       m_mshrs.display(Trace::out, cache_type);
     }
 
-    m_mshrs.add(mshr_addr, mf, cache_type); // orig GPGPU-SIM logic
+    bool is_new_mshr_entry = false;
+    m_mshrs.add(mshr_addr, mf, is_new_mshr_entry, cache_type); // orig GPGPU-SIM logic
+
+    if (DTRACE(CACHE_EVENT) || DTRACE(MSHR_EVENT)) {
+      dumpMSHREvent(time, mf, mshr_addr, is_new_mshr_entry);
+    }
 
     m_stats.inc_mshr_stats(mf->get_streamID(), mf->get_sid(), mf->get_wid());
+
     if (DTRACE(CACHE_REQ_DIST) || DTRACE(MSHR_ACCESS)) {
       fprintf(Trace::out, "%llu TPC:%u SM:%u WARP:%u "
         "%s MSHR Miss (occupied:%u->%u free:%u occupancy:%f). "
@@ -2251,9 +2350,18 @@ void baseline_cache::send_read_request(new_addr_type addr,
     mf->set_data_size(m_config.get_atom_sz());
     mf->set_addr(mshr_addr);
     m_miss_queue.push_back(mf);
+
+    if (DTRACE(CACHE_EVENT) || DTRACE(MISS_QUEUE_EVENT)) {
+      dumpMissQueue(time, "RD-MISS-MSHR-MISS-AND-AVAIL", mf);
+    }
+
     mf->set_status(m_miss_queue_status, time);
     if (!wa) {
       events.push_back(cache_event(READ_REQUEST_SENT));
+
+      if (DTRACE(CACHE_EVENT)) {
+        dumpCacheEvent(time, "RD-MISS-THEN-CHECK-MSHR", "READ_REQUEST_SENT", mf);
+      }
     }
     do_miss = true;
   } else if (mshr_hit && !mshr_avail) {
@@ -2275,6 +2383,11 @@ void data_cache::send_write_request(mem_fetch *mf, cache_event request,
                                     std::list<cache_event> &events) {
   events.push_back(request);
   m_miss_queue.push_back(mf);
+
+  if (DTRACE(CACHE_EVENT) || DTRACE(MISS_QUEUE_EVENT)) {
+    dumpMissQueue(time, "SEND-WR-REQ-TO-LOWER-LEVEL-MEM", mf);
+  }
+
   mf->set_status(m_miss_queue_status, time);
 }
 
@@ -2352,6 +2465,10 @@ cache_request_status data_cache::wr_hit_wt(new_addr_type addr,
   // generate a write-through
   send_write_request(mf, cache_event(WRITE_REQUEST_SENT), time, events);
 
+  if (DTRACE(CACHE_EVENT)) {
+    dumpCacheEvent(time, "WT-HIT-THEN-SEND-TO-LOWER-MEM", "WRITE_REQUEST_SENT", mf);
+  }
+
   return HIT;
 }
 
@@ -2379,6 +2496,11 @@ cache_request_status data_cache::wr_hit_we(new_addr_type addr,
   // generate a write-through/evict
   cache_block_t *block = m_tag_array->get_block(cache_index);
   send_write_request(mf, cache_event(WRITE_REQUEST_SENT), time, events);
+
+  if (DTRACE(CACHE_EVENT)) {
+    dumpCacheEvent(time, "WR-EVICT-HIT-THEN-SEND-TO-LOWER-MEM-AND-INV-CURR-CACHE", 
+      "WRITE_REQUEST_SENT", mf);
+  }
 
   // Invalidate block
   block->set_status(INVALID, mf->get_access_sector_mask());
@@ -2450,6 +2572,9 @@ enum cache_request_status data_cache::wr_miss_wa_naive(
   // failure
   // if(!send_write_allocate(mf, addr, block_addr, cache_index, time, events))
   //    return RESERVATION_FAIL;
+  if (DTRACE(CACHE_EVENT)) {
+    dumpCacheEvent(time, "WT-ALLOC-MISS-THEN-SEND-WR-TO-LOWER-MEM", "WRITE_REQUEST_SENT", mf);
+  }  
 
   const mem_access_t *ma =
       new mem_access_t(m_wr_alloc_type, mf->get_addr(), m_config.get_atom_sz(),
@@ -2468,9 +2593,13 @@ enum cache_request_status data_cache::wr_miss_wa_naive(
 
   // Send read request resulting from write miss
   send_read_request(addr, block_addr, cache_index, n_mf, time, do_miss, wb,
-                    evicted, events, false, true);
+                    evicted, events, false, true);              
 
   events.push_back(cache_event(WRITE_ALLOCATE_SENT));
+
+  if (DTRACE(CACHE_EVENT)) {
+    dumpCacheEvent(time, "WT-ALLOC-MISS-PHASE2-SENT-RD", "WRITE_ALLOCATE_SENT", mf);
+  }
 
   if (do_miss) {
     // If evicted block is modified and not a write-through
@@ -2488,6 +2617,11 @@ enum cache_request_status data_cache::wr_miss_wa_naive(
       wb->set_partition(mf->get_tlx_addr().sub_partition);
       send_write_request(wb, cache_event(WRITE_BACK_REQUEST_SENT, evicted),
                          time, events);
+
+      if (DTRACE(CACHE_EVENT)) {
+        dumpCacheEvent(time, "WR-ALLOC-MISS-NO-MSHR-PENDING", "WRITE_BACK_REQUEST_SENT", mf);
+      }
+
     }
     return status;
   }
@@ -2551,6 +2685,10 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
         wb->set_partition(mf->get_tlx_addr().sub_partition);
         send_write_request(wb, cache_event(WRITE_BACK_REQUEST_SENT, evicted),
                            time, events);
+
+        if (DTRACE(CACHE_EVENT)) {
+          dumpCacheEvent(time, "TO-HANDLE-THE-EVICTED-LINE", "WRITE_BACK_REQUEST_SENT", mf);
+        }
       }
       return MISS;
     }
@@ -2625,6 +2763,10 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
 
     events.push_back(cache_event(WRITE_ALLOCATE_SENT));
 
+    if (DTRACE(CACHE_EVENT)) {
+      dumpCacheEvent(time, "PREVENT-WR-RD-WR-IN-PENDING-MSHR", "WRITE_ALLOCATE_SENT", mf);
+    }    
+
     if (do_miss) {
       // If evicted block is modified and not a write-through
       // (already modified lower level)
@@ -2640,6 +2782,10 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
         wb->set_partition(mf->get_tlx_addr().sub_partition);
         send_write_request(wb, cache_event(WRITE_BACK_REQUEST_SENT, evicted),
                            time, events);
+
+        if (DTRACE(CACHE_EVENT)) {
+          dumpCacheEvent(time, "xxx", "WRITE_BACK_REQUEST_SENT", mf);
+        }                               
       }
       return MISS;
     }
@@ -2673,6 +2819,10 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
 
   if (m_config.m_write_policy == WRITE_THROUGH) {
     send_write_request(mf, cache_event(WRITE_REQUEST_SENT), time, events);
+    if (DTRACE(CACHE_EVENT)) {
+      dumpCacheEvent(time, "WR-MISS {wp: WRITE_THROUGH wap: LAZY_FETCH_ON_READ}", 
+        "WRITE_REQUEST_SENT", mf);
+    }    
   }
 
   bool wb = false;
@@ -2729,7 +2879,7 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
   if (DTRACE(CACHELINE_STATUS)) {
     fprintf(Trace::out,
             "%llu:%s%s %s %s addr:%#llx m_sector[sidx:%u] (%s->%s) "
-            "dirty_byte_mask=0x%016llx%016llx is_readable=%u\n",
+            "dirty_byte_mask=0x%016lx%016lx is_readable=%u\n",
             (unsigned long long)(m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle),
             m_gpu->gpgpu_ctx->func_sim->ptx_get_insn_str(mf->get_inst().pc).c_str(),
             m_is_l1d ? "L1D" : m_is_l2 ? "L2C" : "xx$",
@@ -2757,6 +2907,11 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
       wb->set_partition(mf->get_tlx_addr().sub_partition);
       send_write_request(wb, cache_event(WRITE_BACK_REQUEST_SENT, evicted),
                          time, events);
+
+      if (DTRACE(CACHE_EVENT)) {
+        dumpCacheEvent(time, "WR-MISS {wp: WRITE_BACK wap: LAZY_FETCH_ON_READ}", 
+          "WRITE_BACK_REQUEST_SENT", mf);
+      }                            
     }
 
     return MISS;
@@ -2795,6 +2950,11 @@ enum cache_request_status data_cache::wr_miss_no_wa(
   // on miss, generate write through (no write buffering -- too many threads for
   // that)
   send_write_request(mf, cache_event(WRITE_REQUEST_SENT), time, events);
+
+  if (DTRACE(CACHE_EVENT)) {
+    dumpCacheEvent(time, "WR-MISS {wap: NO_WRITE_ALLOC} DIRECTLY-SEND-TO-LOWER-MEM", 
+      "WRITE_REQUEST_SENT", mf);
+  }
 
   return MISS;
 }
@@ -2836,6 +2996,11 @@ enum cache_request_status data_cache::rd_miss_base(
   
   if (status == cache_request_status::MISS || \
       status == cache_request_status::SECTOR_MISS) {
+
+    if (DTRACE(CACHE_EVENT)) {
+      dumpCacheEvent(time, "::rd_miss_base entered", 
+        cache_request_status_str(status), mf);
+    }
 
     if (DTRACE(CACHE_MISS)) {
       dump_cache_access_info("::rd_miss_base ", addr, mf, time, status);
@@ -2971,6 +3136,11 @@ enum cache_request_status data_cache::process_tag_probe(
     } else if ((probe_status != RESERVATION_FAIL) ||
                (probe_status == RESERVATION_FAIL &&
                 m_config.m_write_alloc_policy == NO_WRITE_ALLOCATE)) {
+
+      if (DTRACE(CACHE_EVENT)) {
+        dumpCacheEvent(time, "tag_probe", "m_wr_miss", mf);
+      }
+
       access_status = (this->*m_wr_miss)(addr, cache_index, mf, time, events, probe_status);
     } else {
       // the only reason for reservation fail here is LINE_ALLOC_FAIL (i.e all
@@ -2982,6 +3152,9 @@ enum cache_request_status data_cache::process_tag_probe(
     if (probe_status == HIT) {
       access_status = (this->*m_rd_hit)(addr, cache_index, mf, time, events, probe_status);
     } else if (probe_status != RESERVATION_FAIL) {
+      if (DTRACE(CACHE_EVENT)) {
+        dumpCacheEvent(time, "tag_probe", "m_rd_miss", mf);
+      }
       access_status = (this->*m_rd_miss)(addr, cache_index, mf, time, events, probe_status);
     } else {
       // the only reason for reservation fail here is LINE_ALLOC_FAIL (i.e all
@@ -3074,9 +3247,9 @@ enum cache_request_status l1_cache::access(new_addr_type addr, mem_fetch *mf,
 // The l2 cache access function calls the base data_cache access
 // implementation.  When the L2 needs to diverge from L1, L2 specific
 // changes should be made here.
-enum cache_request_status l2_cache::access(new_addr_type addr, mem_fetch *mf,
-                                           unsigned long long time,
-                                           std::list<cache_event> &events) {
+enum cache_request_status l2_cache::access(
+  new_addr_type addr, mem_fetch *mf, unsigned long long time,
+  std::list<cache_event> &events) {
   return data_cache::access(addr, mf, time, events);
 }
 
@@ -3113,6 +3286,9 @@ enum cache_request_status tex_cache::access(new_addr_type addr, mem_fetch *mf,
     mf->set_status(m_request_queue_status, time);
     events.push_back(cache_event(READ_REQUEST_SENT));
     cache_status = status;
+    // if (DTRACE(CACHE_EVENT)) {
+    //   dumpCacheEvent(time, "TEXTURE-CACHE-MISS", "READ_REQUEST_SENT", mf);
+    // }
   } else {
     // the value *will* *be* in the cache already
     cache_status = HIT_RESERVED;

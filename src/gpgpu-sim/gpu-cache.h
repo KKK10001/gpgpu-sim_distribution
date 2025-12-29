@@ -60,6 +60,14 @@ enum cache_request_status {
   NUM_CACHE_REQUEST_STATUS
 };
 
+enum mshr_config_t {
+  TEX_FIFO,         // Tex cache
+  ASSOC,            // normal cache
+  SECTOR_TEX_FIFO,  // Tex cache sends requests to high-level sector cache
+  SECTOR_ASSOC,      // normal cache sends requests to high-level sector cache
+  NUM_MSHR_CONFIGS
+};
+
 enum replacement_policy_t { LRU, FIFO };
 
 enum write_policy_t {
@@ -180,6 +188,7 @@ struct cache_event {
 };
 
 const char *cache_request_status_str(enum cache_request_status status);
+const char* mshr_config_t_str(enum mshr_config_t mshr_config);
 const char* write_policy_str(enum write_policy_t wp);
 const char* write_allocate_policy_str(enum write_allocate_policy_t wap);
 
@@ -596,13 +605,6 @@ struct sector_cache_block : public cache_block_t {
   }
 };
 
-enum mshr_config_t {
-  TEX_FIFO,         // Tex cache
-  ASSOC,            // normal cache
-  SECTOR_TEX_FIFO,  // Tex cache sends requests to high-level sector cache
-  SECTOR_ASSOC      // normal cache sends requests to high-level sector cache
-};
-
 enum set_index_function {
   LINEAR_SET_FUNCTION = 0,
   BITWISE_XORING_FUNCTION,
@@ -990,6 +992,7 @@ class cache_config {
 
   const char* getCacheName() const { return m_cache_name; }
   const unsigned getSectorSize() const { return m_sector_size; }
+  const unsigned getSubPartition() const { return m_sub_partition; }
 
  protected:
   void exit_parse_error() {
@@ -1000,6 +1003,7 @@ class cache_config {
 
   const char* m_cache_name;
   unsigned m_sector_size; // Globallly replace the hard-coded "SECTOR_SIZE"
+  unsigned m_sub_partition;
   bool m_valid;
   bool m_disabled;
   unsigned m_line_sz;
@@ -1087,7 +1091,6 @@ class l2_cache_config : public cache_config {
   }
   void init(linear_to_raw_address_translation *address_mapping);
   virtual unsigned set_index(new_addr_type addr) const;
-
   bool m_disable_wr_merge;
  private:
   const char* cache_name;
@@ -1206,7 +1209,7 @@ class mshr_table {
   /// Checks if there is space for tracking a new memory access
   bool full(new_addr_type block_addr) const;
   /// Add or merge this access
-  void add(new_addr_type block_addr, mem_fetch *mf, const char* cache_name="");
+  void add(new_addr_type block_addr, mem_fetch *mf, bool& is_new_entry, const char* cache_name="");
   /// Returns true if cannot accept new fill responses
   bool busy() const { return false; }
   /// Accept a new cache fill response: mark entry ready for processing
@@ -1422,7 +1425,7 @@ class cache_stats {
   void setCacheName(const char* cache_name) { m_cache_name = cache_name; }
   const char* getCacheName() const { return m_cache_name; }  
   void setSubPartition(const unsigned sub_partition) { m_sub_partition = sub_partition; }
-  const unsigned getSubPartition() const { return m_sub_partition; }
+  const unsigned getSubPartition() const { return m_sub_partition; }  
 
  private:
   const char* m_cache_name;
@@ -1471,6 +1474,7 @@ bool was_writeallocate_sent(const std::list<cache_event> &events);
 /// Implements common functions for read_only_cache and data_cache
 /// Each subclass implements its own 'access' function
 class baseline_cache : public cache_t {
+  friend class tex_cache;
   /// Sub-class containing all metadata for port bandwidth management
   class bandwidth_management {
     public:
@@ -1569,6 +1573,10 @@ class baseline_cache : public cache_t {
   void invalidate() { m_tag_array->invalidate(); }
   void print(FILE *fp, unsigned &accesses, unsigned &misses) const;
   void display_state(FILE *fp) const;
+  virtual void dumpCacheEvent(
+    unsigned long long time, const char* stage, const char* event, mem_fetch *mf);
+  virtual void dumpMSHREvent(unsigned long long time, mem_fetch *mf, new_addr_type mshr_addr, bool is_new_entry);
+  virtual void dumpMissQueue(unsigned long long time, const char* stage, mem_fetch *mf);
 
   // Stat collection
   const cache_stats &get_stats() const { return m_stats; }
@@ -1961,6 +1969,7 @@ class l1_cache : public data_cache {
 /// Models second level shared cache with global write-back
 /// and write-allocate policies
 class l2_cache : public data_cache {
+  friend class memory_sub_partition;
  public:
   l2_cache(const char *name, cache_config &config, int core_id, int type_id,
            mem_fetch_interface *memport, mem_fetch_allocator *mfcreator,
@@ -1971,9 +1980,15 @@ class l2_cache : public data_cache {
 
   virtual ~l2_cache() {}
 
-  virtual enum cache_request_status access(new_addr_type addr, mem_fetch *mf,
-                                           unsigned long long time,
-                                           std::list<cache_event> &events);
+  virtual enum cache_request_status access(
+    new_addr_type addr, mem_fetch *mf, unsigned long long time,
+    std::list<cache_event> &events);
+
+  // unsigned getSubPartitionID() const { return m_sub_partition_id; }
+
+  // protected:
+  //   unsigned m_sub_partition_id;
+  //   void setSubPartitionID(unsigned id) { m_sub_partition_id = id; }    
 };
 
 /*****************************************************************************/

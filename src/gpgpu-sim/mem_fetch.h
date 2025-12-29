@@ -53,6 +53,7 @@ enum mf_type {
 
 class memory_config;
 class mem_fetch {
+  friend class memory_sub_partition;
  public:
   mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
             unsigned long long streamID, unsigned ctrl_size, unsigned wid,
@@ -137,7 +138,15 @@ class mem_fetch {
   void setTime(const unsigned long long time) { m_time = time; }
   unsigned long long getTime() const { return m_time; }
 
+  unsigned getSubPartition() const { return m_sub_partition; }
+
  private:
+  // Pass-through L2 sub-partition for debugging/tracing
+  void setSubPartition(unsigned sub_partition) {
+    m_sub_partition = sub_partition;
+  }
+  unsigned m_sub_partition;
+
   // request source information
   unsigned m_request_uid;
   unsigned m_sid;
