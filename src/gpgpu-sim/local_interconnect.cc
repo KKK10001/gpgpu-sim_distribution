@@ -55,6 +55,32 @@ xbar_router::xbar_router(unsigned router_id, enum Interconnect_type m_type,
   out_buffer_limit = m_localinct_config.out_buffer_limit;
   arbit_type = m_localinct_config.arbiter_algo;
   next_node_id = 0;
+
+  printf(
+    "xbar_router::xbar_router\n "
+    "m_id:%u\n"
+    "router_type:%u\n"
+    "_n_mem:%u\n"
+    "_n_shader:%u\n"
+    "total_nodes:%u = (n_shader:%u + n_mem:%u)\n"
+    "verbose:%u\n"
+    "grant_cycles:%u\n"
+    "grant_cycles_count:%u\n"
+    "in_buffers[%lu]\nout_buffers[%lu]\n"
+    "next_node(%lu, 0)\n"
+    "in_buffer_limit:%u\n"
+    "out_buffer_limit:%u\n"
+    "arbit_type:%u\n"
+    "next_node_id:%u\n",
+    m_id, router_type, 
+    _n_mem, 
+    _n_shader, 
+    total_nodes, _n_shader, _n_mem,
+    verbose,
+    grant_cycles, grant_cycles_count, in_buffers.size(), out_buffers.size(),
+    next_node.size(), in_buffer_limit, out_buffer_limit, arbit_type, next_node_id
+  );
+
   if (m_type == REQ_NET) {
     active_in_buffers = n_shader;
     active_out_buffers = n_mem;

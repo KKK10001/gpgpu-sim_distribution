@@ -2047,6 +2047,14 @@ unsigned long long g_single_step =
 
 void gpgpu_sim::cycle() {
   int clock_mask = next_clock_domain();
+  const char* component_cycle = (clock_mask & CORE) ? "icnt_cycle" :
+    (clock_mask & ICNT) ? "mem_controller->IF cycle" :
+    (clock_mask & DRAM) ? "dram_cycle" :
+    (clock_mask & L2) ? "l2_cycle" : "xxx cycle";
+  if (DTRACE(SIM_TOP)) {
+    fprintf(Trace::out, "%llu current cycle is %s\n", 
+      gpu_sim_cycle + gpu_tot_sim_cycle, component_cycle);
+  }
 
   if (clock_mask & CORE) {
     // shader core loading (pop from ICNT into core) follows CORE clock
@@ -2059,14 +2067,11 @@ void gpgpu_sim::cycle() {
     for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
       mem_fetch *mf = m_memory_sub_partition[i]->top();
       if (mf) {
-        unsigned response_size =
-            mf->get_is_write() ? mf->get_ctrl_size() : mf->size();
+        unsigned response_size = mf->get_is_write() ? mf->get_ctrl_size() : mf->size();
         if (::icnt_has_buffer(m_shader_config->mem2device(i), response_size)) {
-          // if (!mf->get_is_write())
           mf->set_return_timestamp(gpu_sim_cycle + gpu_tot_sim_cycle);
           mf->set_status(IN_ICNT_TO_SHADER, gpu_sim_cycle + gpu_tot_sim_cycle);
-          ::icnt_push(m_shader_config->mem2device(i), mf->get_tpc(), mf,
-                      response_size);
+          ::icnt_push(m_shader_config->mem2device(i), mf->get_tpc(), mf, response_size);
           m_memory_sub_partition[i]->pop();
           partiton_replys_in_parallel_per_cycle++;
         } else {
@@ -2081,11 +2086,12 @@ void gpgpu_sim::cycle() {
 
   if (clock_mask & DRAM) {
     for (unsigned i = 0; i < m_memory_config->m_n_mem; i++) {
-      if (m_memory_config->simple_dram_model)
+      if (m_memory_config->simple_dram_model) {
         m_memory_partition_unit[i]->simple_dram_model_cycle();
-      else
-        m_memory_partition_unit[i]
-            ->dram_cycle();  // Issue the dram command (scheduler + delay model)
+      }        
+      else {
+        m_memory_partition_unit[i]->dram_cycle();  // Issue the dram command (scheduler + delay model)
+      }        
       // Update performance counters for DRAM
       if (m_config.g_power_simulation_enabled) {
         m_memory_partition_unit[i]->set_dram_power_stats(
@@ -2107,22 +2113,45 @@ void gpgpu_sim::cycle() {
   if (clock_mask & L2) {
     m_power_stats->pwr_mem_stat->l2_cache_stats[CURRENT_STAT_IDX].clear();
     for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
+      mem_fetch *mf_monitor = nullptr;      
       // move memory request from interconnect into memory partition (if not
       // backed up) Note:This needs to be called in DRAM clock domain if there
       // is no L2 cache in the system In the worst case, we may need to push
       // SECTOR_CHUNCK_SIZE requests, so ensure you have enough buffer for them
       if (m_memory_sub_partition[i]->full(SECTOR_CHUNCK_SIZE)) {
         gpu_stall_dramfull++;
+        if (DTRACE(L2_SUB_PARTITION)) {
+          fprintf(Trace::out, "%llu m_icnt_L2_queue full causing failure of "
+            "L2_sub[%i]->cache_cycle\n",
+            gpu_sim_cycle + gpu_tot_sim_cycle, i
+          );
+        }
       } else {
         mem_fetch *mf = (mem_fetch *)icnt_pop(m_shader_config->mem2device(i));
         m_memory_sub_partition[i]->push(mf, gpu_sim_cycle + gpu_tot_sim_cycle);
-        if (mf) partiton_reqs_in_parallel_per_cycle++;
+        if (mf) {
+          partiton_reqs_in_parallel_per_cycle++;
+          mf_monitor = mf;
+
+          if (DTRACE(L2_SUB_PARTITION)) {
+            fprintf(Trace::out, "%llu icnt_pop -> L2_sub[%i]->push mf:"
+              "{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx pos:%s}\n",
+              gpu_sim_cycle + gpu_tot_sim_cycle, i,
+              mf->get_tpc(), mf->get_sid(), mf->get_wid(), 
+              mf->get_request_uid(), mf->get_addr(), 
+              mf->mem_fetch_status_str(mf->get_status())
+            );
+          }            
+        } else {
+          if (DTRACE(L2_SUB_PARTITION)) {
+            fprintf(Trace::out, "%llu m_memory_sub_partition[%i]"
+              "->cache_cycle mf is nullptr from icnt_pop\n",
+              gpu_sim_cycle + gpu_tot_sim_cycle, i
+            );            
+          }
+        }
       }
-      if (DTRACE(L2_SUB_PARTITION)) {
-        fprintf(Trace::out, "%llu L2 sub-partition[%u]->cache_cycle\n",
-                gpu_tot_sim_cycle + gpu_sim_cycle, i);
-      }
-      m_memory_sub_partition[i]->cache_cycle(gpu_sim_cycle + gpu_tot_sim_cycle);
+      m_memory_sub_partition[i]->cache_cycle(gpu_sim_cycle + gpu_tot_sim_cycle, mf_monitor);
       if (m_config.g_power_simulation_enabled) {
         m_memory_sub_partition[i]->accumulate_L2cache_stats(
             m_power_stats->pwr_mem_stat->l2_cache_stats[CURRENT_STAT_IDX]);

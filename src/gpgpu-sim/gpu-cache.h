@@ -1216,8 +1216,9 @@ class mshr_table {
   void mark_ready(new_addr_type block_addr, bool &has_atomic);
   /// Returns true if ready accesses exist
   bool access_ready() const { return !m_current_response.empty(); }
+  size_t num_pending_responses() const { return m_current_response.size(); }
   /// Returns next ready access
-  mem_fetch *next_access(const char* cache_name);
+  mem_fetch *next_access(const char* cache_name, unsigned long long cycle = 0);
   void display(FILE *fp, const char* cache_name= "") const;
   // Returns true if there is a pending read after write
   bool is_read_after_write_pending(new_addr_type block_addr);
@@ -1566,8 +1567,13 @@ class baseline_cache : public cache_t {
   bool access_ready() const { 
     return m_mshrs.access_ready(); 
   }
+  /// 
+  size_t num_pending_responses() const {
+    return m_mshrs.num_pending_responses();
+  }
   /// Pop next ready access (does not include accesses that "HIT")
-  mem_fetch *next_access(const char* cache_name) { return m_mshrs.next_access(cache_name); }
+  mem_fetch *next_access(const char* cache_name, unsigned long long cycle = 0) 
+    { return m_mshrs.next_access(cache_name, cycle); }
   // flash invalidate all entries in cache
   void flush() { m_tag_array->flush(); }
   void invalidate() { m_tag_array->invalidate(); }
@@ -1576,7 +1582,7 @@ class baseline_cache : public cache_t {
   virtual void dumpCacheEvent(
     unsigned long long time, const char* stage, const char* event, mem_fetch *mf);
   virtual void dumpMSHREvent(unsigned long long time, mem_fetch *mf, new_addr_type mshr_addr, bool is_new_entry);
-  virtual void dumpMissQueue(unsigned long long time, const char* stage, mem_fetch *mf);
+  virtual void dumpMissQueue(unsigned long long time, const char* stage, const char* event, mem_fetch *mf);
 
   // Stat collection
   const cache_stats &get_stats() const { return m_stats; }

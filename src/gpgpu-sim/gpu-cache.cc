@@ -803,7 +803,7 @@ void mshr_table::mark_ready(new_addr_type block_addr, bool &has_atomic) {
 }
 
 /// Returns next ready access
-mem_fetch* mshr_table::next_access(const char* cache_type) {
+mem_fetch* mshr_table::next_access(const char* cache_type, unsigned long long cycle) {
   assert(access_ready());
 
   [[maybe_unused]] const unsigned last_occupied_entries = static_cast<unsigned>(m_data.size());
@@ -818,7 +818,7 @@ mem_fetch* mshr_table::next_access(const char* cache_type) {
     fprintf(Trace::out, "%llu Before TPC:%u SM:%u WARP:%u "
       "%s MSHR releasing entry for block_addr: 0x%llx "
       "(occupied:%u free:%u occupancy:%f)\n",
-      result->getTime(), 
+      cycle, 
       result->get_tpc(), result->get_sid(), result->get_wid(),
       cache_type, (unsigned long long)block_addr,
       static_cast<unsigned>(m_data.size()),
@@ -829,22 +829,21 @@ mem_fetch* mshr_table::next_access(const char* cache_type) {
   }
 
   m_data[block_addr].m_list.pop_front();
-  if (m_data[block_addr].m_list.empty()) { 
+  if (m_data[block_addr].m_list.empty()) {
     // release entry  
     m_data.erase(block_addr);
     assert(last_occupied_entries == (m_data.size() + 1));
     m_current_response.pop_front();
     if (DTRACE(MSHR_RELEASE)) {
-      fprintf(Trace::out, "%llu TPC:%u SM:%u WARP:%u "
-        "%s MSHR released entry for block_addr: 0x%llx "
-        "(occupied:%u->%u free:%u occupancy:%f)\n",
-        result->getTime(), 
+      assert(result->get_addr() == block_addr);
+      fprintf(Trace::out, "%llu %s "
+        "MSHR released entry for mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx pos:%s} "
+        "entries: {occupancy=(%u/%u)=%f}\n",
+        cycle, cache_type,
         result->get_tpc(), result->get_sid(), result->get_wid(),
-        cache_type,
-        (unsigned long long)block_addr,
-        last_occupied_entries, 
-        static_cast<unsigned>(m_data.size()), 
-        m_num_entries - static_cast<unsigned>(m_data.size()),
+        result->get_request_uid(), result->get_addr(),
+        result->mem_fetch_status_str(result->get_status()),
+        static_cast<unsigned>(m_data.size()), m_num_entries,
         static_cast<unsigned>(m_data.size()) / (float)m_num_entries
       );      
     }
@@ -852,7 +851,7 @@ mem_fetch* mshr_table::next_access(const char* cache_type) {
       fprintf(Trace::out, "%llu After TPC:%u SM:%u WARP:%u "
         "%s MSHR releasing entry for block_addr: 0x%llx "
         "(occupied:%u free:%u occupancy:%f)\n",
-        result->getTime(), 
+        cycle,
         result->get_tpc(), result->get_sid(), result->get_wid(),
         cache_type,
         (unsigned long long)block_addr,
@@ -861,6 +860,13 @@ mem_fetch* mshr_table::next_access(const char* cache_type) {
         static_cast<unsigned>(m_data.size()) / (float)m_num_entries
       );      
       display(Trace::out, cache_type);
+    } 
+  } else {
+    if (DTRACE(MSHR_RELEASE)) {
+      fprintf(Trace::out, "%llu %s "
+        "MSHR[block_addr:%#llx].m_list.empty = %u causing failure of m_current_response.pop_front\n",
+        cycle, cache_type, block_addr, m_data[block_addr].m_list.empty()
+      );      
     } 
   }
   return result;
@@ -2028,6 +2034,17 @@ void baseline_cache::cycle() {
     if (!m_memport->full(mf->size(), mf->get_is_write())) {
       m_miss_queue.pop_front();
       m_memport->push(mf);
+
+      if (DTRACE(MISS_QUEUE_EVENT)) {
+        dumpCacheEvent(m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, 
+          "baseline_cache::cycle()", "m_miss_queue.pop_front -> mem_fetch_interface (ICNT)", mf);
+      }
+    } else {
+      if (DTRACE(MISS_QUEUE_EVENT)) {
+        dumpCacheEvent(m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, 
+          "baseline_cache::cycle()", "m_memport is full. "
+          "Failed pushd mf from miss_queue to lower-level-mem-port", mf);
+      }
     }
   }
   bool data_port_busy = !m_bandwidth_management.data_port_free();
@@ -2079,6 +2096,14 @@ void baseline_cache::fill(mem_fetch *mf, unsigned time) {
   } else {
     abort();
   }    
+
+  if (DTRACE(MSHR_EVENT)) {
+    std::string ready_event = "m_mshrs.mark_ready[block_addr:";
+    ready_event += std::to_string(e->second.m_block_addr);
+    ready_event += "]";
+    dumpCacheEvent(time, "::fill", ready_event.c_str(), mf);
+  } 
+
   bool has_atomic = false;
   m_mshrs.mark_ready(e->second.m_block_addr, has_atomic);
   if (has_atomic) {
@@ -2124,10 +2149,11 @@ void baseline_cache::dumpCacheEvent(
     l2_prefix += " ";      
   }
   fprintf(Trace::out, "%llu %s %sstage(%s) cache_event(%s) "
-    "mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s}\n", 
+    "mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s pos:%s}\n", 
     time, cache_name, l2_prefix.c_str(), stage, event,
     mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(), // mf info
-    mem_access_type_str(mem_access_type(mf->get_access_type()))
+    mem_access_type_str(mem_access_type(mf->get_access_type())),
+    mf->mem_fetch_status_str(mf->get_status())
   );
 }
 
@@ -2143,11 +2169,12 @@ void baseline_cache::dumpMSHREvent(
   }  
   const char* action = is_new_entry ? "Created" : "Inserted";
   fprintf(Trace::out, "%llu %s %s"
-    "%s mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s} %s MSHR[mshr_addr:%#llx] "
+    "%s mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s pos:%s} %s MSHR[mshr_addr:%#llx] "
     "entries: {occupancy=(%u/%u)=%f}; slots: {occupancy=(%u/%u)=%f}\n",
     time, cache_name, l2_prefix.c_str(), action,
     mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(), // mf info
     mem_access_type_str(mem_access_type(mf->get_access_type())),
+    mf->mem_fetch_status_str(mf->get_status()),
     is_new_entry ? "in" : "into",
     mshr_addr, 
     m_mshrs.occupied_entries(), m_config.m_mshr_entries,
@@ -2157,7 +2184,7 @@ void baseline_cache::dumpMSHREvent(
   );
 }
 
-void baseline_cache::dumpMissQueue(unsigned long long time, const char* stage, mem_fetch *mf) {
+void baseline_cache::dumpMissQueue(unsigned long long time, const char* stage, const char* event, mem_fetch *mf) {
 
   const char* cache_name = m_config.getCacheName();
   std::string l2_prefix = "";
@@ -2166,12 +2193,13 @@ void baseline_cache::dumpMissQueue(unsigned long long time, const char* stage, m
     l2_prefix += std::to_string(mf->getSubPartition());
     l2_prefix += " ";      
   }
-  fprintf(Trace::out, "%llu %s %s%s "
-    "mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s} "
+  fprintf(Trace::out, "%llu %s %s%s %s"
+    "mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s pos:%s} "
     "-> MissQueue: {occupancy=(%lu/%u)=%f}\n",
-    time, cache_name, l2_prefix.c_str(), stage,
+    time, cache_name, l2_prefix.c_str(), stage, event,
     mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(), // mf info
     mem_access_type_str(mem_access_type(mf->get_access_type())),
+    mf->mem_fetch_status_str(mf->get_status()),
     m_miss_queue.size(), m_config.m_miss_queue_size,
     m_miss_queue.size() / (float)m_config.m_miss_queue_size
   );
@@ -2323,39 +2351,17 @@ void baseline_cache::send_read_request(new_addr_type addr,
 
     m_stats.inc_mshr_stats(mf->get_streamID(), mf->get_sid(), mf->get_wid());
 
-    if (DTRACE(CACHE_REQ_DIST) || DTRACE(MSHR_ACCESS)) {
-      fprintf(Trace::out, "%llu TPC:%u SM:%u WARP:%u "
-        "%s MSHR Miss (occupied:%u->%u free:%u occupancy:%f). "
-        "Created {mshr_addr: %#llx, addr: %#llx} "
-        "m_mshr_occupancy_stats[streamID:%llu][sm:%u][warp:%u] = %u\n",
-        time, mf->get_tpc(), mf->get_sid(), mf->get_wid(),
-        cache_type, 
-        last_occupied_entries, m_mshrs.occupied_entries(), 
-        m_config.m_mshr_entries - m_mshrs.occupied_entries(), 
-        m_mshrs.occupied_entries() / (float)m_config.m_mshr_entries,
-        mshr_addr, block_addr,
-        mf->get_streamID(), mf->get_sid(), mf->get_wid(),
-        m_stats.get_mshr_merge_dist_cnt(mf->get_streamID(), mf->get_sid(), mf->get_wid()));
-    }
-    if (DTRACE(DUMP_MSHR)) {
-      fprintf(Trace::out, "%llu TPC:%u SM:%u WARP:%u "
-        "%s MSHR Miss! After adding, MSHR is below:\n", 
-        time, mf->get_tpc(), mf->get_sid(), mf->get_wid(),
-        m_is_l2 ? "L2" : m_is_l1d ? "L1D" : "OTHER$");
-      m_mshrs.display(Trace::out);
-    }
-
     m_extra_mf_fields[mf] = extra_mf_fields(
         mshr_addr, mf->get_addr(), cache_index, mf->get_data_size(), m_config);
     mf->set_data_size(m_config.get_atom_sz());
     mf->set_addr(mshr_addr);
     m_miss_queue.push_back(mf);
+    mf->set_status(m_miss_queue_status, time);
 
     if (DTRACE(CACHE_EVENT) || DTRACE(MISS_QUEUE_EVENT)) {
-      dumpMissQueue(time, "RD-MISS-MSHR-MISS-AND-AVAIL", mf);
+      dumpMissQueue(time, "RD-MISS-MSHR-MISS-AND-AVAIL", "m_miss_queue.push_back ", mf);
     }
 
-    mf->set_status(m_miss_queue_status, time);
     if (!wa) {
       events.push_back(cache_event(READ_REQUEST_SENT));
 
@@ -2385,7 +2391,7 @@ void data_cache::send_write_request(mem_fetch *mf, cache_event request,
   m_miss_queue.push_back(mf);
 
   if (DTRACE(CACHE_EVENT) || DTRACE(MISS_QUEUE_EVENT)) {
-    dumpMissQueue(time, "SEND-WR-REQ-TO-LOWER-LEVEL-MEM", mf);
+    dumpMissQueue(time, "SEND-WR-REQ-TO-LOWER-LEVEL-MEM", "m_miss_queue.push_back ", mf);
   }
 
   mf->set_status(m_miss_queue_status, time);
@@ -2997,6 +3003,7 @@ enum cache_request_status data_cache::rd_miss_base(
   if (status == cache_request_status::MISS || \
       status == cache_request_status::SECTOR_MISS) {
 
+    mf->set_status(IN_PARTITION_L2, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
     if (DTRACE(CACHE_EVENT)) {
       dumpCacheEvent(time, "::rd_miss_base entered", 
         cache_request_status_str(status), mf);
@@ -3286,9 +3293,6 @@ enum cache_request_status tex_cache::access(new_addr_type addr, mem_fetch *mf,
     mf->set_status(m_request_queue_status, time);
     events.push_back(cache_event(READ_REQUEST_SENT));
     cache_status = status;
-    // if (DTRACE(CACHE_EVENT)) {
-    //   dumpCacheEvent(time, "TEXTURE-CACHE-MISS", "READ_REQUEST_SENT", mf);
-    // }
   } else {
     // the value *will* *be* in the cache already
     cache_status = HIT_RESERVED;

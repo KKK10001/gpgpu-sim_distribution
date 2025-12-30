@@ -958,7 +958,7 @@ void shader_core_ctx::fetch() {
   if (!m_inst_fetch_buffer.m_valid) {
     if (m_L1I->access_ready()) {
       const char* cache_type = "L1I";
-      mem_fetch *mf = m_L1I->next_access(cache_type);
+      mem_fetch *mf = m_L1I->next_access(cache_type, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
       m_warp[mf->get_wid()]->clear_imiss_pending();
       m_inst_fetch_buffer =
           ifetch_buffer_t(m_warp[mf->get_wid()]->get_pc(),
@@ -3260,7 +3260,7 @@ void ldst_unit::writeback() {
       case 4:
         if (m_L1D && m_L1D->access_ready()) {
           const char* cache_type = "L1D";
-          mem_fetch *mf = m_L1D->next_access(cache_type);
+          mem_fetch *mf = m_L1D->next_access(cache_type, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
           m_next_wb = mf->get_inst();
           m_next_wb_source = "L1D_FILL_RETURN";
           delete mf;

@@ -82,6 +82,7 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
       m_stats(stats),
       m_arbitration_metadata(config),
       m_gpu(gpu) {
+
   m_dram = new dram_t(m_id, m_config, m_stats, this, gpu);
 
   m_sub_partition = new memory_sub_partition
@@ -195,7 +196,7 @@ bool memory_partition_unit::busy() const {
   return busy;
 }
 
-void memory_partition_unit::cache_cycle(unsigned cycle) {
+void memory_partition_unit::cache_cycle(unsigned long long cycle) {
   for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel;
        p++) {
     m_sub_partition[p]->cache_cycle(cycle);
@@ -225,9 +226,10 @@ bool memory_partition_unit::can_issue_to_dram(int inner_sub_partition_id) {
 }
 
 int memory_partition_unit::global_sub_partition_id_to_local_id(
-    int global_sub_partition_id) const {
-  return (global_sub_partition_id -
-          m_id * m_config->m_n_sub_partition_per_memory_channel);
+  int global_sub_partition_id) const {
+
+  return (global_sub_partition_id - 
+    m_id * m_config->m_n_sub_partition_per_memory_channel);
 }
 
 void memory_partition_unit::simple_dram_model_cycle() {
@@ -305,6 +307,11 @@ void memory_partition_unit::dram_cycle() {
   // of the original sub partition
   mem_fetch *mf_return = m_dram->return_queue_top();
   if (mf_return) {
+    if (DTRACE(DRAM_EVENT)) {
+      dumpDramEvent(m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, 
+        "::dram_cycle", "get m_dram->return_queue_top", mf_return);
+    }
+
     unsigned dest_global_spid = mf_return->get_sub_partition_id();
     int dest_spid = global_sub_partition_id_to_local_id(dest_global_spid);
     assert(m_sub_partition[dest_spid]->get_id() == dest_global_spid);
@@ -322,9 +329,24 @@ void memory_partition_unit::dram_cycle() {
             mf_return, dest_spid);
       }
       m_dram->return_queue_pop();
+    } else {
+      if (DTRACE(CACHE_EVENT)) {
+        fprintf(Trace::out, "%llu ::dram_cycle() L2_sub[%u]->m_dram_L2_queue is full ---> blocking "
+          "mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s pos:%s}\n", 
+          dest_spid,
+          mf_return->get_tpc(), mf_return->get_sid(), mf_return->get_wid(), 
+          mf_return->get_request_uid(), mf_return->get_addr(),
+          mf_return->mem_fetch_status_str(mf_return->get_status())
+        );
+      }  
     }
-  } else {
+  } // if (mf_return) { 
+  else {
     m_dram->return_queue_pop();
+    if (DTRACE(DRAM_EVENT)) {
+      dumpDramEvent(m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, 
+        "::dram_cycle", "get m_dram->return_queue_pop", mf_return);
+    }    
   }
 
   m_dram->cycle();
@@ -415,6 +437,22 @@ void memory_partition_unit::print(FILE *fp) const {
   m_dram->print(fp);
 }
 
+void memory_partition_unit::dumpDramEvent(
+    unsigned long long time, const char* stage, const char* event, mem_fetch *mf) {
+
+  if (mf) {
+    fprintf(Trace::out, "%llu stage(%s) dram_event(%s) "
+      "mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx pos:%s}\n", 
+      time, stage, event,
+      mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(),
+      mf->mem_fetch_status_str(mf->get_status())
+      );
+  } else {
+    fprintf(Trace::out, "%llu stage(%s) dram_event(%s) mf = nullptr\n", 
+      time, stage, event);
+  }
+}
+
 memory_sub_partition::memory_sub_partition(unsigned sub_partition_id,
                                            const memory_config *config,
                                            class memory_stats_t *stats,
@@ -424,6 +462,12 @@ memory_sub_partition::memory_sub_partition(unsigned sub_partition_id,
   m_stats = stats;
   m_gpu = gpu;
   m_memcpy_cycle_offset = 0;
+
+#ifdef ZERO_ROP_LATENCY
+    m_rop_latency = 0;
+#else
+    m_rop_latency = m_config->rop_latency;
+#endif
 
   assert(m_id < m_config->m_n_mem_sub_partition);
 
@@ -473,24 +517,24 @@ memory_sub_partition::~memory_sub_partition() {
   }  
 }
 
-void memory_sub_partition::cache_cycle(unsigned cycle) {
+void memory_sub_partition::cache_cycle(unsigned long long cycle, mem_fetch* mf_monitor) {
   // L2 fill responses
   if (!m_config->m_L2_config.disabled()) {
     if (m_L2cache->access_ready() && !m_L2_icnt_queue->full()) {
-      mem_fetch *mf = m_L2cache->next_access("L2");
-      if (mf->get_access_type() !=
-          L2_WR_ALLOC_R) {  // Don't pass write allocate read request back to
-                            // upper level cache
+      mem_fetch *mf = m_L2cache->next_access("L2", cycle);
+      // Don't pass write allocate read request back to upper level cache
+      if (mf->get_access_type() != L2_WR_ALLOC_R) {
         mf->set_reply();
         mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
         m_L2_icnt_queue->push(mf);
-
+        
         if (DTRACE(L2_TRACE)) {
-          fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s L2_sub[%u]} "
+          fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s pos:%s} "
             "L2 fill responses L2_sub[%u] -> m_L2_icnt_queue: {occup=(%u/%u)=%f}\n", 
             m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset,
             mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(), 
-            mem_access_type_str(mem_access_type(mf->get_access_type())), m_id, // mf info
+            mem_access_type_str(mem_access_type(mf->get_access_type())), 
+            mf->mem_fetch_status_str(mf->get_status()),
             m_id,
             m_L2_icnt_queue->get_length() + 1, m_L2_icnt_queue->get_max_len(),
             (float)(m_L2_icnt_queue->get_length() + 1) / m_L2_icnt_queue->get_max_len() // occupancy
@@ -501,20 +545,57 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
           mem_fetch *original_wr_mf = mf->get_original_wr_mf();
           assert(original_wr_mf);
           original_wr_mf->set_reply();
-          original_wr_mf->set_status(
-              IN_PARTITION_L2_TO_ICNT_QUEUE,
-              m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+          original_wr_mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
           m_L2_icnt_queue->push(original_wr_mf);
+        } else {
+          if (DTRACE(L2_TRACE)) {
+            fprintf(Trace::out, "%llu L2_sub[%u]->cache_cycle directly erased mf:"
+              "{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s} from m_request_tracker\n",
+              m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset, m_id,
+              mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(), 
+              mem_access_type_str(mem_access_type(mf->get_access_type()))
+              );
+          }
         }
         m_request_tracker.erase(mf);
         delete mf;
       }
-    }
-  }
+    } 
+    // else {
+    //   if (DTRACE(L2_TRACE) || DTRACE(L2_TRAFFIC)) {
+    //     if (mf_monitor) {
+    //       std::string block_cause_1 = "";
+    //       if (!m_L2cache->access_ready()) {
+    //         std::string str_n_pending_resp = std::to_string(m_L2cache->num_pending_responses());
+    //         block_cause_1 = "(MSHR m_current_response is empty) num_pending_responses:" +
+    //           str_n_pending_resp + " ";
+    //       }
+    //       const char* block_cause_2 = m_L2_icnt_queue->full() ? 
+    //         "(m_L2_icnt_queue is full) " : "";            
+    //       fprintf(Trace::out, "%llu L2 traffic blocked. "
+    //         "%s%s"
+    //         "mf_monitor:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx pos:%s} is pending...\n",
+    //         m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset,
+    //         block_cause_1.c_str(), block_cause_2,
+    //         mf_monitor->get_tpc(), mf_monitor->get_sid(), mf_monitor->get_wid(), 
+    //         mf_monitor->get_request_uid(), mf_monitor->get_addr(),
+    //         mf_monitor->mem_fetch_status_str(mf_monitor->get_status())
+    //       );          
+    //     }
+    //   }    
+    // } // !m_L2cache->access_ready || m_L2_icnt_queue->full()
+  } // if (!m_config->m_L2_config.disabled())
 
   // DRAM to L2 (texture) and icnt (not texture)
   if (!m_dram_L2_queue->empty()) {
     mem_fetch *mf = m_dram_L2_queue->top();
+    if (DTRACE(L2_DRAM_IF)) {
+      fprintf(Trace::out, "%llu m_dram_L2_queue->top is mf:"
+        "{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx}\n",
+        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset,
+        mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr()
+      );
+    }
     if (!m_config->m_L2_config.disabled() && m_L2cache->waiting_for_fill(mf)) {
       if (m_L2cache->fill_port_free()) {
         mf->set_status(IN_PARTITION_L2_FILL_QUEUE,
@@ -523,11 +604,12 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
                                 m_memcpy_cycle_offset);
 
         if (DTRACE(L2_TRACE)) {
-          fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s L2_sub[%u]} "
+          fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s pos:%s} "
             "m_dram_L2_queue(occup:%f) -> L2_sub[%u]\n", 
             m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset,
             mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(),
-            mem_access_type_str(mem_access_type(mf->get_access_type())), m_id, // mf info            
+            mem_access_type_str(mem_access_type(mf->get_access_type())),
+            mf->mem_fetch_status_str(mf->get_status()),
             (float)(m_dram_L2_queue->get_length() - 1) / m_dram_L2_queue->get_max_len(), // occupancy          
             m_id
             );
@@ -542,11 +624,12 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
       }
 
       if (DTRACE(L2_TRACE)) {
-        fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s L2_sub[%u]} "
+        fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s pos:%s} "
           "m_dram_L2_queue(occup:%f) -> L2_sub[%u] -> m_L2_icnt_queue(occup:%f)\n", 
           m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset, 
           mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(), 
-          mem_access_type_str(mem_access_type(mf->get_access_type())), m_id, // mf info            
+          mem_access_type_str(mem_access_type(mf->get_access_type())),
+          mf->mem_fetch_status_str(mf->get_status()),
           (float)(m_dram_L2_queue->get_length() - 1) / m_dram_L2_queue->get_max_len(), // occupancy          
           m_id,
           (float)(m_L2_icnt_queue->get_length() + 1) / m_L2_icnt_queue->get_max_len() // occupancy
@@ -554,12 +637,20 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
       }    
       
       m_L2_icnt_queue->push(mf);
-      m_dram_L2_queue->pop();           
+      m_dram_L2_queue->pop();
+    }
+  } else {
+    if (DTRACE(L2_DRAM_IF)) {
+      fprintf(Trace::out, "%llu m_dram_L2_queue is empty ---> no cache fill\n",
+        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset
+      );
     }
   }
 
   // prior L2 misses inserted into m_L2_dram_queue here
-  if (!m_config->m_L2_config.disabled()) m_L2cache->cycle();
+  if (!m_config->m_L2_config.disabled()) {
+    m_L2cache->cycle();
+  }
 
   unsigned long long time = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset;
   // new L2 texture accesses and/or non-texture accesses
@@ -586,11 +677,12 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
             assert(!read_sent);
             if (mf->get_access_type() == L1_WRBK_ACC) {
               if (DTRACE(L2_TRACE)) {
-                fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u addr:%#llx acc_type:%s L2_sub[%u]} "
+                fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u addr:%#llx acc_type:%s pos:%s} "
                   "m_request_tracker.erase(size:%lu->%lu); m_icnt_L2_queue->pop (occup:%f)\n", 
                   time, 
                   mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_addr(), 
-                  mem_access_type_str(mem_access_type(mf->get_access_type())), m_id, // mf info
+                  mem_access_type_str(mem_access_type(mf->get_access_type())),
+                  mf->mem_fetch_status_str(mf->get_status()),
                   m_request_tracker.size(), m_request_tracker.size() - 1,
                   (m_icnt_L2_queue->get_length() - 1) / (float)m_icnt_L2_queue->get_max_len()  // m_icnt_L2_queue occupancy
                 );
@@ -604,12 +696,13 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
               m_L2_icnt_queue->push(mf);
 
               if (DTRACE(L2_TRACE)) {
-                fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s L2_sub[%u]} "
+                fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s pos:%s} "
                   "L2_sub[%u] -> m_L2_icnt_queue(occup:%f); m_icnt_L2_queue->pop (occup:%f)\n", 
                   time, 
                   mf->get_tpc(), mf->get_sid(), mf->get_wid(), 
                   mf->get_request_uid(), mf->get_addr(), 
-                  mem_access_type_str(mem_access_type(mf->get_access_type())), m_id, // mf info
+                  mem_access_type_str(mem_access_type(mf->get_access_type())),
+                  mf->mem_fetch_status_str(mf->get_status()),
                   m_id,
                   m_L2_icnt_queue->get_length() / (float)m_L2_icnt_queue->get_max_len(), // m_L2_icnt_queue occupancy
                   (m_icnt_L2_queue->get_length() - 1) / (float)m_icnt_L2_queue->get_max_len()  // m_icnt_L2_queue occupancy
@@ -622,12 +715,14 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
             m_icnt_L2_queue->pop();
 
             if (DTRACE(L2_TRACE)) {
-              fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s L2_sub[%u]} "
-                "wr_sent. m_icnt_L2_queue->pop (occup:%f)\n", 
+              fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s pos:%s} "
+                "wr_sent. L2_sub[%i] m_icnt_L2_queue->pop (occup:%f)\n", 
                 time, 
                 mf->get_tpc(), mf->get_sid(), mf->get_wid(), 
                 mf->get_request_uid(), mf->get_addr(), 
-                mem_access_type_str(mem_access_type(mf->get_access_type())), m_id, // mf info
+                mem_access_type_str(mem_access_type(mf->get_access_type())), 
+                mf->mem_fetch_status_str(mf->get_status()),
+                m_id,
                 (m_icnt_L2_queue->get_length() - 1) / (float)m_icnt_L2_queue->get_max_len()  // m_icnt_L2_queue occupancy
               );
             }
@@ -648,11 +743,12 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
               m_L2_icnt_queue->push(mf);
 
               if (DTRACE(L2_TRACE)) {
-                fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u addr:%#llx acc_type:%s L2_sub[%u]} "
+                fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u addr:%#llx acc_type:%s pos:%s} "
                   "L2 wap:wb req_status:%s L2_sub[%u] -> m_L2_icnt_queue(occup:%f)\n", 
                   time, 
                   mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_addr(), 
-                  mem_access_type_str(mem_access_type(mf->get_access_type())), m_id, // mf info
+                  mem_access_type_str(mem_access_type(mf->get_access_type())),
+                  mf->mem_fetch_status_str(mf->get_status()),
                   cache_request_status_str(status), m_id,
                   (float)(m_L2_icnt_queue->get_length()) / m_L2_icnt_queue->get_max_len() // occupancy
                   );
@@ -660,12 +756,14 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
             }
           }
           if (DTRACE(L2_TRACE)) {
-            fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s L2_sub[%u]} "
-              "m_icnt_L2_queue->pop {occup=(%u/%u)=%f}\n", 
+            fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s pos:%s} "
+              "L2_sub[%u] m_icnt_L2_queue->pop {occup=(%u/%u)=%f}\n", 
               time, 
               mf->get_tpc(), mf->get_sid(), mf->get_wid(), 
               mf->get_request_uid(), mf->get_addr(), 
-              mem_access_type_str(mem_access_type(mf->get_access_type())), m_id, // mf info
+              mem_access_type_str(mem_access_type(mf->get_access_type())), 
+              mf->mem_fetch_status_str(mf->get_status()),
+              m_id,
               m_icnt_L2_queue->get_length(), m_icnt_L2_queue->get_max_len(),
               (float)(m_icnt_L2_queue->get_length()) / m_icnt_L2_queue->get_max_len() // occupancy
               );
@@ -686,11 +784,12 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
       m_icnt_L2_queue->pop();
 
       if (DTRACE(L2_TRACE)) {
-        fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u addr:%#llx acc_type:%s L2_sub[%u]} "
+        fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u addr:%#llx acc_type:%s pos:%s} "
           "L2_sub[%u] -> m_L2_dram_queue(occup:%f); m_icnt_L2_queue.pop(occup:%f)\n", 
           time, 
           mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_addr(), 
-          mem_access_type_str(mem_access_type(mf->get_access_type())), m_id, // mf info
+          mem_access_type_str(mem_access_type(mf->get_access_type())),
+          mf->mem_fetch_status_str(mf->get_status()),
           m_id,
           (float)m_L2_dram_queue->get_length() / m_L2_dram_queue->get_max_len(), // occupancy          
           (float)m_icnt_L2_queue->get_length() / m_icnt_L2_queue->get_max_len()
@@ -705,20 +804,20 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
     mem_fetch *mf = m_rop.front().req;
     m_rop.pop();
     m_icnt_L2_queue->push(mf);
+    mf->set_status(IN_PARTITION_ICNT_TO_L2_QUEUE,
+                   m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
 
     if (DTRACE(L2_TRACE)) {
-      fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s L2_sub[%u]} "
-        "m_rop(size:%lu->%lu) ---> m_icnt_L2_queue: {occupancy=(%u/%u)=%f} -> L2 sub[%u]\n", 
+      fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s pos:%s} "
+        "m_rop.pop (size:%lu->%lu) ---> m_icnt_L2_queue: {occupancy=(%u/%u)=%f} -> L2 sub[%u]\n", 
         m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle,
         mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(), 
-        mem_access_type_str(mem_access_type(mf->get_access_type())), m_id, // mf info
+        mem_access_type_str(mem_access_type(mf->get_access_type())),
+        mf->mem_fetch_status_str(mf->get_status()),
         m_rop.size() + 1, m_rop.size(),
         m_icnt_L2_queue->get_length(), m_icnt_L2_queue->get_max_len(),
         (float)m_icnt_L2_queue->get_length() / m_icnt_L2_queue->get_max_len(), m_id);
-    }
-
-    mf->set_status(IN_PARTITION_ICNT_TO_L2_QUEUE,
-                   m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+    }                   
   }
 }
 
@@ -744,6 +843,11 @@ bool memory_sub_partition::dram_L2_queue_full() const {
 
 void memory_sub_partition::dram_L2_queue_push(class mem_fetch *mf) {
   m_dram_L2_queue->push(mf);
+  if (DTRACE(CACHE_EVENT)) {
+    m_L2cache->dumpCacheEvent(
+      m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, 
+      "::dram_cycle()", "m_dram_L2_queue->push", mf);
+  }  
 }
 
 void memory_sub_partition::print_cache_stat(unsigned &accesses,
@@ -943,10 +1047,21 @@ void memory_sub_partition::push(mem_fetch *m_req, unsigned long long cycle) {
       } else {
         rop_delay_t r;
         r.req = req;
-        r.ready_cycle = cycle + m_config->rop_latency;
+        // r.ready_cycle = cycle + m_config->rop_latency;
+        r.ready_cycle = cycle + m_rop_latency;
         m_rop.push(r);
         req->set_status(IN_PARTITION_ROP_DELAY,
                         m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+        
+        if (DTRACE(ROP_EVENT)) {
+          fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx pos:%s} "
+            "is pushed into m_rop (size:%lu)\n", 
+            m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle,
+            r.req->get_tpc(), r.req->get_sid(), r.req->get_wid(), r.req->get_request_uid(), r.req->get_addr(), 
+            r.req->mem_fetch_status_str(r.req->get_status()),
+            m_rop.size()
+            );
+        }
       }
     }
   }
@@ -957,11 +1072,13 @@ mem_fetch *memory_sub_partition::pop() {
   
   if (DTRACE(L2_TRACE)) {
     if (mf) {
-      fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s L2_sub[%u]} "
-        "m_L2_icnt_queue->pop (occup:%f)\n", 
+      fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s pos:%s} "
+        "L2_sub[%u] m_L2_icnt_queue->pop (occup:%f)\n", 
         m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset,
         mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(), 
-        mem_access_type_str(mem_access_type(mf->get_access_type())), m_id, // mf info
+        mem_access_type_str(mem_access_type(mf->get_access_type())), 
+        mf->mem_fetch_status_str(mf->get_status()),
+        m_id,
         (float)(m_L2_icnt_queue->get_length()) / m_L2_icnt_queue->get_max_len() // occupancy
         );
     }
@@ -985,11 +1102,13 @@ mem_fetch *memory_sub_partition::top() {
              mf->get_access_type() == L1_WRBK_ACC)) {
 
     if (DTRACE(L2_TRACE)) {
-      fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s L2_sub[%u]} "
-        "m_L2_icnt_queue->pop (occup:%f)\n", 
+      fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s pos:%s} "
+        "L2_sub[%u] m_L2_icnt_queue->pop (occup:%f)\n", 
         m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset,
         mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(), 
-        mem_access_type_str(mem_access_type(mf->get_access_type())), m_id, // mf info
+        mem_access_type_str(mem_access_type(mf->get_access_type())), 
+        mf->mem_fetch_status_str(mf->get_status()),
+        m_id,
         (float)(m_L2_icnt_queue->get_length() - 1) / m_L2_icnt_queue->get_max_len() // occupancy
         );
     }

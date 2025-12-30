@@ -79,7 +79,7 @@ class memory_partition_unit {
 
   bool busy() const;
 
-  void cache_cycle(unsigned cycle);
+  void cache_cycle(unsigned long long cycle);
   void dram_cycle();
   void simple_dram_model_cycle();
 
@@ -109,6 +109,9 @@ class memory_partition_unit {
   class gpgpu_sim *get_mgpu() const {
     return m_gpu;
   }
+
+  virtual void dumpDramEvent(
+    unsigned long long time, const char* stage, const char* event, mem_fetch *mf);  
 
  private:
   unsigned m_id;
@@ -169,7 +172,7 @@ class memory_sub_partition {
 
   bool busy() const;
 
-  void cache_cycle(unsigned cycle);
+  void cache_cycle(unsigned long long cycle, mem_fetch* mf_monitor = nullptr);
 
   bool full() const;
   bool full(unsigned size) const;
@@ -249,6 +252,8 @@ class memory_sub_partition {
   // is accessed (in both cudamemcpyies and otherwise) this value is added to
   // the gpgpu-sim cycle counters.
   unsigned m_memcpy_cycle_offset;
+
+  unsigned m_rop_latency;
 };
 
 class L2interface : public mem_fetch_interface {
