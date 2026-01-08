@@ -329,6 +329,7 @@ class memory_config {
 
   char *gpgpu_dram_timing_opt;
   char *gpgpu_L2_queue_config;
+
   bool l2_ideal;
   unsigned gpgpu_frfcfs_dram_sched_queue_size;
   unsigned gpgpu_dram_return_queue_size;

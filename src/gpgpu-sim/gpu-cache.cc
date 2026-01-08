@@ -649,7 +649,7 @@ void tag_array::flush() {
 
   for (unsigned i = 0; i < m_config.get_num_lines(); i++)
     if (m_lines[i]->is_modified_line()) {
-      for (unsigned j = 0; j < SECTOR_CHUNCK_SIZE; j++) {
+      for (unsigned j = 0; j < SECTOR_CHUNK_SIZE; j++) {
         m_lines[i]->set_status(INVALID, mem_access_sector_mask_t().set(j));
       }
     }
@@ -662,7 +662,7 @@ void tag_array::invalidate() {
   if (!is_used) return;
 
   for (unsigned i = 0; i < m_config.get_num_lines(); i++)
-    for (unsigned j = 0; j < SECTOR_CHUNCK_SIZE; j++)
+    for (unsigned j = 0; j < SECTOR_CHUNK_SIZE; j++)
       m_lines[i]->set_status(INVALID, mem_access_sector_mask_t().set(j));
 
   m_dirty = 0;
@@ -895,6 +895,7 @@ cache_stats::cache_stats() {
   m_cache_port_available_cycles = 0;
   m_cache_data_port_busy_cycles = 0;
   m_cache_fill_port_busy_cycles = 0;
+  m_l2_miss_q_pops = 0;
 }
 
 void cache_stats::clear() {
@@ -910,10 +911,15 @@ void cache_stats::clear() {
   m_mshr_merge_entry_fail.clear();
   m_fail_stats_total.clear();
   m_mshr_occupancy_stats.clear();
+  m_accu_l2_dram_queue_size.clear();
+  m_accu_l2_icnt_queue_size.clear();
+  m_l2_dram_q_accesses.clear();
+  m_l2_icnt_q_accesses.clear();
 
   m_cache_port_available_cycles = 0;
   m_cache_data_port_busy_cycles = 0;
   m_cache_fill_port_busy_cycles = 0;
+  m_l2_miss_q_pops = 0;
 }
 
 void cache_stats::clear_pw() {
@@ -944,6 +950,53 @@ void cache_stats::inc_mshr_stats(
         std::vector<std::vector<unsigned>>>(streamID, new_val));
   }
   m_mshr_occupancy_stats.at(streamID)[sm_id][warp_id]++;
+}
+
+void cache_stats::inc_accu_l2_dram_queue_size(
+  unsigned long long streamID, unsigned l2_sub, unsigned size) {
+
+  if (m_accu_l2_dram_queue_size.find(streamID) == m_accu_l2_dram_queue_size.end()) {
+    std::vector<unsigned> new_val;
+    new_val.resize(get_sub_partitions());
+    m_accu_l2_dram_queue_size.insert(std::pair<unsigned long long,
+        std::vector<unsigned>>(streamID, new_val));
+  }
+  m_accu_l2_dram_queue_size.at(streamID)[l2_sub] += size;
+}
+void cache_stats::inc_accu_l2_icnt_queue_size(
+  unsigned long long streamID, unsigned l2_sub, unsigned size) {
+
+  if (m_accu_l2_icnt_queue_size.find(streamID) == m_accu_l2_icnt_queue_size.end()) {
+    std::vector<unsigned> new_val;
+    new_val.resize(get_sub_partitions());
+    m_accu_l2_icnt_queue_size.insert(std::pair<unsigned long long,
+        std::vector<unsigned>>(streamID, new_val));
+  }
+  m_accu_l2_icnt_queue_size.at(streamID)[l2_sub] += size;
+}
+void cache_stats::inc_l2_dram_q_accesses(unsigned long long streamID, unsigned l2_sub) {
+
+  if (m_l2_dram_q_accesses.find(streamID) == m_l2_dram_q_accesses.end()) {
+    std::vector<unsigned> new_val;
+    new_val.resize(get_sub_partitions());
+    m_l2_dram_q_accesses.insert(std::pair<unsigned long long,
+        std::vector<unsigned>>(streamID, new_val));
+  }
+  m_l2_dram_q_accesses.at(streamID)[l2_sub]++;
+}
+void cache_stats::inc_l2_icnt_q_accesses(unsigned long long streamID, unsigned l2_sub) {
+
+  if (m_l2_icnt_q_accesses.find(streamID) == m_l2_icnt_q_accesses.end()) {
+    std::vector<unsigned> new_val;
+    new_val.resize(get_sub_partitions());
+    m_l2_icnt_q_accesses.insert(std::pair<unsigned long long,
+        std::vector<unsigned>>(streamID, new_val));
+  }
+  m_l2_icnt_q_accesses.at(streamID)[l2_sub]++;
+}
+
+void cache_stats::inc_l2_miss_q_pops() {
+  m_l2_miss_q_pops++;
 }
 
 void cache_stats::inc_stats(int access_type, int access_outcome,
@@ -1165,6 +1218,14 @@ unsigned long long cache_stats::operator()(
   return m_mshr_occupancy_stats.at(streamID)[sm][warp];
 }
 
+unsigned cache_stats::operator()(
+  unsigned l2_sub, unsigned long long streamID) const {
+  auto it = m_accu_l2_dram_queue_size.find(streamID);
+  if (it == m_accu_l2_dram_queue_size.end()) return 0;
+  if (l2_sub >= it->second.size()) return 0;
+  return it->second[l2_sub];
+}
+
 cache_stats cache_stats::operator+(const cache_stats &cs) {
   ///
   /// Overloaded + operator to allow for simple stat accumulation
@@ -1218,6 +1279,16 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
     ret.m_mshr_occupancy_stats.insert(
       std::pair<unsigned long long,
         std::vector<std::vector<unsigned>>>(streamID, m_mshr_occupancy_stats.at(streamID)));
+  }
+  for (auto iter = m_accu_l2_dram_queue_size.begin(); iter != m_accu_l2_dram_queue_size.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    ret.m_accu_l2_dram_queue_size.insert(
+      std::pair<unsigned long long, std::vector<unsigned>>(streamID, m_accu_l2_dram_queue_size.at(streamID)));
+  }
+  for (auto iter = m_accu_l2_icnt_queue_size.begin(); iter != m_accu_l2_icnt_queue_size.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    ret.m_accu_l2_icnt_queue_size.insert(
+      std::pair<unsigned long long, std::vector<unsigned>>(streamID, m_accu_l2_icnt_queue_size.at(streamID)));
   }
 
   // 1-2 Overload "+"
@@ -1285,6 +1356,50 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
       }
     }
   }
+  for (auto iter = cs.m_accu_l2_dram_queue_size.begin(); iter != cs.m_accu_l2_dram_queue_size.end(); ++iter) {  
+    unsigned long long streamID = iter->first;
+    if (ret.m_accu_l2_dram_queue_size.find(streamID) == ret.m_accu_l2_dram_queue_size.end()) {
+      ret.m_accu_l2_dram_queue_size.insert(
+        std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_accu_l2_dram_queue_size.at(streamID)));
+    } else {
+      for (unsigned l2_sub = 0; l2_sub < 8; l2_sub++) {
+        ret.m_accu_l2_dram_queue_size.at(streamID)[l2_sub] += cs.m_accu_l2_dram_queue_size.at(streamID)[l2_sub];
+      }      
+    }
+  }
+  for (auto iter = cs.m_accu_l2_icnt_queue_size.begin(); iter != cs.m_accu_l2_icnt_queue_size.end(); ++iter) {  
+    unsigned long long streamID = iter->first;
+    if (ret.m_accu_l2_icnt_queue_size.find(streamID) == ret.m_accu_l2_icnt_queue_size.end()) {
+      ret.m_accu_l2_icnt_queue_size.insert(
+        std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_accu_l2_icnt_queue_size.at(streamID)));
+    } else {
+      for (unsigned l2_sub = 0; l2_sub < 8; l2_sub++) {
+        ret.m_accu_l2_icnt_queue_size.at(streamID)[l2_sub] += cs.m_accu_l2_icnt_queue_size.at(streamID)[l2_sub];
+      }
+    }
+  }
+  for (auto iter = cs.m_l2_dram_q_accesses.begin(); iter != cs.m_l2_dram_q_accesses.end(); ++iter) {  
+    unsigned long long streamID = iter->first;
+    if (ret.m_l2_dram_q_accesses.find(streamID) == ret.m_l2_dram_q_accesses.end()) {
+      ret.m_l2_dram_q_accesses.insert(
+        std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_l2_dram_q_accesses.at(streamID)));
+    } else {
+      for (unsigned l2_sub = 0; l2_sub < 8; l2_sub++) {
+        ret.m_l2_dram_q_accesses.at(streamID)[l2_sub] += cs.m_l2_dram_q_accesses.at(streamID)[l2_sub];
+      }
+    }
+  }
+  for (auto iter = cs.m_l2_icnt_q_accesses.begin(); iter != cs.m_l2_icnt_q_accesses.end(); ++iter) {  
+    unsigned long long streamID = iter->first;
+    if (ret.m_l2_icnt_q_accesses.find(streamID) == ret.m_l2_icnt_q_accesses.end()) {
+      ret.m_l2_icnt_q_accesses.insert(
+        std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_l2_icnt_q_accesses.at(streamID)));
+    } else {
+      for (unsigned l2_sub = 0; l2_sub < 8; l2_sub++) {
+        ret.m_l2_icnt_q_accesses.at(streamID)[l2_sub] += cs.m_l2_icnt_q_accesses.at(streamID)[l2_sub];
+      }
+    }
+  }  
 
   for (auto iter = cs.m_line_alloc_fail.begin(); iter != cs.m_line_alloc_fail.end(); ++iter) {
     unsigned long long streamID = iter->first;
@@ -1349,6 +1464,7 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
       m_cache_data_port_busy_cycles + cs.m_cache_data_port_busy_cycles;
   ret.m_cache_fill_port_busy_cycles =
       m_cache_fill_port_busy_cycles + cs.m_cache_fill_port_busy_cycles;
+  ret.m_l2_miss_q_pops += cs.m_l2_miss_q_pops;
   return ret;
 }
 
@@ -1356,11 +1472,11 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
   ///
   /// Overloaded += operator to allow for simple stat accumulation
   ///
-  const char* local_cache_type = getCacheName();
+  const char* local_cache_type = get_cache_name();
   std::string l2_prefix = "";
   if (strcmp(local_cache_type, "L2") == 0) {
     l2_prefix = "SG";
-    l2_prefix += std::to_string(getSubPartition());
+    l2_prefix += std::to_string(get_sub_partition());
     l2_prefix += " ";      
   }
 
@@ -1518,7 +1634,7 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
     }
   }
 
-  for (auto iter = cs.m_mshr_occupancy_stats.begin(); iter != cs.m_mshr_occupancy_stats.end(); ++iter) {  
+  for (auto iter = cs.m_mshr_occupancy_stats.begin(); iter != cs.m_mshr_occupancy_stats.end(); ++iter) {
     unsigned long long streamID = iter->first;
     if (m_mshr_occupancy_stats.find(streamID) == m_mshr_occupancy_stats.end()) {
       m_mshr_occupancy_stats.insert(
@@ -1544,11 +1660,57 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
         }
       }      
     }
+  } // for (auto iter = cs.m_mshr_occupancy_stats.begin(); iter != cs.m_mshr_occupancy_stats.end(); ++iter) {
+
+  for (auto iter = cs.m_accu_l2_dram_queue_size.begin(); iter != cs.m_accu_l2_dram_queue_size.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    if (m_accu_l2_dram_queue_size.find(streamID) == m_accu_l2_dram_queue_size.end()) {
+      m_accu_l2_dram_queue_size.insert(
+        std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_accu_l2_dram_queue_size.at(streamID)));
+    } else {
+      for (unsigned l2_sub = 0; l2_sub < 8; ++l2_sub) {
+        m_accu_l2_dram_queue_size.at(streamID)[l2_sub] += cs(l2_sub, streamID);
+      }      
+    }
   }
+  for (auto iter = cs.m_accu_l2_icnt_queue_size.begin(); iter != cs.m_accu_l2_icnt_queue_size.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    if (m_accu_l2_icnt_queue_size.find(streamID) == m_accu_l2_icnt_queue_size.end()) {
+      m_accu_l2_icnt_queue_size.insert(
+        std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_accu_l2_icnt_queue_size.at(streamID)));
+    } else {
+      for (unsigned l2_sub = 0; l2_sub < 8; ++l2_sub) {
+        m_accu_l2_icnt_queue_size.at(streamID)[l2_sub] += cs(l2_sub, streamID);
+      }      
+    }
+  }
+  for (auto iter = cs.m_l2_dram_q_accesses.begin(); iter != cs.m_l2_dram_q_accesses.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    if (m_l2_dram_q_accesses.find(streamID) == m_l2_dram_q_accesses.end()) {
+      m_l2_dram_q_accesses.insert(
+        std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_l2_dram_q_accesses.at(streamID)));
+    } else {
+      for (unsigned l2_sub = 0; l2_sub < 8; ++l2_sub) {
+        m_l2_dram_q_accesses.at(streamID)[l2_sub] += cs(l2_sub, streamID);
+      }      
+    }
+  }  
+  for (auto iter = cs.m_l2_icnt_q_accesses.begin(); iter != cs.m_l2_icnt_q_accesses.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    if (m_l2_icnt_q_accesses.find(streamID) == m_l2_icnt_q_accesses.end()) {
+      m_l2_icnt_q_accesses.insert(
+        std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_l2_icnt_q_accesses.at(streamID)));
+    } else {
+      for (unsigned l2_sub = 0; l2_sub < 8; ++l2_sub) {
+        m_l2_icnt_q_accesses.at(streamID)[l2_sub] += cs(l2_sub, streamID);
+      }      
+    }
+  }    
 
   m_cache_port_available_cycles += cs.m_cache_port_available_cycles;
   m_cache_data_port_busy_cycles += cs.m_cache_data_port_busy_cycles;
   m_cache_fill_port_busy_cycles += cs.m_cache_fill_port_busy_cycles;
+  m_l2_miss_q_pops += cs.m_l2_miss_q_pops;
   return *this;
 }
 
@@ -1715,7 +1877,6 @@ void cache_stats::print_fail_stats(FILE *fout, unsigned long long streamID,
 
 void cache_stats::print_mshr_stats(FILE *fout, unsigned long long streamID,
                                    const char *cache_info) const {
-  std::string m_cache_info = cache_info;
   for (auto iter = m_mshr_occupancy_stats.begin(); iter != m_mshr_occupancy_stats.end(); ++iter) {
     unsigned long long streamid = iter->first;
     // when streamID is specified, skip stats for all other streams, otherwise,
@@ -1727,14 +1888,57 @@ void cache_stats::print_mshr_stats(FILE *fout, unsigned long long streamID,
     const unsigned max_warps_per_sm = 64; // m_config.max_warps_per_sm    
     for (unsigned sm = 0; sm < sms; ++sm) {
       for (unsigned warp = 0; warp < max_warps_per_sm; ++warp) {
-        fprintf(fout, "\t%s[streamID:%llu][sm:%u][warp:%u] = %u\n", m_cache_info.c_str(),
+        fprintf(fout, "\t%s[streamID:%llu][sm:%u][warp:%u] = %u\n", cache_info,
           streamid, sm, warp, m_mshr_occupancy_stats.at(streamid)[sm][warp]);
       }
     }
   }
   if (!m_mshr_occupancy_stats.size()) {
-    fprintf(fout, "\t%s: m_mshr_occupancy_stats is empty\n", m_cache_info.c_str());
+    fprintf(fout, "\t%s: m_mshr_occupancy_stats is empty\n", cache_info);
   }
+}
+
+void cache_stats::print_l2_dram_queue_stats(
+  FILE *fout, unsigned l2_dram_q_capacity, unsigned long long streamID, const char *info) const {
+  for (auto iter = m_accu_l2_dram_queue_size.begin(); 
+    iter != m_accu_l2_dram_queue_size.end(); ++iter) {
+    if ((streamID != ((unsigned long long) - 1)) && (iter->first != streamID)) {
+      continue;
+    }
+    for (unsigned l2_sub = 0; l2_sub < iter->second.size(); ++l2_sub) {       
+      float avg_l2_dram_q_size = 
+        (m_accu_l2_dram_queue_size.at(streamID)[l2_sub] / 
+        (float)m_l2_dram_q_accesses.at(streamID)[l2_sub]);
+      float avg_l2_dram_q_occupancy = avg_l2_dram_q_size / (float)l2_dram_q_capacity;
+      fprintf(fout, "\tm_l2_dram_q_accesses[sub:%u] = %u\n", 
+        l2_sub, m_l2_dram_q_accesses.at(streamID)[l2_sub]);
+      // fprintf(fout, "\tavg_l2_dram_q_size[sub:%u] = %.3f\n", l2_sub, avg_l2_dram_q_size);
+      fprintf(fout, "\t%s[sub:%u] = %.3f = (avg_l2_dram_q_size:%.3f / l2_dram_q_capacity:%u)\n", 
+        info, l2_sub, avg_l2_dram_q_occupancy, avg_l2_dram_q_size, l2_dram_q_capacity);
+    }
+  }
+}
+void cache_stats::print_l2_icnt_queue_stats(
+  FILE *fout, unsigned l2_icnt_q_capacity, unsigned long long streamID, const char *info) const {
+  for (auto iter = m_accu_l2_icnt_queue_size.begin(); 
+    iter != m_accu_l2_icnt_queue_size.end(); ++iter) {
+    if ((streamID != ((unsigned long long) - 1)) && (iter->first != streamID)) {
+      continue;
+    }
+    for (unsigned l2_sub = 0; l2_sub < iter->second.size(); ++l2_sub) {       
+      float avg_l2_icnt_q_size = 
+        (m_accu_l2_icnt_queue_size.at(streamID)[l2_sub] / 
+        (float)m_l2_icnt_q_accesses.at(streamID)[l2_sub]);
+      float avg_l2_icnt_q_occupancy = avg_l2_icnt_q_size / (float)l2_icnt_q_capacity;
+      fprintf(fout, "\tavg_l2_icnt_q_size[sub:%u] = %.3f\n", l2_sub, avg_l2_icnt_q_size);
+      fprintf(fout, "\t%s[sub:%u] = %.3f = (avg_size:%.3f / l2_icnt_q_capacity:%u)\n", 
+        info, l2_sub, avg_l2_icnt_q_occupancy, avg_l2_icnt_q_size, l2_icnt_q_capacity);
+    }
+  }
+}
+
+void cache_stats::print_l2_miss_q_pops(FILE *fout, const char *info) const {
+  fprintf(fout, "%s = %llu\n", info, m_l2_miss_q_pops);
 }
 
 void cache_sub_stats::print_port_stats(FILE *fout,
@@ -2032,6 +2236,10 @@ void baseline_cache::cycle() {
   if (!m_miss_queue.empty()) {
     mem_fetch *mf = m_miss_queue.front();
     if (!m_memport->full(mf->size(), mf->get_is_write())) {
+      if (this->m_is_l2) {
+        m_stats.inc_l2_miss_q_pops();
+      }
+
       m_miss_queue.pop_front();
       m_memport->push(mf);
 
@@ -2073,6 +2281,9 @@ void baseline_cache::fill(mem_fetch *mf, unsigned time) {
       delete temp;
     }
   }
+
+  // [GPGPU-SIM][TODO]
+  // assert(mf->get_original_mf());
 
   extra_mf_fields_lookup::iterator e = m_extra_mf_fields.find(mf);
   assert(e != m_extra_mf_fields.end());
@@ -2141,11 +2352,11 @@ void baseline_cache::display_state(FILE *fp) const {
 void baseline_cache::dumpCacheEvent(
   unsigned long long time, const char* stage, const char* event, mem_fetch *mf) {
 
-  const char* cache_name = m_config.getCacheName();
+  const char* cache_name = m_config.get_cache_name();
   std::string l2_prefix = "";
   if (strcmp(cache_name, "L2") == 0) {
     l2_prefix = "SG";
-    l2_prefix += std::to_string(mf->getSubPartition());
+    l2_prefix += std::to_string(mf->get_sub_partition());
     l2_prefix += " ";      
   }
   fprintf(Trace::out, "%llu %s %sstage(%s) cache_event(%s) "
@@ -2160,11 +2371,11 @@ void baseline_cache::dumpCacheEvent(
 void baseline_cache::dumpMSHREvent(
   unsigned long long time, mem_fetch *mf, new_addr_type mshr_addr, bool is_new_entry) {
 
-  const char* cache_name = m_config.getCacheName();
+  const char* cache_name = m_config.get_cache_name();
   std::string l2_prefix = "";
   if (strcmp(cache_name, "L2") == 0) {
     l2_prefix = "SG";
-    l2_prefix += std::to_string(mf->getSubPartition());
+    l2_prefix += std::to_string(mf->get_sub_partition());
     l2_prefix += " ";      
   }  
   const char* action = is_new_entry ? "Created" : "Inserted";
@@ -2186,11 +2397,11 @@ void baseline_cache::dumpMSHREvent(
 
 void baseline_cache::dumpMissQueue(unsigned long long time, const char* stage, const char* event, mem_fetch *mf) {
 
-  const char* cache_name = m_config.getCacheName();
+  const char* cache_name = m_config.get_cache_name();
   std::string l2_prefix = "";
   if (strcmp(cache_name, "L2") == 0) {
     l2_prefix = "SG";
-    l2_prefix += std::to_string(mf->getSubPartition());
+    l2_prefix += std::to_string(mf->get_sub_partition());
     l2_prefix += " ";      
   }
   fprintf(Trace::out, "%llu %s %s%s %s"
@@ -2250,21 +2461,19 @@ void baseline_cache::inc_aggregated_stats_pw(cache_request_status status,
 }
 
 /// Read miss handler without writeback
-void baseline_cache::send_read_request(new_addr_type addr,
-                                       new_addr_type block_addr,
+void baseline_cache::send_read_request(new_addr_type block_addr,
                                        unsigned cache_index, mem_fetch *mf,
                                        unsigned long long time, bool &do_miss,
                                        std::list<cache_event> &events,
                                        bool read_only, bool wa) {
   bool wb = false;
   evicted_block_info e;
-  send_read_request(addr, block_addr, cache_index, mf, time, do_miss, wb, e,
+  send_read_request(block_addr, cache_index, mf, time, do_miss, wb, e,
                     events, read_only, wa);
 }
 
 /// Read miss handler. Check MSHR hit or MSHR available
-void baseline_cache::send_read_request(new_addr_type addr,
-                                       new_addr_type block_addr,
+void baseline_cache::send_read_request(new_addr_type block_addr,
                                        unsigned cache_index, mem_fetch *mf,
                                        unsigned long long time, bool &do_miss, bool &wb,
                                        evicted_block_info &evicted,
@@ -2289,7 +2498,7 @@ void baseline_cache::send_read_request(new_addr_type addr,
       m_mshrs.display(Trace::out, cache_type);      
     }
 
-    [[maybe_unused]] bool is_l2 = !strcmp(m_config.getCacheName(), "L2");
+    [[maybe_unused]] bool is_l2 = !strcmp(m_config.get_cache_name(), "L2");
     bool is_new_mshr_entry = false;
     m_mshrs.add(mshr_addr, mf, is_new_mshr_entry, cache_type); // orig GPGPU-SIM logic
 
@@ -2333,7 +2542,7 @@ void baseline_cache::send_read_request(new_addr_type addr,
       m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
     }
 
-    const unsigned last_occupied_entries = m_mshrs.occupied_entries();
+    [[maybe_unused]] const unsigned last_occupied_entries = m_mshrs.occupied_entries();
     if (DTRACE(DUMP_MSHR)) {
       fprintf(Trace::out, "%llu TPC:%u SM:%u WARP:%u "
         "%s MSHR Miss! Before adding, MSHR is below:\n", 
@@ -2399,10 +2608,10 @@ void data_cache::send_write_request(mem_fetch *mf, cache_event request,
 
 void data_cache::update_m_readable(mem_fetch *mf, unsigned cache_index) {
   cache_block_t *block = m_tag_array->get_block(cache_index);
-  for (unsigned i = 0; i < SECTOR_CHUNCK_SIZE; i++) {
+  for (unsigned i = 0; i < SECTOR_CHUNK_SIZE; i++) {
     if (mf->get_access_sector_mask().test(i)) {
       bool all_set = true;      
-      [[maybe_unused]] bool is_l2 = !strcmp(m_config.getCacheName(), "L2")? true : false;
+      [[maybe_unused]] bool is_l2 = !strcmp(m_config.get_cache_name(), "L2")? true : false;
       for (unsigned k = i * SECTOR_SIZE; k < (i + 1) * SECTOR_SIZE; k++) {
         // If any bit in the byte mask (within the sector) is not set,
         // the sector is unreadble
@@ -2598,7 +2807,7 @@ enum cache_request_status data_cache::wr_miss_wa_naive(
   evicted_block_info evicted;
 
   // Send read request resulting from write miss
-  send_read_request(addr, block_addr, cache_index, n_mf, time, do_miss, wb,
+  send_read_request(block_addr, cache_index, n_mf, time, do_miss, wb,
                     evicted, events, false, true);              
 
   events.push_back(cache_event(WRITE_ALLOCATE_SENT));
@@ -2760,7 +2969,7 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
     bool do_miss = false;
     bool wb = false;
     evicted_block_info evicted;
-    send_read_request(addr, block_addr, cache_index, n_mf, time, do_miss, wb,
+    send_read_request(block_addr, cache_index, n_mf, time, do_miss, wb,
                       evicted, events, false, true);
 
     cache_block_t *block = m_tag_array->get_block(cache_index);
@@ -2836,21 +3045,6 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
 
   cache_request_status req_status =
       m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
-
-  // if (DTRACE(SIMPLE_PREFETCH)) {
-  //   if (req_status == cache_request_status::MISS ||
-  //       req_status == cache_request_status::SECTOR_MISS) {
-  //     fprintf(Trace::out,
-  //             "%llu:%s%s %s %s addr:%#llx block_addr:%#llx cache_index:%u\n",
-  //             (unsigned long long)time,
-  //             m_gpu->gpgpu_ctx->func_sim->ptx_get_insn_str(mf->get_inst().pc).c_str(),
-  //             m_is_l1d ? "L1D" : m_is_l2 ? "L2C" : "xx$",
-  //             mf_request_type_str(mf->get_type()),
-  //             cache_request_status_str(req_status), 
-  //             (unsigned long long)mf->get_addr(),
-  //             (unsigned long long)block_addr, cache_index);
-  //   }
-  // }
 
   assert(req_status != HIT);
   cache_block_t *block = m_tag_array->get_block(cache_index);
@@ -3049,7 +3243,7 @@ enum cache_request_status data_cache::rd_miss_base(
   bool do_miss = false;
   bool wb = false;
   evicted_block_info evicted;
-  send_read_request(addr, block_addr, cache_index, mf, time, do_miss, wb,
+  send_read_request(block_addr, cache_index, mf, time, do_miss, wb,
                     evicted, events, false, false);
 
   if (do_miss) {
@@ -3091,7 +3285,7 @@ enum cache_request_status read_only_cache::access(
   } else if (status != RESERVATION_FAIL) {
     if (!miss_queue_full(0)) {
       bool do_miss = false;
-      send_read_request(addr, block_addr, cache_index, mf, time, do_miss,
+      send_read_request(block_addr, cache_index, mf, time, do_miss,
                         events, true, false);
       if (do_miss) {
         cache_status = MISS;
@@ -3185,7 +3379,7 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
                                              unsigned long long time,
                                              std::list<cache_event> &events) {
   
-  // std::cerr << "[DEBUG] " << m_config.getCacheName() << 
+  // std::cerr << "[DEBUG] " << m_config.get_cache_name() << 
   //   " mf->get_data_size() = " << mf->get_data_size() << 
   //   ", m_config.get_atom_sz() = " << m_config.get_atom_sz() << std::endl;
 

@@ -798,8 +798,8 @@ class memory_space_t {
 const unsigned SECTOR_SIZE = 32;        // sector is 32 bytes width
 const unsigned MAX_MEMORY_ACCESS_SIZE = 128;
 typedef std::bitset<MAX_MEMORY_ACCESS_SIZE> mem_access_byte_mask_t;
-const unsigned SECTOR_CHUNCK_SIZE = 4;  // four sectors
-typedef std::bitset<SECTOR_CHUNCK_SIZE> mem_access_sector_mask_t;
+const unsigned SECTOR_CHUNK_SIZE = 4;  // four sectors
+typedef std::bitset<SECTOR_CHUNK_SIZE> mem_access_sector_mask_t;
 #define NO_PARTIAL_WRITE (mem_access_byte_mask_t())
 
 #define MEM_ACCESS_TYPE_TUP_DEF                                         \

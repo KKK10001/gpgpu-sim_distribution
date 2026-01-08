@@ -56,7 +56,7 @@ enum cache_request_status {
   MISS,
   RESERVATION_FAIL,
   SECTOR_MISS,
-  MSHR_HIT,
+  MSHR_HIT, // only stats related
   NUM_CACHE_REQUEST_STATUS
 };
 
@@ -270,8 +270,12 @@ struct line_cache_block : public cache_block_t {
 
     m_status = m_set_modified_on_fill ? MODIFIED : VALID;
 
-    if (m_set_readable_on_fill) m_readable = true;
-    if (m_set_byte_mask_on_fill) set_byte_mask(byte_mask);
+    if (m_set_readable_on_fill) {
+      m_readable = true;
+    }
+    if (m_set_byte_mask_on_fill) {
+      set_byte_mask(byte_mask);
+    }
 
     m_fill_time = time;
   }
@@ -332,7 +336,7 @@ struct line_cache_block : public cache_block_t {
     m_set_byte_mask_on_fill = m_modified;
   }
   virtual unsigned get_modified_size() {
-    return SECTOR_CHUNCK_SIZE * SECTOR_SIZE;  // i.e. cache line size
+    return SECTOR_CHUNK_SIZE * SECTOR_SIZE;  // i.e. cache line size
   }
   virtual void set_m_readable(bool readable,
                               mem_access_sector_mask_t sector_mask) {
@@ -362,7 +366,7 @@ struct sector_cache_block : public cache_block_t {
   sector_cache_block() { init(); }
 
   void init() {
-    for (unsigned i = 0; i < SECTOR_CHUNCK_SIZE; ++i) {
+    for (unsigned i = 0; i < SECTOR_CHUNK_SIZE; ++i) {
       m_sector_alloc_time[i] = 0;
       m_sector_fill_time[i] = 0;
       m_last_sector_access_time[i] = 0;
@@ -394,19 +398,19 @@ struct sector_cache_block : public cache_block_t {
     unsigned sidx = get_sector_index(sector_mask);
 
     // set sector stats
-    m_sector_alloc_time[sidx] = time;
-    m_last_sector_access_time[sidx] = time;
-    m_sector_fill_time[sidx] = 0;
+    m_sector_alloc_time[sidx] = time;       // no-used var.
+    m_last_sector_access_time[sidx] = time; // no-used var.
+    m_sector_fill_time[sidx] = 0;           // no-used var.
     m_status[sidx] = RESERVED;
-    m_ignore_on_fill_status[sidx] = false;
+    m_ignore_on_fill_status[sidx] = false;  // no-used var.
     m_set_modified_on_fill[sidx] = false;
     m_set_readable_on_fill[sidx] = false;
     m_set_byte_mask_on_fill = false;
 
     // set line stats
-    m_line_alloc_time = time;  // only set this for the first allocated sector
+    m_line_alloc_time       = time;  // only set this for the first allocated sector
     m_line_last_access_time = time;
-    m_line_fill_time = 0;
+    m_line_fill_time        = 0;            // no-used var.
   }
 
   void allocate_sector(unsigned time, mem_access_sector_mask_t sector_mask) {
@@ -415,9 +419,9 @@ struct sector_cache_block : public cache_block_t {
     unsigned sidx = get_sector_index(sector_mask);
 
     // set sector stats
-    m_sector_alloc_time[sidx] = time;
-    m_last_sector_access_time[sidx] = time;
-    m_sector_fill_time[sidx] = 0;
+    m_sector_alloc_time[sidx] = time;        // no-used var.
+    m_last_sector_access_time[sidx] = time;  // no-used var.
+    m_sector_fill_time[sidx] = 0;            // no-used var.
     if (m_status[sidx] == MODIFIED)  // this should be the case only for
                                      // fetch-on-write policy //TO DO
       m_set_modified_on_fill[sidx] = true;
@@ -448,14 +452,16 @@ struct sector_cache_block : public cache_block_t {
       m_readable[sidx] = true;
       m_set_readable_on_fill[sidx] = false;
     }
-    if (m_set_byte_mask_on_fill) set_byte_mask(byte_mask);
+    if (m_set_byte_mask_on_fill) {
+      set_byte_mask(byte_mask);
+    }
 
     m_sector_fill_time[sidx] = time;
     m_line_fill_time = time;
   }
   virtual bool is_invalid_line() {
     // all the sectors should be invalid
-    for (unsigned i = 0; i < SECTOR_CHUNCK_SIZE; ++i) {
+    for (unsigned i = 0; i < SECTOR_CHUNK_SIZE; ++i) {
       if (m_status[i] != INVALID) return false;
     }
     return true;
@@ -463,14 +469,14 @@ struct sector_cache_block : public cache_block_t {
   virtual bool is_valid_line() { return !(is_invalid_line()); }
   virtual bool is_reserved_line() {
     // if any of the sector is reserved, then the line is reserved
-    for (unsigned i = 0; i < SECTOR_CHUNCK_SIZE; ++i) {
+    for (unsigned i = 0; i < SECTOR_CHUNK_SIZE; ++i) {
       if (m_status[i] == RESERVED) return true;
     }
     return false;
   }
   virtual bool is_modified_line() {
     // if any of the sector is modified, then the line is modified
-    for (unsigned i = 0; i < SECTOR_CHUNCK_SIZE; ++i) {
+    for (unsigned i = 0; i < SECTOR_CHUNK_SIZE; ++i) {
       if (m_status[i] == MODIFIED) {
         return true;
       }
@@ -504,7 +510,7 @@ struct sector_cache_block : public cache_block_t {
   }
   virtual mem_access_sector_mask_t get_dirty_sector_mask() {
     mem_access_sector_mask_t sector_mask;
-    for (unsigned i = 0; i < SECTOR_CHUNCK_SIZE; i++) {
+    for (unsigned i = 0; i < SECTOR_CHUNK_SIZE; i++) {
       if (m_status[i] == MODIFIED) sector_mask.set(i);
     }
     return sector_mask;
@@ -556,7 +562,7 @@ struct sector_cache_block : public cache_block_t {
 
   virtual unsigned get_modified_size() {
     unsigned modified = 0;
-    for (unsigned i = 0; i < SECTOR_CHUNCK_SIZE; ++i) {
+    for (unsigned i = 0; i < SECTOR_CHUNK_SIZE; ++i) {
       if (m_status[i] == MODIFIED) modified++;
     }
     return modified * SECTOR_SIZE;
@@ -582,26 +588,33 @@ struct sector_cache_block : public cache_block_t {
   }
 
  private:
-  unsigned m_sector_alloc_time[SECTOR_CHUNCK_SIZE];
-  unsigned m_last_sector_access_time[SECTOR_CHUNCK_SIZE];
-  unsigned m_sector_fill_time[SECTOR_CHUNCK_SIZE];
+  //////////////////////// no-used var. ////////////////////////
+  unsigned m_sector_alloc_time[SECTOR_CHUNK_SIZE];
+  unsigned m_last_sector_access_time[SECTOR_CHUNK_SIZE];  
+  unsigned m_sector_fill_time[SECTOR_CHUNK_SIZE];
+  unsigned m_line_fill_time;
+  bool m_ignore_on_fill_status[SECTOR_CHUNK_SIZE];  
+  //////////////////////////////////////////////////////////////
+
+  // replacement_policy related control info.
   unsigned m_line_alloc_time;
   unsigned m_line_last_access_time;
-  unsigned m_line_fill_time;
-  cache_block_state m_status[SECTOR_CHUNCK_SIZE];
-  bool m_ignore_on_fill_status[SECTOR_CHUNCK_SIZE];
-  bool m_set_modified_on_fill[SECTOR_CHUNCK_SIZE];
-  bool m_set_readable_on_fill[SECTOR_CHUNCK_SIZE];
+  
+  // MetaData
+  cache_block_state m_status[SECTOR_CHUNK_SIZE];  
+  bool m_set_modified_on_fill[SECTOR_CHUNK_SIZE];
+  bool m_set_readable_on_fill[SECTOR_CHUNK_SIZE];
   bool m_set_byte_mask_on_fill;
-  bool m_readable[SECTOR_CHUNCK_SIZE];
+  bool m_readable[SECTOR_CHUNK_SIZE];
+
   mem_access_byte_mask_t m_dirty_byte_mask;
 
   unsigned get_sector_index(mem_access_sector_mask_t sector_mask) {
     assert(sector_mask.count() == 1);
-    for (unsigned i = 0; i < SECTOR_CHUNCK_SIZE; ++i) {
+    for (unsigned i = 0; i < SECTOR_CHUNK_SIZE; ++i) {
       if (sector_mask.to_ulong() & (1 << i)) return i;
     }
-    return SECTOR_CHUNCK_SIZE;  // error
+    return SECTOR_CHUNK_SIZE;  // error
   }
 };
 
@@ -670,7 +683,7 @@ class cache_config {
       m_miss_queue_size, m_result_fifo_entries,
       m_data_port_width
     );
-    m_sector_size = m_line_sz / SECTOR_CHUNCK_SIZE;
+    m_sector_size = m_line_sz / SECTOR_CHUNK_SIZE;
 
     if (ntok < 12) {
       if (!strcmp(config, "none")) {
@@ -857,16 +870,16 @@ class cache_config {
     }
 
     if (m_cache_type == SECTOR) {
-      bool cond = m_line_sz / SECTOR_SIZE == SECTOR_CHUNCK_SIZE &&
+      bool cond = m_line_sz / SECTOR_SIZE == SECTOR_CHUNK_SIZE &&
                   m_line_sz % SECTOR_SIZE == 0;
       if (!cond) {
         std::cerr << "assert failed! " << cache_name << 
           " (m_line_sz:" << m_line_sz << 
           " / SECTOR_SIZE:" << SECTOR_SIZE << 
-          ") != SECTOR_CHUNCK_SIZE:" << SECTOR_CHUNCK_SIZE << "\n";
+          ") != SECTOR_CHUNK_SIZE:" << SECTOR_CHUNK_SIZE << "\n";
 
         std::cerr << "error: For sector cache, the simulator uses hard-coded "
-                    "SECTOR_SIZE and SECTOR_CHUNCK_SIZE. The line size "
+                    "SECTOR_SIZE and SECTOR_CHUNK_SIZE. The line size "
                     "must be product of both values.\n";
         assert(0);
       }
@@ -990,9 +1003,9 @@ class cache_config {
   }
   write_policy_t get_write_policy() { return m_write_policy; }
 
-  const char* getCacheName() const { return m_cache_name; }
+  const char* get_cache_name() const { return m_cache_name; }
   const unsigned getSectorSize() const { return m_sector_size; }
-  const unsigned getSubPartition() const { return m_sub_partition; }
+  const unsigned get_sub_partition() const { return m_sub_partition; }
 
  protected:
   void exit_parse_error() {
@@ -1381,7 +1394,14 @@ class cache_stats {
   // Clear AerialVision cache stats after each window
   void clear_pw();
   unsigned get_mshr_merge_dist_cnt(unsigned long long streamID, unsigned sm_id, unsigned warp_id);
+
+  // Increment cache stats
   void inc_mshr_stats(unsigned long long streamID, unsigned sm_id, unsigned warp_id);
+  void inc_accu_l2_dram_queue_size(unsigned long long streamID, unsigned l2_sub, unsigned size);
+  void inc_accu_l2_icnt_queue_size(unsigned long long streamID, unsigned l2_sub, unsigned size);  
+  void inc_l2_dram_q_accesses(unsigned long long streamID, unsigned l2_sub);
+  void inc_l2_icnt_q_accesses(unsigned long long streamID, unsigned l2_sub);
+  void inc_l2_miss_q_pops();
   void inc_stats(int access_type, int access_outcome, unsigned long long streamID);
   // Increment AerialVision cache stats
   void inc_stats_pw(int access_type, int access_outcome, unsigned long long streamID);
@@ -1395,8 +1415,12 @@ class cache_stats {
   unsigned long long operator()(int access_type, int access_outcome,
                                 bool fail_outcome,
                                 unsigned long long streamID) const;
+  // for m_mshr_occupancy_stats
   unsigned long long operator()(unsigned sm, unsigned warp,
                                 unsigned long long streamID) const;
+
+  // for m_accu_l2_dram_queue_size, m_accu_l2_icnt_queue_size, m_l2_dram_q_accesses
+  unsigned operator()(unsigned l2_sub, unsigned long long streamID) const;
 
   unsigned long long operator()(int access_type, int access_outcome,
                                 bool is_fail_outcome,
@@ -1411,6 +1435,11 @@ class cache_stats {
                         const char *cache_info = "Cache_fail_stats") const;
   void print_mshr_stats(FILE *fout, unsigned long long streamID,
                         const char *cache_info = "mshr_stats") const;
+  void print_l2_dram_queue_stats(
+    FILE *fout, unsigned l2_dram_q_capacity, unsigned long long streamID, const char *info = "") const;
+  void print_l2_icnt_queue_stats(
+    FILE *fout, unsigned l2_icnt_q_capacity, unsigned long long streamID, const char *info = "") const;
+  void print_l2_miss_q_pops(FILE *fout, const char *info = "") const;
 
   unsigned long long get_stats(enum mem_access_type *access_type,
                                unsigned num_access_type,
@@ -1423,14 +1452,23 @@ class cache_stats {
 
   void sample_cache_port_utility(bool data_port_busy, bool fill_port_busy);
 
-  void setCacheName(const char* cache_name) { m_cache_name = cache_name; }
-  const char* getCacheName() const { return m_cache_name; }  
-  void setSubPartition(const unsigned sub_partition) { m_sub_partition = sub_partition; }
-  const unsigned getSubPartition() const { return m_sub_partition; }  
+  void set_cache_name(const char* cache_name) { m_cache_name = cache_name; }
+  const char* get_cache_name() const { return m_cache_name; }  
+  void set_sub_partition(const unsigned sub_partition) { m_sub_partition = sub_partition; }
+  void set_sub_partitions(const unsigned sub_partitions) { m_sub_partitions = sub_partitions; }
+  void set_l2_dram_queue_capacity(const unsigned capacity) { m_l2_dram_queue_capacity = capacity; }
+  void set_l2_icnt_queue_capacity(const unsigned capacity) { m_l2_icnt_queue_capacity = capacity; }
+  const unsigned get_l2_dram_queue_capacity() const { return m_l2_dram_queue_capacity; }
+  const unsigned get_l2_icnt_queue_capacity() const { return m_l2_icnt_queue_capacity; }
+  const unsigned get_sub_partition() const { return m_sub_partition; }  
+  const unsigned get_sub_partitions() const { return m_sub_partitions; }
 
  private:
   const char* m_cache_name;
   unsigned m_sub_partition;
+  unsigned m_sub_partitions;
+  unsigned m_l2_dram_queue_capacity;
+  unsigned m_l2_icnt_queue_capacity;
   bool check_valid(int type, int status) const;
   bool check_valid(unsigned sm, unsigned warp) const;
   bool check_fail_valid(int type, int fail) const;
@@ -1449,6 +1487,11 @@ class cache_stats {
     unsigned long long /* streamID */, 
     std::vector< /* SMs */
       std::vector<unsigned> /* WARPs per SM */ >> m_mshr_occupancy_stats;
+  std::map<unsigned long long /* streamID */, std::vector<unsigned /* L2 Sub */>> m_accu_l2_dram_queue_size;
+  std::map<unsigned long long /* streamID */, std::vector<unsigned /* L2 Sub */>> m_accu_l2_icnt_queue_size;
+  std::map<unsigned long long /* streamID */, std::vector<unsigned /* L2 Sub */>> m_l2_dram_q_accesses;
+  std::map<unsigned long long /* streamID */, std::vector<unsigned /* L2 Sub */>> m_l2_icnt_q_accesses;
+  unsigned long long m_l2_miss_q_pops;
 
   unsigned long long m_cache_port_available_cycles;
   unsigned long long m_cache_data_port_busy_cycles;
@@ -1555,7 +1598,7 @@ class baseline_cache : public cache_t {
   virtual enum cache_request_status access(new_addr_type addr, mem_fetch *mf,
                                            unsigned long long time,
                                            std::list<cache_event> &events) = 0;
-  /// Sends next request to lower level of memory
+  /// Sends next request to lower level of memory (return)
   void cycle();
   /// Interface for response from lower memory level (model bandwidth
   /// restictions in caller)
@@ -1696,12 +1739,12 @@ class baseline_cache : public cache_t {
     return ((m_miss_queue.size() + num_miss) >= m_config.m_miss_queue_size);
   }
   /// Read miss handler without writeback
-  void send_read_request(new_addr_type addr, new_addr_type block_addr,
+  void send_read_request(new_addr_type block_addr,
                          unsigned cache_index, mem_fetch *mf, unsigned long long time,
                          bool &do_miss, std::list<cache_event> &events,
                          bool read_only, bool wa);
   /// Read miss handler. Check MSHR hit or MSHR available
-  void send_read_request(new_addr_type addr, new_addr_type block_addr,
+  void send_read_request(new_addr_type block_addr,
                          unsigned cache_index, mem_fetch *mf, unsigned long long time,
                          bool &do_miss, bool &wb, evicted_block_info &evicted,
                          std::list<cache_event> &events, bool read_only,

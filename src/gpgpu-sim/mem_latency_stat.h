@@ -46,6 +46,7 @@ class memory_stats_t {
   void memlatstat_icnt2mem_pop(class mem_fetch *mf);
   void memlatstat_lat_pw();
   void memlatstat_print(unsigned n_mem, unsigned gpu_mem_n_bk);
+  void print_sub_partition_stall_stats();
 
   void visualizer_print(gzFile visualizer_file);
 
@@ -108,6 +109,8 @@ class memory_stats_t {
   unsigned int *L2_dramtoL2length;
   unsigned int *L2_dramtoL2writelength;
   unsigned int *L2_L2todramlength;
+  unsigned m_abort_l2_access_due_to_l2_dram_q_full;
+  unsigned m_abort_l2_access_due_to_l2_icnt_q_full;
 
   // DRAM access row locality stats
   unsigned int *

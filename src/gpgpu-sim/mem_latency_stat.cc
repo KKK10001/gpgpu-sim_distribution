@@ -276,6 +276,13 @@ void memory_stats_t::memlatstat_lat_pw() {
   }
 }
 
+void memory_stats_t::print_sub_partition_stall_stats() {
+  printf("m_abort_l2_access_due_to_l2_dram_q_full: %u\n",
+         m_abort_l2_access_due_to_l2_dram_q_full);
+  printf("m_abort_l2_access_due_to_l2_icnt_q_full: %u\n",
+         m_abort_l2_access_due_to_l2_icnt_q_full);
+}
+
 void memory_stats_t::memlatstat_print(unsigned n_mem, unsigned gpu_mem_n_bk) {
   unsigned i, j, k, l, m;
   unsigned max_bank_accesses, min_bank_accesses, max_chip_accesses,

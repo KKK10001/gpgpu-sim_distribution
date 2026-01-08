@@ -142,11 +142,11 @@ class mem_fetch {
   void setTime(const unsigned long long time) { m_time = time; }
   unsigned long long getTime() const { return m_time; }
 
-  unsigned getSubPartition() const { return m_sub_partition; }
+  unsigned get_sub_partition() const { return m_sub_partition; }
 
  private:
   // Pass-through L2 sub-partition for debugging/tracing
-  void setSubPartition(unsigned sub_partition) {
+  void set_sub_partition(unsigned sub_partition) {
     m_sub_partition = sub_partition;
   }
   unsigned m_sub_partition;
@@ -174,9 +174,8 @@ class mem_fetch {
                          // chip-row-bank-column address)
   enum mf_type m_type;
 
-  // statistics
-  unsigned
-      m_timestamp;  // set to gpu_sim_cycle+gpu_tot_sim_cycle at struct creation
+  // statistics (stats related. nothing to do with implementation itself)
+  unsigned m_timestamp;  // set to gpu_sim_cycle+gpu_tot_sim_cycle at struct creation
   unsigned m_timestamp2;  // set to gpu_sim_cycle+gpu_tot_sim_cycle when pushed
                           // onto icnt to shader; only used for reads
   unsigned m_icnt_receive_time;  // set to gpu_sim_cycle + interconnect_latency
@@ -187,7 +186,7 @@ class mem_fetch {
 
   unsigned long long m_streamID;
 
-  static unsigned sm_next_mf_request_uid;
+  static unsigned sm_next_mf_request_uid; // has same uArch meaning as "m_request_uid"
 
   const memory_config *m_mem_config;
   unsigned icnt_flit_size;

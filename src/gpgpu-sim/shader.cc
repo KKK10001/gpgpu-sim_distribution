@@ -2077,7 +2077,7 @@ void ldst_unit::get_cache_stats(cache_stats &cs, unsigned sm) {
   // Adds stats to 'cs' from each cache
   if (m_L1D) {
     const char* cache_type = "L1D";
-    cs.setCacheName(cache_type);
+    cs.set_cache_name(cache_type);
     if (DTRACE(DATA_CACHE_STATS) || DTRACE(CACHE_STATS)) {
       fprintf(Trace::out, "%llu SM:%u m_L1D->get_stats()\n",
         m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, sm);
@@ -2086,7 +2086,7 @@ void ldst_unit::get_cache_stats(cache_stats &cs, unsigned sm) {
   } 
   if (m_L1C) {
     const char* cache_type = "L1C";
-    cs.setCacheName(cache_type);
+    cs.set_cache_name(cache_type);
     if (DTRACE(CACHE_STATS)) {
       fprintf(Trace::out, "%llu SM:%u m_L1C->get_stats()\n",
         m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, sm);
@@ -2095,7 +2095,7 @@ void ldst_unit::get_cache_stats(cache_stats &cs, unsigned sm) {
   }
   if (m_L1T) {
     const char* cache_type = "L1T";
-    cs.setCacheName(cache_type);
+    cs.set_cache_name(cache_type);
     if (DTRACE(CACHE_STATS)) {
       fprintf(Trace::out, "%llu SM:%u m_L1T->get_stats()\n",
         m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, sm);
@@ -4585,7 +4585,7 @@ void shader_core_ctx::print_cache_stats(FILE *fp, unsigned &dl1_accesses,
 void shader_core_ctx::get_cache_stats(cache_stats &cs, unsigned sm) {
   // Adds stats from each cache to 'cs'
   const char* cache_type = "L1I";
-  cs.setCacheName(cache_type);
+  cs.set_cache_name(cache_type);
   cs += m_L1I->get_stats();          // Get L1I stats
 
   // cache_type would be overwitten inside m_ldst_unit->get_cache_stats()

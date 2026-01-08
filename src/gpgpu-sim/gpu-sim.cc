@@ -1630,10 +1630,12 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
 #endif
 
   // performance counter that are not local to one shader
+  m_memory_stats->print_sub_partition_stall_stats();
   m_memory_stats->memlatstat_print(m_memory_config->m_n_mem,
                                    m_memory_config->nbk);
-  for (unsigned i = 0; i < m_memory_config->m_n_mem; i++)
+  for (unsigned i = 0; i < m_memory_config->m_n_mem; i++) {
     m_memory_partition_unit[i]->print(stdout);
+  }
 
   // L2 cache stats
   if (!m_memory_config->m_L2_config.disabled()) {
@@ -1644,8 +1646,19 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
     l2_css.clear();
     total_l2_css.clear();
 
+    unsigned icnt_l2_q_capacity;
+    unsigned l2_dram_q_capacity;
+    unsigned dram_l2_q_capacity;
+    unsigned l2_icnt_q_capacity;
+
+    sscanf(m_memory_config->gpgpu_L2_queue_config, "%u:%u:%u:%u", 
+      &icnt_l2_q_capacity, 
+      &l2_dram_q_capacity,
+      &dram_l2_q_capacity, 
+      &l2_icnt_q_capacity);
+
     printf("\n========= L2 cache stats =========\n");
-    for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
+    for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {      
       m_memory_sub_partition[i]->accumulate_L2cache_stats(l2_stats);
       m_memory_sub_partition[i]->get_L2cache_sub_stats(l2_css);
 
@@ -1674,8 +1687,15 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
       printf("L2_total_cache_reservation_fail_breakdown:\n");
       l2_stats.print_fail_stats(stdout, streamID, "L2_cache_stats_fail_breakdown");
       printf("L2_total_mshr_stats:\n");
-      l2_stats.print_mshr_stats(stdout, streamID, "L2_mshr_stats");
+      l2_stats.print_mshr_stats(stdout, streamID, "L2_mshr_stats");      
+      printf("Gather l2_sub_queue_occupancy:\n");
+      l2_stats.print_l2_dram_queue_stats(
+        stdout, l2_dram_q_capacity, streamID, "L2_dram_queue_occupancy");
+      l2_stats.print_l2_icnt_queue_stats(
+        stdout, l2_icnt_q_capacity, streamID, "L2_icnt_queue_occupancy");
       total_l2_css.print_port_stats(stdout, "L2_cache");
+      printf("L2 total MissQueue pops:\n");
+      l2_stats.print_l2_miss_q_pops(stdout, "m_l2_miss_q_pops");
     }
   }
 
@@ -2117,8 +2137,8 @@ void gpgpu_sim::cycle() {
       // move memory request from interconnect into memory partition (if not
       // backed up) Note:This needs to be called in DRAM clock domain if there
       // is no L2 cache in the system In the worst case, we may need to push
-      // SECTOR_CHUNCK_SIZE requests, so ensure you have enough buffer for them
-      if (m_memory_sub_partition[i]->full(SECTOR_CHUNCK_SIZE)) {
+      // SECTOR_CHUNK_SIZE requests, so ensure you have enough buffer for them
+      if (m_memory_sub_partition[i]->full(SECTOR_CHUNK_SIZE)) {
         gpu_stall_dramfull++;
         if (DTRACE(L2_SUB_PARTITION)) {
           fprintf(Trace::out, "%llu m_icnt_L2_queue full causing failure of "

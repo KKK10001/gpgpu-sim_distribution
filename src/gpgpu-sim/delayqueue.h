@@ -66,7 +66,7 @@ class fifo_pipeline {
   }
 
   void push(T* data) {
-    assert(m_length < m_max_len);
+    assert(m_length <= m_max_len);
     if (m_head) {
       if (m_tail->m_data || m_length < m_min_len) {
         m_tail->m_next = new fifo_data<T>();
