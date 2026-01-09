@@ -1607,16 +1607,34 @@ class baseline_cache : public cache_t {
   bool waiting_for_fill(mem_fetch *mf);
   /// Are any (accepted) accesses that had to wait for memory now ready? (does
   /// not include accesses that "HIT")
-  bool access_ready() const { 
-    return m_mshrs.access_ready(); 
+  bool access_ready() const {
+#ifdef DISABLE_MSHR
+    return !m_ready_fill.empty();
+#else
+    return m_mshrs.access_ready();
+#endif
   }
   /// 
   size_t num_pending_responses() const {
+#ifdef DISABLE_MSHR
+    return m_ready_fill.size();
+#else
     return m_mshrs.num_pending_responses();
+#endif
   }
   /// Pop next ready access (does not include accesses that "HIT")
-  mem_fetch *next_access(const char* cache_name, unsigned long long cycle = 0) 
-    { return m_mshrs.next_access(cache_name, cycle); }
+  mem_fetch *next_access(const char* cache_name, unsigned long long cycle = 0) {
+#ifdef DISABLE_MSHR
+    (void)cache_name;
+    (void)cycle;
+    if (m_ready_fill.empty()) return NULL;
+    mem_fetch *mf = m_ready_fill.front();
+    m_ready_fill.pop_front();
+    return mf;
+#else
+    return m_mshrs.next_access(cache_name, cycle);
+#endif
+  }
   // flash invalidate all entries in cache
   void flush() { m_tag_array->flush(); }
   void invalidate() { m_tag_array->invalidate(); }
@@ -1728,6 +1746,9 @@ class baseline_cache : public cache_t {
   extra_mf_fields_lookup m_extra_mf_fields;
 
   cache_stats m_stats;
+#ifdef DISABLE_MSHR
+  std::list<mem_fetch *> m_ready_fill; // FIFO of fills ready to reply upstream when MSHR is disabled
+#endif
 
   /// Checks whether this request can be handled on this cycle. num_miss equals
   /// max # of misses to be handled on this cycle

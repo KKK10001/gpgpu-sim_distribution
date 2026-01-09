@@ -59,6 +59,7 @@ CXXFLAGS += -I$(CUDA_INSTALL_PATH)/include
 ##################### L2 Performance Study Flags #####################
 CXXFLAGS += -DEXCLUDE_MEMCPY_CYCLES_FROM_CACHE_TIMING
 CXXFLAGS += -DCONSERVATIVE_REQUEST_L2_SUB
+# CXXFLAGS += -DDISABLE_MSHR
 ######################################################################
 # CXXFLAGS += -DZERO_ROP_LATENCY
 $(warning Makfile path = $(CURDIR))

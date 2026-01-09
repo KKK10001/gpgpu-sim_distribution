@@ -2308,15 +2308,21 @@ void baseline_cache::fill(mem_fetch *mf, unsigned time) {
     abort();
   }    
 
-  if (DTRACE(MSHR_EVENT)) {
-    std::string ready_event = "m_mshrs.mark_ready[block_addr:";
-    ready_event += std::to_string(e->second.m_block_addr);
-    ready_event += "]";
-    dumpCacheEvent(time, "::fill", ready_event.c_str(), mf);
-  } 
+  // if (DTRACE(MSHR_EVENT)) {
+  //   std::string ready_event = "m_mshrs.mark_ready[block_addr:";
+  //   ready_event += std::to_string(e->second.m_block_addr);
+  //   ready_event += "]";
+  //   dumpCacheEvent(time, "::fill", ready_event.c_str(), mf);
+  // } 
 
   bool has_atomic = false;
+#ifdef DISABLE_MSHR
+  has_atomic = mf->isatomic();
+  m_ready_fill.push_back(mf);
+#else
   m_mshrs.mark_ready(e->second.m_block_addr, has_atomic);
+#endif
+
   if (has_atomic) {
     assert(m_config.m_alloc_policy == ON_MISS);
     cache_block_t *block = m_tag_array->get_block(e->second.m_cache_index);
@@ -2479,10 +2485,43 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
                                        evicted_block_info &evicted,
                                        std::list<cache_event> &events,
                                        bool read_only, bool wa) {
+
   new_addr_type mshr_addr = m_config.mshr_addr(mf->get_addr());
-  bool mshr_hit = m_mshrs.probe(mshr_addr);
-  bool mshr_avail = !m_mshrs.full(mshr_addr);
   const char* cache_type = m_is_l2 ? "L2" : m_is_l1d ? "L1D" : "OTHER$";
+#ifdef DISABLE_MSHR
+  // No MSHR: only gate on miss_queue capacity, no merge or ready tracking.
+  if (m_miss_queue.size() < m_config.m_miss_queue_size) {
+    if (read_only) {
+      m_tag_array->access(block_addr, time, cache_index, mf);
+    } else {
+      m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
+    }
+
+    m_extra_mf_fields[mf] = extra_mf_fields(
+        mshr_addr, mf->get_addr(), cache_index, mf->get_data_size(), m_config);
+    mf->set_data_size(m_config.get_atom_sz());
+    mf->set_addr(mshr_addr);
+    m_miss_queue.push_back(mf);
+    mf->set_status(m_miss_queue_status, time);
+
+    if (DTRACE(CACHE_EVENT) || DTRACE(MISS_QUEUE_EVENT)) {
+      dumpMissQueue(time, "RD-MISS-NO-MSHR", "m_miss_queue.push_back ", mf);
+    }
+
+    if (!wa) {
+      events.push_back(cache_event(READ_REQUEST_SENT));
+      if (DTRACE(CACHE_EVENT)) {
+        dumpCacheEvent(time, "RD-MISS-NO-MSHR", "READ_REQUEST_SENT", mf);
+      }
+    }
+    do_miss = true;
+  } else {
+    m_stats.inc_fail_stats(mf->get_access_type(), MISS_QUEUE_FULL,
+                           mf->get_streamID(), miss_queue_full_driver::RD_MISS);
+  }
+#else
+  bool mshr_hit   = m_mshrs.probe(mshr_addr);
+  bool mshr_avail = !m_mshrs.full(mshr_addr);
   if (mshr_hit && mshr_avail) {
     if (read_only) {
       m_tag_array->access(block_addr, time, cache_index, mf);
@@ -2590,6 +2629,7 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
   } else {
     assert(0);
   }    
+#endif
 }
 
 /// Sends write request to lower level memory (write or writeback)
@@ -2750,7 +2790,7 @@ enum cache_request_status data_cache::wr_miss_wa_naive(
   // Write allocate, maximum 3 requests (write miss, read request, write back
   // request) Conservatively ensure the worst-case request can be handled this
   // cycle
-  bool mshr_hit = m_mshrs.probe(mshr_addr);
+  bool mshr_hit   = m_mshrs.probe(mshr_addr);
   bool mshr_avail = !m_mshrs.full(mshr_addr);
   if (miss_queue_full(2) ||
       (!(mshr_hit && mshr_avail) &&
@@ -2909,7 +2949,7 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
     }
     return RESERVATION_FAIL;
   } else {
-    bool mshr_hit = m_mshrs.probe(mshr_addr);
+    bool mshr_hit   = m_mshrs.probe(mshr_addr);
     bool mshr_avail = !m_mshrs.full(mshr_addr);
     if (miss_queue_full(1) ||
         (!(mshr_hit && mshr_avail) &&
