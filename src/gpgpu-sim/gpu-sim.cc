@@ -254,6 +254,12 @@ void memory_config::reg_options(class OptionParser *opp) {
       "index_fn>,<mshr>:<N>:<merge>,<mq>:<fifo_entry>,<data_port_width>",
       "S:32:128:24,L:B:m:L:P,A:192:4,32:0,32");
 
+  option_parser_register(opp, "-gpgpu_cache:l2_mshr", OPT_CSTR,
+                         &m_L2_config.m_mshr_config_string,
+                         "per-GPC shared L2 MSHR config "
+                         "<mshr_disable>",
+                         "none");
+
   option_parser_register(
       opp, "-disable_wr_merge", OPT_BOOL,
       &m_L2_config.m_disable_wr_merge,      
@@ -339,24 +345,43 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       opp, "-gpgpu_shader_core_pipeline", OPT_CSTR,
       &gpgpu_shader_core_pipeline_opt,
       "shader core pipeline config, i.e., {<nthread>:<warpsize>}", "1024:32");
+
   option_parser_register(opp, "-gpgpu_tex_cache:l1", OPT_CSTR,
                          &m_L1T_config.m_config_string,
-                         "per-shader L1 texture cache  (READ-ONLY) config "
+                         "per-shader L1 texture cache (READ-ONLY) config "
                          " {<nsets>:<bsize>:<assoc>,<rep>:<wr>:<alloc>:<wr_"
                          "alloc>,<mshr>:<N>:<merge>,<mq>:<rf>}",
                          "8:128:5,L:R:m:N,F:128:4,128:2");
+  option_parser_register(opp, "-gpgpu_cache:l1t_mshr", OPT_CSTR,
+                         &m_L1T_config.m_mshr_config_string,
+                         "per-shader L1T MSHR config "
+                         "<mshr_disable>",
+                         "none");
+              
   option_parser_register(
       opp, "-gpgpu_const_cache:l1", OPT_CSTR, &m_L1C_config.m_config_string,
       "per-shader L1 constant memory cache  (READ-ONLY) config "
       " {<nsets>:<bsize>:<assoc>,<rep>:<wr>:<alloc>:<wr_alloc>,<mshr>:<N>:<"
       "merge>,<mq>} ",
       "64:64:2,L:R:f:N,A:2:32,4");
+  option_parser_register(opp, "-gpgpu_cache:l1c_mshr", OPT_CSTR,
+                         &m_L1C_config.m_mshr_config_string,
+                         "per-shader L1C MSHR config "
+                         "<mshr_disable>",
+                         "none");
+      
   option_parser_register(
       opp, "-gpgpu_cache:il1", OPT_CSTR, &m_L1I_config.m_config_string,
       "shader L1 instruction cache config "
       " {<sector?>:<nsets>:<bsize>:<assoc>,<rep>:<wr>:<alloc>:<wr_"
       "alloc>:<set_index_fn>,<mshr>:<N>:<merge>,<mq>} ",
       "N:64:128:16,L:R:f:N:L,S:2:48,4");
+  option_parser_register(opp, "-gpgpu_cache:l1i_mshr", OPT_CSTR,
+                         &m_L1I_config.m_mshr_config_string,
+                         "per-shader L1I MSHR config "
+                         "<mshr_disable>",
+                         "none");
+
   option_parser_register(opp, "-gpgpu_cache:dl1", OPT_CSTR,
                          &m_L1D_config.m_config_string,
                          "per-shader L1 data cache config "
@@ -364,6 +389,12 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "alloc>:<wr_alloc>:<set_index_fn>,<mshr>:<N>:<merge>,<"
                          "mq>:<fifo_entry>,<data_port_width> | none}",
                          "none");
+  option_parser_register(opp, "-gpgpu_cache:l1d_mshr", OPT_CSTR,
+                         &m_L1D_config.m_mshr_config_string,
+                         "per-shader L1D MSHR config "
+                         "<mshr_disable>",
+                         "none");
+
   option_parser_register(opp, "-gpgpu_l1_cache_write_ratio", OPT_UINT32,
                          &m_L1D_config.m_wr_percent, "L1D write ratio", "0");
   option_parser_register(opp, "-gpgpu_l1_banks", OPT_UINT32,
@@ -1464,7 +1495,9 @@ void gpgpu_sim::change_cache_config(FuncCache cache_config) {
   switch (cache_config) {
     case FuncCachePreferNone:
       m_shader_config->m_L1D_config.init(
-          m_shader_config->m_L1D_config.m_config_string, FuncCachePreferNone);
+          m_shader_config->m_L1D_config.m_config_string, 
+          m_shader_config->m_L1D_config.m_mshr_config_string, 
+          FuncCachePreferNone);
       m_shader_config->gpgpu_shmem_size =
           m_shader_config->gpgpu_shmem_sizeDefault;
       break;
@@ -1473,13 +1506,16 @@ void gpgpu_sim::change_cache_config(FuncCache cache_config) {
           (m_shader_config->gpgpu_shmem_sizePrefL1 == (unsigned)-1)) {
         printf("WARNING: missing Preferred L1 configuration\n");
         m_shader_config->m_L1D_config.init(
-            m_shader_config->m_L1D_config.m_config_string, FuncCachePreferNone);
+            m_shader_config->m_L1D_config.m_config_string, 
+            m_shader_config->m_L1D_config.m_mshr_config_string, 
+            FuncCachePreferNone);
         m_shader_config->gpgpu_shmem_size =
             m_shader_config->gpgpu_shmem_sizeDefault;
 
       } else {
         m_shader_config->m_L1D_config.init(
             m_shader_config->m_L1D_config.m_config_stringPrefL1,
+            m_shader_config->m_L1D_config.m_mshr_config_string,
             FuncCachePreferL1);
         m_shader_config->gpgpu_shmem_size =
             m_shader_config->gpgpu_shmem_sizePrefL1;
@@ -1490,11 +1526,14 @@ void gpgpu_sim::change_cache_config(FuncCache cache_config) {
           (m_shader_config->gpgpu_shmem_sizePrefShared == (unsigned)-1)) {
         printf("WARNING: missing Preferred L1 configuration\n");
         m_shader_config->m_L1D_config.init(
-            m_shader_config->m_L1D_config.m_config_string, FuncCachePreferNone);
+            m_shader_config->m_L1D_config.m_config_string, 
+            m_shader_config->m_L1D_config.m_mshr_config_string,
+            FuncCachePreferNone);
         m_shader_config->gpgpu_shmem_size =
             m_shader_config->gpgpu_shmem_sizeDefault;
       } else {
         m_shader_config->m_L1D_config.init(
+            m_shader_config->m_L1D_config.m_mshr_config_string,
             m_shader_config->m_L1D_config.m_config_stringPrefShared,
             FuncCachePreferShared);
         m_shader_config->gpgpu_shmem_size =
@@ -2148,9 +2187,10 @@ void gpgpu_sim::cycle() {
           );
         }
       } else {
-        mem_fetch *mf = (mem_fetch *)icnt_pop(m_shader_config->mem2device(i));
+        mem_fetch *mf = (mem_fetch *)icnt_pop(m_shader_config->mem2device(i));        
         m_memory_sub_partition[i]->push(mf, gpu_sim_cycle + gpu_tot_sim_cycle);
         if (mf) {
+          mf->set_sub_partition(i); // 1-9
           partiton_reqs_in_parallel_per_cycle++;
           mf_monitor = mf;
 
@@ -2172,12 +2212,15 @@ void gpgpu_sim::cycle() {
           }
         }
       }
+      if (DTRACE(DRAM_RESP_L2)) {
+        // fprintf(Trace::out, "%llu dram_l2_q popped ");
+      }
       m_memory_sub_partition[i]->cache_cycle(gpu_sim_cycle + gpu_tot_sim_cycle, mf_monitor);
       if (m_config.g_power_simulation_enabled) {
         m_memory_sub_partition[i]->accumulate_L2cache_stats(
             m_power_stats->pwr_mem_stat->l2_cache_stats[CURRENT_STAT_IDX]);
       }
-    }
+    } // for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) 
   }
   partiton_reqs_in_parallel += partiton_reqs_in_parallel_per_cycle;
   if (partiton_reqs_in_parallel_per_cycle > 0) {

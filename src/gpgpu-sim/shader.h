@@ -1578,10 +1578,10 @@ class shader_core_config : public core_config {
 
     set_pipeline_latency();
 
-    m_L1I_config.init(m_L1I_config.m_config_string, FuncCachePreferNone, "L1I");
-    m_L1T_config.init(m_L1T_config.m_config_string, FuncCachePreferNone, "L1T");
-    m_L1C_config.init(m_L1C_config.m_config_string, FuncCachePreferNone, "L1C");
-    m_L1D_config.init(m_L1D_config.m_config_string, FuncCachePreferNone, "L1D");
+    m_L1I_config.init(m_L1I_config.m_config_string, m_L1I_config.m_mshr_config_string, FuncCachePreferNone, "L1I");
+    m_L1T_config.init(m_L1T_config.m_config_string, m_L1T_config.m_mshr_config_string, FuncCachePreferNone, "L1T");
+    m_L1C_config.init(m_L1C_config.m_config_string, m_L1C_config.m_mshr_config_string, FuncCachePreferNone, "L1C");
+    m_L1D_config.init(m_L1D_config.m_config_string, m_L1D_config.m_mshr_config_string, FuncCachePreferNone, "L1D");
     gpgpu_cache_texl1_linesize = m_L1T_config.get_line_sz();
     gpgpu_cache_constl1_linesize = m_L1C_config.get_line_sz();
     m_valid = true;

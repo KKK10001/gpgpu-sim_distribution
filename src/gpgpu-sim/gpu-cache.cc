@@ -316,7 +316,7 @@ unsigned cache_config::hash_function(new_addr_type addr, unsigned m_nset,
 }
 
 void l2_cache_config::init(linear_to_raw_address_translation *address_mapping) {
-  cache_config::init(m_config_string, FuncCachePreferNone, "L2");
+  cache_config::init(m_config_string, m_mshr_config_string, FuncCachePreferNone, "L2");
   m_address_mapping = address_mapping;
 }
 
@@ -793,13 +793,18 @@ bool mshr_table::is_read_after_write_pending(new_addr_type block_addr) {
 }
 
 /// Accept a new cache fill response: mark entry ready for processing
-void mshr_table::mark_ready(new_addr_type block_addr, bool &has_atomic) {
+void mshr_table::mark_ready(const char* cache_name, new_addr_type block_addr, bool &has_atomic, unsigned long long cycle) {
   assert(!busy());
   table::iterator a = m_data.find(block_addr);
   assert(a != m_data.end());
   m_current_response.push_back(block_addr);
   has_atomic = a->second.m_has_atomic;
   assert(m_current_response.size() <= m_data.size());
+
+  if (DTRACE(REFILL_MSHR)) {
+    fprintf(Trace::out, "%llu %s_sub[%d] mshr_resp_q added %#llx\n", 
+      cycle, cache_name, get_sub_partition(), block_addr);
+  }  
 }
 
 /// Returns next ready access
@@ -833,20 +838,34 @@ mem_fetch* mshr_table::next_access(const char* cache_type, unsigned long long cy
     // release entry  
     m_data.erase(block_addr);
     assert(last_occupied_entries == (m_data.size() + 1));
-    m_current_response.pop_front();
-    if (DTRACE(MSHR_RELEASE)) {
+
+    if (DTRACE(RELEASE_MSHR)) {
       assert(result->get_addr() == block_addr);
-      fprintf(Trace::out, "%llu %s "
-        "MSHR released entry for mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx pos:%s} "
-        "entries: {occupancy=(%u/%u)=%f}\n",
-        cycle, cache_type,
-        result->get_tpc(), result->get_sid(), result->get_wid(),
-        result->get_request_uid(), result->get_addr(),
-        result->mem_fetch_status_str(result->get_status()),
-        static_cast<unsigned>(m_data.size()), m_num_entries,
-        static_cast<unsigned>(m_data.size()) / (float)m_num_entries
-      );      
+
+      // for debug backprop
+      if (cycle == 6294) {
+        fprintf(Trace::out, 
+          "cache_type = %s is_l2 = %u m_current_response.size() = %lu\n", 
+          cache_type, !strcmp(cache_type, "L2"), m_current_response.size());
+      }
+      if (cycle == 6294 && !strcmp(cache_type, "L2")) {
+        fprintf(Trace::out, "Ready display_resp_q\n");
+        display_resp_q(Trace::out, cache_type);
+        fprintf(Trace::out, "Finished display_resp_q\n");
+      }
+
+      std::string whole_cache_name = cache_type;
+      if (!strcmp(cache_type, "L2")) {
+        whole_cache_name += " sub ";
+        whole_cache_name += std::to_string(result->get_sub_partition());
+      }
+      fprintf(Trace::out, "%llu %s_sub[%d] "
+        "mshr_resp_q popped %#llx\n", 
+        cycle, cache_type, get_sub_partition(), block_addr
+      );   
     }
+
+    m_current_response.pop_front();
     if (DTRACE(DUMP_MSHR)) {
       fprintf(Trace::out, "%llu After TPC:%u SM:%u WARP:%u "
         "%s MSHR releasing entry for block_addr: 0x%llx "
@@ -860,13 +879,6 @@ mem_fetch* mshr_table::next_access(const char* cache_type, unsigned long long cy
         static_cast<unsigned>(m_data.size()) / (float)m_num_entries
       );      
       display(Trace::out, cache_type);
-    } 
-  } else {
-    if (DTRACE(MSHR_RELEASE)) {
-      fprintf(Trace::out, "%llu %s "
-        "MSHR[block_addr:%#llx].m_list.empty = %u causing failure of m_current_response.pop_front\n",
-        cycle, cache_type, block_addr, m_data[block_addr].m_list.empty()
-      );      
     } 
   }
   return result;
@@ -886,6 +898,15 @@ void mshr_table::display(FILE *fp, const char* cache_type) const {
     } else {
       fprintf(fp, " no memory requests???\n");
     }
+  }
+}
+
+void mshr_table::display_resp_q(FILE *fp, const char* cache_type) const {
+  fprintf(fp, "%s mshr_resp_q is:\n", cache_type);
+  int index = 0;
+  for (std::list<new_addr_type>::const_iterator iter = m_current_response.begin(); 
+    iter != m_current_response.end(); ++iter, ++index) {
+    fprintf(fp, "mshr_resp_q[%u] = %#llx\n", index, *iter);
   }
 }
 
@@ -2263,7 +2284,7 @@ void baseline_cache::cycle() {
 
 /// Interface for response from lower memory level (model bandwidth restictions
 /// in caller)
-void baseline_cache::fill(mem_fetch *mf, unsigned time) {
+void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
   if (m_config.m_mshr_type == SECTOR_ASSOC) {
     assert(mf->get_original_mf());
     extra_mf_fields_lookup::iterator e =
@@ -2306,22 +2327,22 @@ void baseline_cache::fill(mem_fetch *mf, unsigned time) {
     m_tag_array->fill(e->second.m_block_addr, time, mf, mf->is_write());
   } else {
     abort();
-  }    
-
-  // if (DTRACE(MSHR_EVENT)) {
-  //   std::string ready_event = "m_mshrs.mark_ready[block_addr:";
-  //   ready_event += std::to_string(e->second.m_block_addr);
-  //   ready_event += "]";
-  //   dumpCacheEvent(time, "::fill", ready_event.c_str(), mf);
-  // } 
+  }
 
   bool has_atomic = false;
-#ifdef DISABLE_MSHR
-  has_atomic = mf->isatomic();
-  m_ready_fill.push_back(mf);
-#else
-  m_mshrs.mark_ready(e->second.m_block_addr, has_atomic);
-#endif
+  if (m_config.m_mshr_disable == 'T') {
+    has_atomic = mf->isatomic();
+    m_ready_fill.push_back(mf);
+  } else {
+    if (m_is_l2) {
+      // for debug 1-9
+      fprintf(Trace::out, "%llu L2_sub[%d] mshr\n", 
+        time, mf->get_sub_partition());
+      m_mshrs.set_sub_partition(mf->get_sub_partition());
+    }
+    m_mshrs.mark_ready(m_is_l2 ? "L2" : m_is_l1d ? "L1D" : "other$", 
+      e->second.m_block_addr, has_atomic, time);
+  }
 
   if (has_atomic) {
     assert(m_config.m_alloc_policy == ON_MISS);
@@ -2487,149 +2508,149 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
                                        bool read_only, bool wa) {
 
   new_addr_type mshr_addr = m_config.mshr_addr(mf->get_addr());
-  const char* cache_type = m_is_l2 ? "L2" : m_is_l1d ? "L1D" : "OTHER$";
-#ifdef DISABLE_MSHR
-  // No MSHR: only gate on miss_queue capacity, no merge or ready tracking.
-  if (m_miss_queue.size() < m_config.m_miss_queue_size) {
-    if (read_only) {
-      m_tag_array->access(block_addr, time, cache_index, mf);
-    } else {
-      m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
-    }
-
-    m_extra_mf_fields[mf] = extra_mf_fields(
-        mshr_addr, mf->get_addr(), cache_index, mf->get_data_size(), m_config);
-    mf->set_data_size(m_config.get_atom_sz());
-    mf->set_addr(mshr_addr);
-    m_miss_queue.push_back(mf);
-    mf->set_status(m_miss_queue_status, time);
-
-    if (DTRACE(CACHE_EVENT) || DTRACE(MISS_QUEUE_EVENT)) {
-      dumpMissQueue(time, "RD-MISS-NO-MSHR", "m_miss_queue.push_back ", mf);
-    }
-
-    if (!wa) {
-      events.push_back(cache_event(READ_REQUEST_SENT));
-      if (DTRACE(CACHE_EVENT)) {
-        dumpCacheEvent(time, "RD-MISS-NO-MSHR", "READ_REQUEST_SENT", mf);
+  [[maybe_unused]] const char* cache_type = m_is_l2 ? "L2" : m_is_l1d ? "L1D" : "OTHER$";  
+  if (m_config.m_mshr_disable == 'T') {
+    // No MSHR: only gate on miss_queue capacity, no merge or ready tracking.
+    if (m_miss_queue.size() < m_config.m_miss_queue_size) {
+      if (read_only) {
+        m_tag_array->access(block_addr, time, cache_index, mf);
+      } else {
+        m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
       }
-    }
-    do_miss = true;
-  } else {
-    m_stats.inc_fail_stats(mf->get_access_type(), MISS_QUEUE_FULL,
-                           mf->get_streamID(), miss_queue_full_driver::RD_MISS);
-  }
-#else
-  bool mshr_hit   = m_mshrs.probe(mshr_addr);
-  bool mshr_avail = !m_mshrs.full(mshr_addr);
-  if (mshr_hit && mshr_avail) {
-    if (read_only) {
-      m_tag_array->access(block_addr, time, cache_index, mf);
-    } else {
-      m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
-    }
 
-    const size_t last_occupied_entries = m_mshrs.occupied_entries();
+      m_extra_mf_fields[mf] = extra_mf_fields(
+          mshr_addr, mf->get_addr(), cache_index, mf->get_data_size(), m_config);
+      mf->set_data_size(m_config.get_atom_sz());
+      mf->set_addr(mshr_addr);
+      m_miss_queue.push_back(mf);
+      mf->set_status(m_miss_queue_status, time);
 
-    if (DTRACE(DUMP_MSHR)) {
-      fprintf(Trace::out, "%llu %s MSHR Hit! Before adding, MSHR is below:\n", 
-        time, cache_type);
-      m_mshrs.display(Trace::out, cache_type);      
-    }
-
-    [[maybe_unused]] bool is_l2 = !strcmp(m_config.get_cache_name(), "L2");
-    bool is_new_mshr_entry = false;
-    m_mshrs.add(mshr_addr, mf, is_new_mshr_entry, cache_type); // orig GPGPU-SIM logic
-
-    if (DTRACE(CACHE_EVENT) || DTRACE(MSHR_EVENT)) {
-      dumpMSHREvent(time, mf, mshr_addr, is_new_mshr_entry);
-    }
-
-    m_stats.inc_mshr_stats(mf->get_streamID(), mf->get_sid(), mf->get_wid());
-    if (DTRACE(CACHE_REQ_DIST) || DTRACE(MSHR_ACCESS)) {
-      assert(last_occupied_entries == m_mshrs.occupied_entries());
-      fprintf(Trace::out, "%llu TPC:%u SM:%u WARP:%u "
-        "%s MSHR Hit "
-        "entries: {occupied:%u free:%u occupancy:%f} "
-        "slots: {merged:%u free:%u occupancy:%f} "
-        "Added slot {mshr_addr: %#llx, addr: %#llx} "
-        "m_mshr_occupancy_stats[streamID:%llu][sm:%u][warp:%u] = %u\n", 
-        time, mf->get_tpc(), mf->get_sid(), mf->get_wid(),
-        cache_type, 
-        m_mshrs.occupied_entries(), 
-        m_config.m_mshr_entries - m_mshrs.occupied_entries(), 
-        m_mshrs.occupied_entries() / (float)m_config.m_mshr_entries,
-        m_mshrs.merged_slots(mshr_addr),
-        m_mshrs.get_max_merged() - m_mshrs.merged_slots(mshr_addr),
-        m_mshrs.merged_slots(mshr_addr) / (float)m_mshrs.get_max_merged(),
-        mshr_addr, block_addr,
-        mf->get_streamID(), mf->get_sid(), mf->get_wid(),
-        m_stats.get_mshr_merge_dist_cnt(mf->get_streamID(), mf->get_sid(), mf->get_wid()));
-    }
-    if (DTRACE(DUMP_MSHR)) {
-      fprintf(Trace::out, "%llu %s MSHR Hit! After adding, MSHR is below:\n", time, cache_type);
-      m_mshrs.display(Trace::out);
-    }
-
-    m_stats.inc_stats(mf->get_access_type(), MSHR_HIT, mf->get_streamID());
-    do_miss = true;
-  } else if (!mshr_hit && mshr_avail &&
-             (m_miss_queue.size() < m_config.m_miss_queue_size)) {
-    if (read_only) {
-      m_tag_array->access(block_addr, time, cache_index, mf);
-    } else {
-      m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
-    }
-
-    [[maybe_unused]] const unsigned last_occupied_entries = m_mshrs.occupied_entries();
-    if (DTRACE(DUMP_MSHR)) {
-      fprintf(Trace::out, "%llu TPC:%u SM:%u WARP:%u "
-        "%s MSHR Miss! Before adding, MSHR is below:\n", 
-        time, mf->get_tpc(), mf->get_sid(), mf->get_wid(),
-        cache_type);
-      m_mshrs.display(Trace::out, cache_type);
-    }
-
-    bool is_new_mshr_entry = false;
-    m_mshrs.add(mshr_addr, mf, is_new_mshr_entry, cache_type); // orig GPGPU-SIM logic
-
-    if (DTRACE(CACHE_EVENT) || DTRACE(MSHR_EVENT)) {
-      dumpMSHREvent(time, mf, mshr_addr, is_new_mshr_entry);
-    }
-
-    m_stats.inc_mshr_stats(mf->get_streamID(), mf->get_sid(), mf->get_wid());
-
-    m_extra_mf_fields[mf] = extra_mf_fields(
-        mshr_addr, mf->get_addr(), cache_index, mf->get_data_size(), m_config);
-    mf->set_data_size(m_config.get_atom_sz());
-    mf->set_addr(mshr_addr);
-    m_miss_queue.push_back(mf);
-    mf->set_status(m_miss_queue_status, time);
-
-    if (DTRACE(CACHE_EVENT) || DTRACE(MISS_QUEUE_EVENT)) {
-      dumpMissQueue(time, "RD-MISS-MSHR-MISS-AND-AVAIL", "m_miss_queue.push_back ", mf);
-    }
-
-    if (!wa) {
-      events.push_back(cache_event(READ_REQUEST_SENT));
-
-      if (DTRACE(CACHE_EVENT)) {
-        dumpCacheEvent(time, "RD-MISS-THEN-CHECK-MSHR", "READ_REQUEST_SENT", mf);
+      if (DTRACE(CACHE_EVENT) || DTRACE(MISS_QUEUE_EVENT)) {
+        dumpMissQueue(time, "RD-MISS-NO-MSHR", "m_miss_queue.push_back ", mf);
       }
+
+      if (!wa) {
+        events.push_back(cache_event(READ_REQUEST_SENT));
+        if (DTRACE(CACHE_EVENT)) {
+          dumpCacheEvent(time, "RD-MISS-NO-MSHR", "READ_REQUEST_SENT", mf);
+        }
+      }
+      do_miss = true;
+    } else {
+      m_stats.inc_fail_stats(mf->get_access_type(), MISS_QUEUE_FULL,
+                            mf->get_streamID(), miss_queue_full_driver::RD_MISS);
     }
-    do_miss = true;
-  } else if (mshr_hit && !mshr_avail) {
-    m_stats.inc_fail_stats(mf->get_access_type(), MSHR_MERGE_ENTRY_FAIL,
-                           mf->get_streamID(), 
-                           mshr_merge_entry_fail_driver::MSHR_MERGE_ENTRY_FAIL__RD_MISS);
-  } else if (!mshr_hit && !mshr_avail) {
-    m_stats.inc_fail_stats(mf->get_access_type(), MSHR_ENTRY_FAIL, 
-                           mf->get_streamID(),
-                           mshr_entry_fail_driver::MSHR_ENTRY_FAIL__RD_MISS);
   } else {
-    assert(0);
-  }    
-#endif
+    bool mshr_hit   = m_mshrs.probe(mshr_addr);
+    bool mshr_avail = !m_mshrs.full(mshr_addr);
+    if (mshr_hit && mshr_avail) {
+      if (read_only) {
+        m_tag_array->access(block_addr, time, cache_index, mf);
+      } else {
+        m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
+      }
+
+      const size_t last_occupied_entries = m_mshrs.occupied_entries();
+
+      if (DTRACE(DUMP_MSHR)) {
+        fprintf(Trace::out, "%llu %s MSHR Hit! Before adding, MSHR is below:\n", 
+          time, cache_type);
+        m_mshrs.display(Trace::out, cache_type);      
+      }
+
+      [[maybe_unused]] bool is_l2 = !strcmp(m_config.get_cache_name(), "L2");
+      bool is_new_mshr_entry = false;
+      m_mshrs.add(mshr_addr, mf, is_new_mshr_entry, cache_type); // orig GPGPU-SIM logic
+
+      if (DTRACE(CACHE_EVENT) || DTRACE(MSHR_EVENT)) {
+        dumpMSHREvent(time, mf, mshr_addr, is_new_mshr_entry);
+      }
+
+      m_stats.inc_mshr_stats(mf->get_streamID(), mf->get_sid(), mf->get_wid());
+      if (DTRACE(CACHE_REQ_DIST) || DTRACE(MSHR_ACCESS)) {
+        assert(last_occupied_entries == m_mshrs.occupied_entries());
+        fprintf(Trace::out, "%llu TPC:%u SM:%u WARP:%u "
+          "%s MSHR Hit "
+          "entries: {occupied:%u free:%u occupancy:%f} "
+          "slots: {merged:%u free:%u occupancy:%f} "
+          "Added slot {mshr_addr: %#llx, addr: %#llx} "
+          "m_mshr_occupancy_stats[streamID:%llu][sm:%u][warp:%u] = %u\n", 
+          time, mf->get_tpc(), mf->get_sid(), mf->get_wid(),
+          cache_type, 
+          m_mshrs.occupied_entries(), 
+          m_config.m_mshr_entries - m_mshrs.occupied_entries(), 
+          m_mshrs.occupied_entries() / (float)m_config.m_mshr_entries,
+          m_mshrs.merged_slots(mshr_addr),
+          m_mshrs.get_max_merged() - m_mshrs.merged_slots(mshr_addr),
+          m_mshrs.merged_slots(mshr_addr) / (float)m_mshrs.get_max_merged(),
+          mshr_addr, block_addr,
+          mf->get_streamID(), mf->get_sid(), mf->get_wid(),
+          m_stats.get_mshr_merge_dist_cnt(mf->get_streamID(), mf->get_sid(), mf->get_wid()));
+      }
+      if (DTRACE(DUMP_MSHR)) {
+        fprintf(Trace::out, "%llu %s MSHR Hit! After adding, MSHR is below:\n", time, cache_type);
+        m_mshrs.display(Trace::out);
+      }
+
+      m_stats.inc_stats(mf->get_access_type(), MSHR_HIT, mf->get_streamID());
+      do_miss = true;
+    } else if (!mshr_hit && mshr_avail &&
+              (m_miss_queue.size() < m_config.m_miss_queue_size)) {
+      if (read_only) {
+        m_tag_array->access(block_addr, time, cache_index, mf);
+      } else {
+        m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
+      }
+
+      [[maybe_unused]] const unsigned last_occupied_entries = m_mshrs.occupied_entries();
+      if (DTRACE(DUMP_MSHR)) {
+        fprintf(Trace::out, "%llu TPC:%u SM:%u WARP:%u "
+          "%s MSHR Miss! Before adding, MSHR is below:\n", 
+          time, mf->get_tpc(), mf->get_sid(), mf->get_wid(),
+          cache_type);
+        m_mshrs.display(Trace::out, cache_type);
+      }
+
+      bool is_new_mshr_entry = false;
+      m_mshrs.add(mshr_addr, mf, is_new_mshr_entry, cache_type); // orig GPGPU-SIM logic
+
+      if (DTRACE(CACHE_EVENT) || DTRACE(MSHR_EVENT)) {
+        dumpMSHREvent(time, mf, mshr_addr, is_new_mshr_entry);
+      }
+
+      m_stats.inc_mshr_stats(mf->get_streamID(), mf->get_sid(), mf->get_wid());
+
+      m_extra_mf_fields[mf] = extra_mf_fields(
+          mshr_addr, mf->get_addr(), cache_index, mf->get_data_size(), m_config);
+      mf->set_data_size(m_config.get_atom_sz());
+      mf->set_addr(mshr_addr);
+      m_miss_queue.push_back(mf);
+      mf->set_status(m_miss_queue_status, time);
+
+      if (DTRACE(CACHE_EVENT) || DTRACE(MISS_QUEUE_EVENT)) {
+        dumpMissQueue(time, "RD-MISS-MSHR-MISS-AND-AVAIL", "m_miss_queue.push_back ", mf);
+      }
+
+      if (!wa) {
+        events.push_back(cache_event(READ_REQUEST_SENT));
+
+        if (DTRACE(CACHE_EVENT)) {
+          dumpCacheEvent(time, "RD-MISS-THEN-CHECK-MSHR", "READ_REQUEST_SENT", mf);
+        }
+      }
+      do_miss = true;
+    } else if (mshr_hit && !mshr_avail) {
+      m_stats.inc_fail_stats(mf->get_access_type(), MSHR_MERGE_ENTRY_FAIL,
+                            mf->get_streamID(), 
+                            mshr_merge_entry_fail_driver::MSHR_MERGE_ENTRY_FAIL__RD_MISS);
+    } else if (!mshr_hit && !mshr_avail) {
+      m_stats.inc_fail_stats(mf->get_access_type(), MSHR_ENTRY_FAIL, 
+                            mf->get_streamID(),
+                            mshr_entry_fail_driver::MSHR_ENTRY_FAIL__RD_MISS);
+    } else {
+      assert(0);
+    }
+  } // !m_mshr_disable
 }
 
 /// Sends write request to lower level memory (write or writeback)

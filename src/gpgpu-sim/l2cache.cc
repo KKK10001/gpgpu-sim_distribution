@@ -540,13 +540,36 @@ void memory_sub_partition::cache_cycle(unsigned long long cycle, mem_fetch* mf_m
   // L2 fill responses
   if (!m_config->m_L2_config.disabled()) {
     if (m_L2cache->access_ready() && !m_L2_icnt_queue->full()) {
+      // for debug 1-9
+      fprintf(Trace::out, "L2 sub = %u in memory_sub_partition::cache_cycle\n", get_id());
+
       mem_fetch *mf = m_L2cache->next_access("L2", cycle);
+
+      // To check if total mf match with that back from m_current_response
+      if (DTRACE(L2_ICNT_QUEUE)) {
+        fprintf(Trace::out, "%llu L2_sub[%u] m_L2_icnt_queue_all_req_types added mf:"
+          "{TPC:%u SM:%u WARP:%u req_uid:%u %#llx acc_type:%s}\n",
+          m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset, m_id,
+          mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(),
+          mem_access_type_str(mem_access_type(mf->get_access_type()))
+          );
+      }
+
       // Don't pass write allocate read request back to upper level cache
       if (mf->get_access_type() != L2_WR_ALLOC_R) {
         mf->set_reply();
         mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-
         m_L2_icnt_queue->push(mf);
+
+        if (DTRACE(L2_ICNT_QUEUE)) {
+          fprintf(Trace::out, "%llu L2_sub[%u] m_L2_icnt_queue added mf:"
+            "{TPC:%u SM:%u WARP:%u req_uid:%u %#llx acc_type:%s}\n",
+            m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset, m_id,
+            mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(),
+            mem_access_type_str(mem_access_type(mf->get_access_type()))
+            );
+        }
+
         m_L2cache->m_stats.inc_accu_l2_icnt_queue_size(
           mf->get_streamID(), m_id, m_L2_icnt_queue->get_length());
         m_L2cache->m_stats.inc_l2_icnt_q_accesses(mf->get_streamID(), m_id);

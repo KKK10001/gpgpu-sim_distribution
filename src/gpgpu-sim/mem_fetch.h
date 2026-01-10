@@ -54,6 +54,7 @@ enum mf_type {
 class memory_config;
 class mem_fetch {
   friend class memory_sub_partition;
+  friend class gpgpu_sim;
  public:
   mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
             unsigned long long streamID, unsigned ctrl_size, unsigned wid,

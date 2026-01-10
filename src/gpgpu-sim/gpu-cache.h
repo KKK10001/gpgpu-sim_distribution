@@ -647,10 +647,17 @@ class cache_config {
     m_is_streaming = false;
     m_wr_percent = 0;
   }
-  void init(char *config, FuncCache status, const char* cache_name = "") {
+  void init(char *config, char* mshr_config, FuncCache status, const char* cache_name = "") {
     cache_status = status;
     m_cache_name = cache_name;
     assert(config);
+
+    assert(mshr_config);
+    [[maybe_unused]] int ntok_mshr = sscanf(mshr_config, "%c", &m_mshr_disable);
+    fprintf(Trace::out, 
+      "----------- %s mshr_config is below -----------\n m_mshr_disable = %c\n",
+      cache_name, m_mshr_disable);
+
     char ct, rp, wp, ap, mshr_type, wap, sif;
 
     //  S:32:128:24  L : B: m: L: P, A:192:4,  32:0,  32
@@ -994,6 +1001,7 @@ class cache_config {
     m_alloc_policy = alloc;
   }
   char *m_config_string;
+  char *m_mshr_config_string;
   char *m_config_stringPrefL1;
   char *m_config_stringPrefShared;
   FuncCache cache_status;  
@@ -1040,6 +1048,8 @@ class cache_config {
   write_allocate_policy_t
       m_write_alloc_policy;  // 'W' = Write allocate, 'N' = No write allocate
 
+  char m_mshr_disable;
+
   union {
     unsigned m_mshr_entries;
     unsigned m_fragment_fifo_entries;
@@ -1072,10 +1082,10 @@ class l1d_cache_config : public cache_config {
   l1d_cache_config() : cache_config() {
   }
   unsigned set_bank(new_addr_type addr) const;
-  void init(char *config, FuncCache status, const char* cache_name = "L1D") {
+  void init(char *config, char *mshr_config, FuncCache status, const char* cache_name = "L1D") {
     l1_banks_byte_interleaving_log2 = LOGB2(l1_banks_byte_interleaving);
     l1_banks_log2 = LOGB2(l1_banks);
-    cache_config::init(config, status, cache_name);
+    cache_config::init(config, mshr_config, status, cache_name);
   }
   unsigned l1_latency;
   unsigned l1_banks;
@@ -1226,13 +1236,14 @@ class mshr_table {
   /// Returns true if cannot accept new fill responses
   bool busy() const { return false; }
   /// Accept a new cache fill response: mark entry ready for processing
-  void mark_ready(new_addr_type block_addr, bool &has_atomic);
+  void mark_ready(const char* cache_name, new_addr_type block_addr, bool &has_atomic, unsigned long long cycle);
   /// Returns true if ready accesses exist
   bool access_ready() const { return !m_current_response.empty(); }
   size_t num_pending_responses() const { return m_current_response.size(); }
   /// Returns next ready access
   mem_fetch *next_access(const char* cache_name, unsigned long long cycle = 0);
   void display(FILE *fp, const char* cache_name= "") const;
+  void display_resp_q(FILE *fp, const char* cache_name= "") const;
   // Returns true if there is a pending read after write
   bool is_read_after_write_pending(new_addr_type block_addr);
 
@@ -1243,12 +1254,15 @@ class mshr_table {
            "Change of MSHR parameters between kernels is not allowed");
   }
   unsigned get_max_merged() const { return m_max_merged; }
+  unsigned get_sub_partition() {return m_sub; }
+  void set_sub_partition(const int sub) { m_sub = sub; }
 
  private:
   // finite sized, fully associative table, with a finite maximum number of
   // merged requests
   const unsigned m_num_entries;
   const unsigned m_max_merged;
+  int m_sub; // L2 MSHR specific
 
   struct mshr_entry {
     std::list<mem_fetch *> m_list;
@@ -1570,8 +1584,8 @@ class baseline_cache : public cache_t {
   void init(const char *name, const cache_config &config,
             mem_fetch_interface *memport, enum mem_fetch_status status) {
     m_name = name;
-    m_is_l1d = false;
-    m_is_l2  = false;
+    m_is_l1d       = false;
+    m_is_l2        = false;
     if (m_name.find("L1D") != std::string::npos) {
       m_is_l1d = true;        
     } else if (m_name.find("L2") != std::string::npos) {
@@ -1584,6 +1598,7 @@ class baseline_cache : public cache_t {
     assert(config.m_mshr_type == ASSOC || config.m_mshr_type == SECTOR_ASSOC);
     m_memport = memport;
     m_miss_queue_status = status;
+    m_ready_fill.clear();
   }
 
   virtual ~baseline_cache() { delete m_tag_array; }
@@ -1602,38 +1617,39 @@ class baseline_cache : public cache_t {
   void cycle();
   /// Interface for response from lower memory level (model bandwidth
   /// restictions in caller)
-  void fill(mem_fetch *mf, unsigned time);
+  void fill(mem_fetch *mf, unsigned long long time);
   /// Checks if mf is waiting to be filled by lower memory level
   bool waiting_for_fill(mem_fetch *mf);
+
   /// Are any (accepted) accesses that had to wait for memory now ready? (does
   /// not include accesses that "HIT")
-  bool access_ready() const {
-#ifdef DISABLE_MSHR
-    return !m_ready_fill.empty();
-#else
-    return m_mshrs.access_ready();
-#endif
+  virtual bool access_ready() const {
+    if (m_config.m_mshr_disable == 'T') {    
+      return !m_ready_fill.empty();
+    } else {
+      return m_mshrs.access_ready();
+    }
   }
   /// 
   size_t num_pending_responses() const {
-#ifdef DISABLE_MSHR
-    return m_ready_fill.size();
-#else
-    return m_mshrs.num_pending_responses();
-#endif
+    if (m_config.m_mshr_disable == 'T') {
+      return m_ready_fill.size();  
+    } else {
+      return m_mshrs.num_pending_responses();  
+    }
   }
   /// Pop next ready access (does not include accesses that "HIT")
   mem_fetch *next_access(const char* cache_name, unsigned long long cycle = 0) {
-#ifdef DISABLE_MSHR
-    (void)cache_name;
-    (void)cycle;
-    if (m_ready_fill.empty()) return NULL;
-    mem_fetch *mf = m_ready_fill.front();
-    m_ready_fill.pop_front();
-    return mf;
-#else
-    return m_mshrs.next_access(cache_name, cycle);
-#endif
+    if (m_config.m_mshr_disable == 'T') {
+      (void)cache_name;
+      (void)cycle;
+      if (m_ready_fill.empty()) return NULL;
+      mem_fetch *mf = m_ready_fill.front();
+      m_ready_fill.pop_front();
+      return mf;
+    } else {
+      return m_mshrs.next_access(cache_name, cycle);
+    }
   }
   // flash invalidate all entries in cache
   void flush() { m_tag_array->flush(); }
@@ -1746,9 +1762,10 @@ class baseline_cache : public cache_t {
   extra_mf_fields_lookup m_extra_mf_fields;
 
   cache_stats m_stats;
-#ifdef DISABLE_MSHR
-  std::list<mem_fetch *> m_ready_fill; // FIFO of fills ready to reply upstream when MSHR is disabled
-#endif
+
+  // FIFO of fills ready to reply upstream when MSHR is disabled
+  std::list<mem_fetch *> m_ready_fill;
+
 
   /// Checks whether this request can be handled on this cycle. num_miss equals
   /// max # of misses to be handled on this cycle
@@ -2046,7 +2063,8 @@ class l2_cache : public data_cache {
            enum mem_fetch_status status, class gpgpu_sim *gpu,
            enum cache_gpu_level level)
       : data_cache(name, config, core_id, type_id, memport, mfcreator, status,
-                   L2_WR_ALLOC_R, L2_WRBK_ACC, gpu, level) {}
+                   L2_WR_ALLOC_R, L2_WRBK_ACC, gpu, level) {
+  }
 
   virtual ~l2_cache() {}
 
@@ -2054,6 +2072,7 @@ class l2_cache : public data_cache {
     new_addr_type addr, mem_fetch *mf, unsigned long long time,
     std::list<cache_event> &events);
 
+  private:
   // unsigned getSubPartitionID() const { return m_sub_partition_id; }
 
   // protected:
