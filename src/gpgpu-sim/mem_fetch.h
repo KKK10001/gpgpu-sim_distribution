@@ -160,7 +160,7 @@ class mem_fetch {
 
   // where is this request now?
   enum mem_fetch_status m_status;
-  unsigned long long m_status_change;
+  unsigned long long m_status_change; // no-use var.
 
   // request type, address, size, mask
   mem_access_t m_access;

@@ -797,13 +797,14 @@ void mshr_table::mark_ready(const char* cache_name, new_addr_type block_addr, bo
   assert(!busy());
   table::iterator a = m_data.find(block_addr);
   assert(a != m_data.end());
-  m_current_response.push_back(block_addr);
+  m_lfb.push_back(block_addr);
   has_atomic = a->second.m_has_atomic;
-  assert(m_current_response.size() <= m_data.size());
+  assert(m_lfb.size() <= m_data.size());
 
   if (DTRACE(REFILL_MSHR)) {
+    mem_fetch* front_mf = a->second.m_list.front();
     fprintf(Trace::out, "%llu %s_sub[%d] mshr_resp_q added %#llx\n", 
-      cycle, cache_name, get_sub_partition(), block_addr);
+      cycle, cache_name, front_mf->get_sub_partition(), block_addr);
   }  
 }
 
@@ -812,9 +813,9 @@ mem_fetch* mshr_table::next_access(const char* cache_type, unsigned long long cy
   assert(access_ready());
 
   [[maybe_unused]] const unsigned last_occupied_entries = static_cast<unsigned>(m_data.size());
-  [[maybe_unused]] const unsigned last_merged_slots = m_data[m_current_response.front()].m_list.size();
+  [[maybe_unused]] const unsigned last_merged_slots = m_data[m_lfb.front()].m_list.size();
 
-  new_addr_type block_addr = m_current_response.front();
+  new_addr_type block_addr = m_lfb.front();
   assert(!m_data[block_addr].m_list.empty());
   mem_fetch *result = m_data[block_addr].m_list.front();
 
@@ -845,8 +846,8 @@ mem_fetch* mshr_table::next_access(const char* cache_type, unsigned long long cy
       // for debug backprop
       if (cycle == 6294) {
         fprintf(Trace::out, 
-          "cache_type = %s is_l2 = %u m_current_response.size() = %lu\n", 
-          cache_type, !strcmp(cache_type, "L2"), m_current_response.size());
+          "cache_type = %s is_l2 = %u m_lfb.size() = %lu\n", 
+          cache_type, !strcmp(cache_type, "L2"), m_lfb.size());
       }
       if (cycle == 6294 && !strcmp(cache_type, "L2")) {
         fprintf(Trace::out, "Ready display_resp_q\n");
@@ -859,13 +860,12 @@ mem_fetch* mshr_table::next_access(const char* cache_type, unsigned long long cy
         whole_cache_name += " sub ";
         whole_cache_name += std::to_string(result->get_sub_partition());
       }
-      fprintf(Trace::out, "%llu %s_sub[%d] "
-        "mshr_resp_q popped %#llx\n", 
-        cycle, cache_type, get_sub_partition(), block_addr
+      fprintf(Trace::out, "%llu %s_sub[%d] mshr_resp_q popped %#llx\n", 
+        cycle, cache_type, result->get_sub_partition(), block_addr
       );   
     }
 
-    m_current_response.pop_front();
+    m_lfb.pop_front();
     if (DTRACE(DUMP_MSHR)) {
       fprintf(Trace::out, "%llu After TPC:%u SM:%u WARP:%u "
         "%s MSHR releasing entry for block_addr: 0x%llx "
@@ -904,8 +904,8 @@ void mshr_table::display(FILE *fp, const char* cache_type) const {
 void mshr_table::display_resp_q(FILE *fp, const char* cache_type) const {
   fprintf(fp, "%s mshr_resp_q is:\n", cache_type);
   int index = 0;
-  for (std::list<new_addr_type>::const_iterator iter = m_current_response.begin(); 
-    iter != m_current_response.end(); ++iter, ++index) {
+  for (std::list<new_addr_type>::const_iterator iter = m_lfb.begin(); 
+    iter != m_lfb.end(); ++iter, ++index) {
     fprintf(fp, "mshr_resp_q[%u] = %#llx\n", index, *iter);
   }
 }
@@ -2264,6 +2264,17 @@ void baseline_cache::cycle() {
       m_miss_queue.pop_front();
       m_memport->push(mf);
 
+      if (DTRACE(L2_DRAM_QUEUE)) {
+        if (m_is_l2) {
+          fprintf(Trace::out, "%llu L2_sub[%d] l2_dram_queue added "
+            "mf:{ TPC:%u SM:%u WARP:%u req_uid:%u %#llx }\n", 
+            m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
+            mf->get_sub_partition(),
+            mf->get_tpc(), mf->get_sid(), mf->get_wid(),
+            mf->get_request_uid(), mf->get_addr());
+        }
+      }
+
       if (DTRACE(MISS_QUEUE_EVENT)) {
         dumpCacheEvent(m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, 
           "baseline_cache::cycle()", "m_miss_queue.pop_front -> mem_fetch_interface (ICNT)", mf);
@@ -2332,14 +2343,8 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
   bool has_atomic = false;
   if (m_config.m_mshr_disable == 'T') {
     has_atomic = mf->isatomic();
-    m_ready_fill.push_back(mf);
+    m_lfb.push_back(mf);
   } else {
-    if (m_is_l2) {
-      // for debug 1-9
-      fprintf(Trace::out, "%llu L2_sub[%d] mshr\n", 
-        time, mf->get_sub_partition());
-      m_mshrs.set_sub_partition(mf->get_sub_partition());
-    }
     m_mshrs.mark_ready(m_is_l2 ? "L2" : m_is_l1d ? "L1D" : "other$", 
       e->second.m_block_addr, has_atomic, time);
   }

@@ -1238,8 +1238,8 @@ class mshr_table {
   /// Accept a new cache fill response: mark entry ready for processing
   void mark_ready(const char* cache_name, new_addr_type block_addr, bool &has_atomic, unsigned long long cycle);
   /// Returns true if ready accesses exist
-  bool access_ready() const { return !m_current_response.empty(); }
-  size_t num_pending_responses() const { return m_current_response.size(); }
+  bool access_ready() const { return !m_lfb.empty(); }
+  size_t num_pending_responses() const { return m_lfb.size(); }
   /// Returns next ready access
   mem_fetch *next_access(const char* cache_name, unsigned long long cycle = 0);
   void display(FILE *fp, const char* cache_name= "") const;
@@ -1254,15 +1254,12 @@ class mshr_table {
            "Change of MSHR parameters between kernels is not allowed");
   }
   unsigned get_max_merged() const { return m_max_merged; }
-  unsigned get_sub_partition() {return m_sub; }
-  void set_sub_partition(const int sub) { m_sub = sub; }
 
  private:
   // finite sized, fully associative table, with a finite maximum number of
   // merged requests
   const unsigned m_num_entries;
   const unsigned m_max_merged;
-  int m_sub; // L2 MSHR specific
 
   struct mshr_entry {
     std::list<mem_fetch *> m_list;
@@ -1276,7 +1273,7 @@ class mshr_table {
 
   // it may take several cycles to process the merged requests
   bool m_current_response_ready;
-  std::list<new_addr_type> m_current_response;
+  std::list<new_addr_type> m_lfb;
 };
 
 /***************************************************************** Caches
@@ -1598,7 +1595,7 @@ class baseline_cache : public cache_t {
     assert(config.m_mshr_type == ASSOC || config.m_mshr_type == SECTOR_ASSOC);
     m_memport = memport;
     m_miss_queue_status = status;
-    m_ready_fill.clear();
+    m_lfb.clear();
   }
 
   virtual ~baseline_cache() { delete m_tag_array; }
@@ -1625,7 +1622,7 @@ class baseline_cache : public cache_t {
   /// not include accesses that "HIT")
   virtual bool access_ready() const {
     if (m_config.m_mshr_disable == 'T') {    
-      return !m_ready_fill.empty();
+      return !m_lfb.empty();
     } else {
       return m_mshrs.access_ready();
     }
@@ -1633,7 +1630,7 @@ class baseline_cache : public cache_t {
   /// 
   size_t num_pending_responses() const {
     if (m_config.m_mshr_disable == 'T') {
-      return m_ready_fill.size();  
+      return m_lfb.size();  
     } else {
       return m_mshrs.num_pending_responses();  
     }
@@ -1643,9 +1640,15 @@ class baseline_cache : public cache_t {
     if (m_config.m_mshr_disable == 'T') {
       (void)cache_name;
       (void)cycle;
-      if (m_ready_fill.empty()) return NULL;
-      mem_fetch *mf = m_ready_fill.front();
-      m_ready_fill.pop_front();
+      if (m_lfb.empty()) {
+        return NULL;
+      }
+      mem_fetch *mf = m_lfb.front();
+      m_lfb.pop_front();
+      if (DTRACE(CACHE_REFILL_QUEUE)) {
+        fprintf(Trace::out, "%llu %s_sub[%d] m_lfb added %#llx\n", 
+          cycle, cache_name, mf->get_sub_partition(), mf->get_addr());
+      }
       return mf;
     } else {
       return m_mshrs.next_access(cache_name, cycle);
@@ -1763,8 +1766,8 @@ class baseline_cache : public cache_t {
 
   cache_stats m_stats;
 
-  // FIFO of fills ready to reply upstream when MSHR is disabled
-  std::list<mem_fetch *> m_ready_fill;
+  // Line Fill Buffer (LFB) to buffer response from downstream when MSHR is disabled
+  std::list<mem_fetch *> m_lfb;
 
 
   /// Checks whether this request can be handled on this cycle. num_miss equals

@@ -545,15 +545,15 @@ void memory_sub_partition::cache_cycle(unsigned long long cycle, mem_fetch* mf_m
 
       mem_fetch *mf = m_L2cache->next_access("L2", cycle);
 
-      // To check if total mf match with that back from m_current_response
-      if (DTRACE(L2_ICNT_QUEUE)) {
-        fprintf(Trace::out, "%llu L2_sub[%u] m_L2_icnt_queue_all_req_types added mf:"
-          "{TPC:%u SM:%u WARP:%u req_uid:%u %#llx acc_type:%s}\n",
-          m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset, m_id,
-          mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(),
-          mem_access_type_str(mem_access_type(mf->get_access_type()))
-          );
-      }
+      // To check if total mf match with that back from m_lfb
+      // if (DTRACE(L2_ICNT_QUEUE)) {
+      //   fprintf(Trace::out, "%llu L2_sub[%u] m_L2_icnt_queue_all_req_types added mf:"
+      //     "{TPC:%u SM:%u WARP:%u req_uid:%u %#llx acc_type:%s}\n",
+      //     m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset, m_id,
+      //     mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(),
+      //     mem_access_type_str(mem_access_type(mf->get_access_type()))
+      //     );
+      // }
 
       // Don't pass write allocate read request back to upper level cache
       if (mf->get_access_type() != L2_WR_ALLOC_R) {
