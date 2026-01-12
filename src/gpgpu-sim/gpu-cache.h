@@ -1412,6 +1412,7 @@ class cache_stats {
   void inc_accu_l2_icnt_queue_size(unsigned long long streamID, unsigned l2_sub, unsigned size);  
   void inc_l2_dram_q_accesses(unsigned long long streamID, unsigned l2_sub);
   void inc_l2_icnt_q_accesses(unsigned long long streamID, unsigned l2_sub);
+  void inc_l2_mshr_slots_fills(unsigned long long streamID, unsigned l2_sub);
   void inc_l2_miss_q_pops();
   void inc_stats(int access_type, int access_outcome, unsigned long long streamID);
   // Increment AerialVision cache stats
@@ -1450,6 +1451,10 @@ class cache_stats {
     FILE *fout, unsigned l2_dram_q_capacity, unsigned long long streamID, const char *info = "") const;
   void print_l2_icnt_queue_stats(
     FILE *fout, unsigned l2_icnt_q_capacity, unsigned long long streamID, const char *info = "") const;
+
+  void print_l2_mshr_slots_stats(
+    FILE *fout, unsigned l2_mshr_allocated_slots, unsigned long long streamID, const char *info) const;
+
   void print_l2_miss_q_pops(FILE *fout, const char *info = "") const;
 
   unsigned long long get_stats(enum mem_access_type *access_type,
@@ -1502,6 +1507,7 @@ class cache_stats {
   std::map<unsigned long long /* streamID */, std::vector<unsigned /* L2 Sub */>> m_accu_l2_icnt_queue_size;
   std::map<unsigned long long /* streamID */, std::vector<unsigned /* L2 Sub */>> m_l2_dram_q_accesses;
   std::map<unsigned long long /* streamID */, std::vector<unsigned /* L2 Sub */>> m_l2_icnt_q_accesses;
+  std::map<unsigned long long /* streamID */, std::vector<unsigned /* L2 Sub */>> m_l2_mshr_slots_fills;
   unsigned long long m_l2_miss_q_pops;
 
   unsigned long long m_cache_port_available_cycles;

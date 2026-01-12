@@ -1727,12 +1727,19 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
       printf("L2_total_cache_reservation_fail_breakdown:\n");
       l2_stats.print_fail_stats(stdout, streamID, "L2_cache_stats_fail_breakdown");
       printf("L2_total_mshr_stats:\n");
-      l2_stats.print_mshr_stats(stdout, streamID, "L2_mshr_stats");      
+      l2_stats.print_mshr_stats(stdout, streamID, "L2_mshr_stats");
       printf("Gather l2_sub_queue_occupancy:\n");
       l2_stats.print_l2_dram_queue_stats(
         stdout, l2_dram_q_capacity, streamID, "L2_dram_queue_occupancy");
       l2_stats.print_l2_icnt_queue_stats(
         stdout, l2_icnt_q_capacity, streamID, "L2_icnt_queue_occupancy");
+
+      const unsigned l2_mshr_per_entry_slots = 4;
+      const unsigned l2_mshr_entries = 192;
+      printf("Gather l2_mshr_slots_occupancy:\n");
+      l2_stats.print_l2_mshr_slots_stats(
+        stdout, l2_mshr_per_entry_slots * l2_mshr_entries, streamID, "L2_mshr_slots_occupancy");        
+
       total_l2_css.print_port_stats(stdout, "L2_cache");
       printf("L2 total MissQueue pops:\n");
       l2_stats.print_l2_miss_q_pops(stdout, "m_l2_miss_q_pops");

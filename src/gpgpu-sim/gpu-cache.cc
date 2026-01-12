@@ -803,9 +803,9 @@ void mshr_table::mark_ready(const char* cache_name, new_addr_type block_addr, bo
 
   if (DTRACE(REFILL_MSHR)) {
     mem_fetch* front_mf = a->second.m_list.front();
-    fprintf(Trace::out, "%llu %s_sub[%d] mshr_resp_q added %#llx\n", 
+    fprintf(Trace::out, "%llu %s_sub[%d] m_lfb added %#llx\n", 
       cycle, cache_name, front_mf->get_sub_partition(), block_addr);
-  }  
+  }
 }
 
 /// Returns next ready access
@@ -860,7 +860,7 @@ mem_fetch* mshr_table::next_access(const char* cache_type, unsigned long long cy
         whole_cache_name += " sub ";
         whole_cache_name += std::to_string(result->get_sub_partition());
       }
-      fprintf(Trace::out, "%llu %s_sub[%d] mshr_resp_q popped %#llx\n", 
+      fprintf(Trace::out, "%llu %s_sub[%d] m_lfb popped %#llx\n", 
         cycle, cache_type, result->get_sub_partition(), block_addr
       );   
     }
@@ -902,11 +902,11 @@ void mshr_table::display(FILE *fp, const char* cache_type) const {
 }
 
 void mshr_table::display_resp_q(FILE *fp, const char* cache_type) const {
-  fprintf(fp, "%s mshr_resp_q is:\n", cache_type);
+  fprintf(fp, "%s m_lfb is:\n", cache_type);
   int index = 0;
   for (std::list<new_addr_type>::const_iterator iter = m_lfb.begin(); 
     iter != m_lfb.end(); ++iter, ++index) {
-    fprintf(fp, "mshr_resp_q[%u] = %#llx\n", index, *iter);
+    fprintf(fp, "m_lfb[%u] = %#llx\n", index, *iter);
   }
 }
 
@@ -936,6 +936,7 @@ void cache_stats::clear() {
   m_accu_l2_icnt_queue_size.clear();
   m_l2_dram_q_accesses.clear();
   m_l2_icnt_q_accesses.clear();
+  m_l2_mshr_slots_fills.clear();
 
   m_cache_port_available_cycles = 0;
   m_cache_data_port_busy_cycles = 0;
@@ -1014,6 +1015,19 @@ void cache_stats::inc_l2_icnt_q_accesses(unsigned long long streamID, unsigned l
         std::vector<unsigned>>(streamID, new_val));
   }
   m_l2_icnt_q_accesses.at(streamID)[l2_sub]++;
+}
+
+void cache_stats::inc_l2_mshr_slots_fills(unsigned long long streamID, unsigned l2_sub) {
+
+  if (m_l2_mshr_slots_fills.find(streamID) == m_l2_mshr_slots_fills.end()) {
+    std::vector<unsigned> new_val;
+    // new_val.resize(get_sub_partitions());
+    const unsigned sub_partitions = 8;
+    new_val.resize(sub_partitions);
+    m_l2_mshr_slots_fills.insert(std::pair<unsigned long long,
+        std::vector<unsigned>>(streamID, new_val));
+  }
+  m_l2_mshr_slots_fills.at(streamID)[l2_sub]++;
 }
 
 void cache_stats::inc_l2_miss_q_pops() {
@@ -1421,6 +1435,17 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
       }
     }
   }  
+  for (auto iter = cs.m_l2_mshr_slots_fills.begin(); iter != cs.m_l2_mshr_slots_fills.end(); ++iter) {  
+    unsigned long long streamID = iter->first;
+    if (ret.m_l2_mshr_slots_fills.find(streamID) == ret.m_l2_mshr_slots_fills.end()) {
+      ret.m_l2_mshr_slots_fills.insert(
+        std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_l2_mshr_slots_fills.at(streamID)));
+    } else {
+      for (unsigned l2_sub = 0; l2_sub < 8; l2_sub++) {
+        ret.m_l2_mshr_slots_fills.at(streamID)[l2_sub] += cs.m_l2_mshr_slots_fills.at(streamID)[l2_sub];
+      }
+    }
+  }
 
   for (auto iter = cs.m_line_alloc_fail.begin(); iter != cs.m_line_alloc_fail.end(); ++iter) {
     unsigned long long streamID = iter->first;
@@ -1726,8 +1751,18 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
         m_l2_icnt_q_accesses.at(streamID)[l2_sub] += cs(l2_sub, streamID);
       }      
     }
-  }    
-
+  }
+  for (auto iter = cs.m_l2_mshr_slots_fills.begin(); iter != cs.m_l2_mshr_slots_fills.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    if (m_l2_mshr_slots_fills.find(streamID) == m_l2_mshr_slots_fills.end()) {
+      m_l2_mshr_slots_fills.insert(
+        std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_l2_mshr_slots_fills.at(streamID)));
+    } else {
+      for (unsigned l2_sub = 0; l2_sub < 8; ++l2_sub) {
+        m_l2_mshr_slots_fills.at(streamID)[l2_sub] += cs(l2_sub, streamID);
+      }      
+    }
+  }
   m_cache_port_available_cycles += cs.m_cache_port_available_cycles;
   m_cache_data_port_busy_cycles += cs.m_cache_data_port_busy_cycles;
   m_cache_fill_port_busy_cycles += cs.m_cache_fill_port_busy_cycles;
@@ -1954,6 +1989,25 @@ void cache_stats::print_l2_icnt_queue_stats(
       fprintf(fout, "\tavg_l2_icnt_q_size[sub:%u] = %.3f\n", l2_sub, avg_l2_icnt_q_size);
       fprintf(fout, "\t%s[sub:%u] = %.3f = (avg_size:%.3f / l2_icnt_q_capacity:%u)\n", 
         info, l2_sub, avg_l2_icnt_q_occupancy, avg_l2_icnt_q_size, l2_icnt_q_capacity);
+    }
+  }
+}
+void cache_stats::print_l2_mshr_slots_stats(
+  FILE *fout, unsigned l2_mshr_allocated_slots, unsigned long long streamID, const char *info) const {
+  for (auto iter = m_l2_mshr_slots_fills.begin(); 
+    iter != m_l2_mshr_slots_fills.end(); ++iter) {
+    if ((streamID != ((unsigned long long) - 1)) && (iter->first != streamID)) {
+      continue;
+    }
+    const unsigned allocatd_mshr_slots = 4; // Replace this with m_config.xx
+    for (unsigned l2_sub = 0; l2_sub < iter->second.size(); ++l2_sub) {       
+      float avg_l2_mshr_slots_size = 
+        (m_l2_mshr_slots_fills.at(streamID)[l2_sub] / 
+        (float)allocatd_mshr_slots);
+      float avg_l2_mshr_slots_occupancy = avg_l2_mshr_slots_size / (float)l2_mshr_allocated_slots;
+      fprintf(fout, "\tavg_l2_mshr_slots_size[sub:%u] = %.3f\n", l2_sub, avg_l2_mshr_slots_size);
+      fprintf(fout, "\t%s[sub:%u] = %.3f = (avg_size:%.3f / l2_mshr_allocated_slots:%u)\n", 
+        info, l2_sub, avg_l2_mshr_slots_occupancy, avg_l2_mshr_slots_size, l2_mshr_allocated_slots);
     }
   }
 }
@@ -2566,6 +2620,9 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
       [[maybe_unused]] bool is_l2 = !strcmp(m_config.get_cache_name(), "L2");
       bool is_new_mshr_entry = false;
       m_mshrs.add(mshr_addr, mf, is_new_mshr_entry, cache_type); // orig GPGPU-SIM logic
+      if (m_is_l2) {
+        m_stats.inc_l2_mshr_slots_fills(mf->get_streamID(), mf->get_sub_partition());
+      }
 
       if (DTRACE(CACHE_EVENT) || DTRACE(MSHR_EVENT)) {
         dumpMSHREvent(time, mf, mshr_addr, is_new_mshr_entry);
@@ -2617,7 +2674,10 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
       }
 
       bool is_new_mshr_entry = false;
-      m_mshrs.add(mshr_addr, mf, is_new_mshr_entry, cache_type); // orig GPGPU-SIM logic
+      m_mshrs.add(mshr_addr, mf, is_new_mshr_entry, cache_type); // orig GPGPU-SIM logic      
+      if (m_is_l2) {
+        m_stats.inc_l2_mshr_slots_fills(mf->get_streamID(), mf->get_sub_partition());
+      }
 
       if (DTRACE(CACHE_EVENT) || DTRACE(MSHR_EVENT)) {
         dumpMSHREvent(time, mf, mshr_addr, is_new_mshr_entry);
