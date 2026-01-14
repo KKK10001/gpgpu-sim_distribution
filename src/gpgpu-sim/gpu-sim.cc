@@ -1734,8 +1734,8 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
       l2_stats.print_l2_icnt_queue_stats(
         stdout, l2_icnt_q_capacity, streamID, "L2_icnt_queue_occupancy");
 
-      const unsigned l2_mshr_per_entry_slots = 4;
-      const unsigned l2_mshr_entries = 192;
+      const unsigned l2_mshr_per_entry_slots = m_memory_config->m_L2_config.get_mshr_max_merge();
+      const unsigned l2_mshr_entries = m_memory_config->m_L2_config.get_mshr_entries();
       printf("Gather l2_mshr_slots_occupancy:\n");
       l2_stats.print_l2_mshr_slots_stats(
         stdout, l2_mshr_per_entry_slots * l2_mshr_entries, streamID, "L2_mshr_slots_occupancy");        

@@ -420,6 +420,7 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
   unsigned invalid_line = (unsigned)-1;
   unsigned valid_line = (unsigned)-1;
   unsigned long long valid_timestamp = (unsigned)-1;
+  unsigned cnt_update_valid_timestamp = 0;
 
   bool all_reserved = true;
   // check for hit or pending hit  
@@ -497,6 +498,9 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
             if (line->get_last_access_time() < valid_timestamp) {
               valid_timestamp = line->get_last_access_time();
               valid_line = index;
+              // If cnt below > 1, it indicates valid_timestamp is used as a load.
+              // That is, LRU works. (Exactly)
+              cnt_update_valid_timestamp++;
             }
           } else if (m_config.m_replacement_policy == FIFO) {
             if (line->get_alloc_time() < valid_timestamp) {
@@ -1021,9 +1025,7 @@ void cache_stats::inc_l2_mshr_slots_fills(unsigned long long streamID, unsigned 
 
   if (m_l2_mshr_slots_fills.find(streamID) == m_l2_mshr_slots_fills.end()) {
     std::vector<unsigned> new_val;
-    // new_val.resize(get_sub_partitions());
-    const unsigned sub_partitions = 8;
-    new_val.resize(sub_partitions);
+    new_val.resize(get_sub_partitions());
     m_l2_mshr_slots_fills.insert(std::pair<unsigned long long,
         std::vector<unsigned>>(streamID, new_val));
   }

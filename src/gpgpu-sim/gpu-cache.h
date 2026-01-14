@@ -1014,6 +1014,8 @@ class cache_config {
   const char* get_cache_name() const { return m_cache_name; }
   const unsigned getSectorSize() const { return m_sector_size; }
   const unsigned get_sub_partition() const { return m_sub_partition; }
+  const unsigned get_mshr_max_merge() const { return m_mshr_max_merge; }
+  const unsigned get_mshr_entries() const { return m_mshr_entries; }
 
  protected:
   void exit_parse_error() {
