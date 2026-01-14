@@ -112,3 +112,33 @@ libcudart.so!gpgpu_sim::cycle(gpgpu_sim * const this) (\home\kuanbba\dev\accel-s
 accel_sim_framework::simulate(accel_sim_framework * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\accel-sim.cc:165)
 accel_sim_framework::simulation_loop(accel_sim_framework * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\accel-sim.cc:75)
 main(int argc, const char ** argv) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\main.cc:30)
+
+
+// Path of replacement
+libcudart.so!tag_array::probe(const tag_array * const this, new_addr_type addr, unsigned int & idx, mem_access_sector_mask_t mask, bool is_write, unsigned long long time, bool probe_mode, mem_fetch * mf) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/gpu-cache.cc:503)
+if (m_config.m_replacement_policy == LRU) {
+  ...
+}
+libcudart.so!tag_array::probe(const tag_array * const this, new_addr_type addr, unsigned int & idx, mem_fetch * mf, bool is_write, unsigned long long time, bool probe_mode) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/gpu-cache.cc:407)
+libcudart.so!data_cache::access(data_cache * const this, new_addr_type addr, mem_fetch * mf, unsigned long long time, std::__cxx11::list<cache_event, std::allocator<cache_event> > & events) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/gpu-cache.cc:3541)
+libcudart.so!l2_cache::access(l2_cache * const this, new_addr_type addr, mem_fetch * mf, unsigned long long time, std::__cxx11::list<cache_event, std::allocator<cache_event> > & events) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/gpu-cache.cc:3604)
+libcudart.so!memory_sub_partition::cache_cycle(memory_sub_partition * const this, unsigned long long cycle, mem_fetch * mf_monitor) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/l2cache.cc:728)
+libcudart.so!gpgpu_sim::cycle(gpgpu_sim * const this) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/gpu-sim.cc:2225)
+accel_sim_framework::simulate(accel_sim_framework * const this) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/accel-sim.cc:165)
+accel_sim_framework::simulation_loop(accel_sim_framework * const this) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/accel-sim.cc:75)
+main(int argc, const char ** argv) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/main.cc:30)
+
+// Path of set_recorded_in_mshr
+libcudart.so!baseline_cache::send_read_request(baseline_cache * const this, new_addr_type block_addr, unsigned int cache_index, mem_fetch * mf, unsigned long long time, bool & do_miss, bool & wb, evicted_block_info & evicted, std::__cxx11::list<cache_event, std::allocator<cache_event> > & events, bool read_only, bool wa) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/gpu-cache.cc:2695)
+// ...
+mf->set_recorded_in_mshr();
+// ...
+libcudart.so!data_cache::rd_miss_base(data_cache * const this, new_addr_type addr, unsigned int cache_index, mem_fetch * mf, unsigned long long time, std::__cxx11::list<cache_event, std::allocator<cache_event> > & events, cache_request_status status) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/gpu-cache.cc:3396)
+libcudart.so!data_cache::process_tag_probe(data_cache * const this, bool wr, cache_request_status probe_status, new_addr_type addr, unsigned int cache_index, mem_fetch * mf, unsigned long long time, std::__cxx11::list<cache_event, std::allocator<cache_event> > & events) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/gpu-cache.cc:3509)
+libcudart.so!data_cache::access(data_cache * const this, new_addr_type addr, mem_fetch * mf, unsigned long long time, std::__cxx11::list<cache_event, std::allocator<cache_event> > & events) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/gpu-cache.cc:3543)
+libcudart.so!l2_cache::access(l2_cache * const this, new_addr_type addr, mem_fetch * mf, unsigned long long time, std::__cxx11::list<cache_event, std::allocator<cache_event> > & events) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/gpu-cache.cc:3604)
+libcudart.so!memory_sub_partition::cache_cycle(memory_sub_partition * const this, unsigned long long cycle, mem_fetch * mf_monitor) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/l2cache.cc:728)
+libcudart.so!gpgpu_sim::cycle(gpgpu_sim * const this) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/gpu-sim.cc:2225)
+accel_sim_framework::simulate(accel_sim_framework * const this) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/accel-sim.cc:165)
+accel_sim_framework::simulation_loop(accel_sim_framework * const this) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/accel-sim.cc:75)
+main(int argc, const char ** argv) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/main.cc:30)

@@ -541,7 +541,7 @@ void memory_sub_partition::cache_cycle(unsigned long long cycle, mem_fetch* mf_m
   if (!m_config->m_L2_config.disabled()) {
     if (m_L2cache->access_ready() && !m_L2_icnt_queue->full()) {
       // for debug 1-9
-      fprintf(Trace::out, "L2 sub = %u in memory_sub_partition::cache_cycle\n", get_id());
+      // fprintf(Trace::out, "L2 sub = %u in memory_sub_partition::cache_cycle\n", get_id());
 
       mem_fetch *mf = m_L2cache->next_access("L2", cycle);
 
@@ -803,13 +803,10 @@ void memory_sub_partition::cache_cycle(unsigned long long cycle, mem_fetch* mf_m
               !was_writeallocate_sent(events)) {
             if (mf->get_access_type() == L1_WRBK_ACC) {
               if (DTRACE(RELEASE_REQ_TRACKER)) {
-                fprintf(Trace::out, "%llu req_tracker released mf:{ TPC:%u SM:%u WARP:%u %#llx }\n",
+                fprintf(Trace::out, "%llu L2_sub[%u] req_tracker released mf:{ TPC:%u SM:%u WARP:%u %#llx }\n",
                   time, // use time or cycle should be confirmed according to final dumps
-                  mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_addr(), 
-                  mem_access_type_str(mem_access_type(mf->get_access_type())),
-                  mf->mem_fetch_status_str(mf->get_status()),
-                  m_request_tracker.size(), m_request_tracker.size() - 1,
-                  m_id
+                  m_id,
+                  mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_addr()
                 );
               }
               m_request_tracker.erase(mf);

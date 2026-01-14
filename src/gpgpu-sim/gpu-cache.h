@@ -658,7 +658,7 @@ class cache_config {
       "----------- %s mshr_config is below -----------\n m_mshr_disable = %c\n",
       cache_name, m_mshr_disable);
 
-    char ct, rp, wp, ap, mshr_type, wap, sif;
+    char ct, rp, wp, ap, mshr_type, wap;
 
     //  S:32:128:24  L : B: m: L: P, A:192:4,  32:0,  32
     // %c:%u:%u:%u,  %c:%c:%c:%c:%c, %c:%u:%u, %u:%u, %u, 
@@ -666,7 +666,7 @@ class cache_config {
         sscanf(config, 
               "%c:%u:%u:%u, %c:%c:%c:%c:%c, %c:%u:%u, %u:%u, %u", 
               &ct, &m_nset, &m_line_sz, &m_assoc, 
-              &rp, &wp, &ap, &wap, &sif,
+              &rp, &wp, &ap, &wap, &m_sif,
               &mshr_type, &m_mshr_entries, &m_mshr_max_merge,
               &m_miss_queue_size, &m_result_fifo_entries,
               &m_data_port_width);
@@ -676,7 +676,7 @@ class cache_config {
       "Write Policy (wp) = %c\n"
       "Allocation Policy (ap) = %c\n"
       "Write Allocate Policy (wap) = %c\n"
-      "Set Index Function (sif) = %c\n"
+      "Set Index Function (m_sif) = %c\n"
       "mshr_type = %c\n"
       "m_mshr_entries = %u\n"
       "m_mshr_max_merge = %u\n"
@@ -685,7 +685,7 @@ class cache_config {
       "m_data_port_width = %uB\n",
       cache_name, 
       (ct == 'S') ? "SECTOR" : "NORMAL",
-      m_nset, m_line_sz, m_assoc, rp, wp, ap, wap, sif, mshr_type,
+      m_nset, m_line_sz, m_assoc, rp, wp, ap, wap, m_sif, mshr_type,
       m_mshr_entries, m_mshr_max_merge, 
       m_miss_queue_size, m_result_fifo_entries,
       m_data_port_width
@@ -898,7 +898,7 @@ class cache_config {
     }
     assert(m_line_sz % m_data_port_width == 0);
 
-    switch (sif) {
+    switch (m_sif) {
       case 'H':
         m_set_index_function = FERMI_HASH_SET_FUNCTION;
         break;
@@ -957,7 +957,15 @@ class cache_config {
             m_line_sz * m_nset * m_assoc, m_nset, m_assoc, m_line_sz);
   }
 
+  unsigned get_line_bits() const {
+    return m_line_sz_log2;
+  }
+  unsigned get_set_bits() const {
+    return m_nset_log2;
+  }
+
   virtual unsigned set_index(new_addr_type addr) const;
+  virtual unsigned recalc_orig_addr(new_addr_type tag, unsigned set_index) const;
 
   virtual unsigned get_max_cache_multiplier() const {
     return MAX_DEFAULT_CACHE_SIZE_MULTIBLIER;
@@ -971,9 +979,12 @@ class cache_config {
     // For generality, the tag includes both index and tag. This allows for more
     // complex set index calculations that can result in different indexes
     // mapping to the same set, thus the full tag + index is required to check
-    // for hit/miss. Tag is now identical to the block address.
+    // for hit/miss. Tag is now identical to the block address.  
 
-    // return addr >> (m_line_sz_log2+m_nset_log2);
+    // return (m_sif == 'L') ? (addr >> (m_line_sz_log2 + m_nset_log2)) :
+    //   (addr & ~(new_addr_type)(m_line_sz - 1));
+
+    // return addr >> (m_line_sz_log2 + m_nset_log2);
     return addr & ~(new_addr_type)(m_line_sz - 1);
   }
   new_addr_type block_addr(new_addr_type addr) const {
@@ -1016,6 +1027,7 @@ class cache_config {
   const unsigned get_sub_partition() const { return m_sub_partition; }
   const unsigned get_mshr_max_merge() const { return m_mshr_max_merge; }
   const unsigned get_mshr_entries() const { return m_mshr_entries; }
+  const char get_sif() const { return m_sif; }
 
  protected:
   void exit_parse_error() {
@@ -1036,6 +1048,7 @@ class cache_config {
   unsigned m_assoc;
   unsigned m_atom_sz;
   unsigned m_sector_sz_log2;
+  char m_sif;
   unsigned original_m_assoc;
   bool m_is_streaming;
 
@@ -1129,20 +1142,31 @@ class prefetcher {
 };
 
 class tag_array {
+  friend class baseline_cache;
  public:
   // Use this constructor
   tag_array(cache_config &config, int core_id, int type_id);
   ~tag_array();
 
+  // enum cache_request_status probe(new_addr_type addr, unsigned &idx,
+  //                                 mem_fetch *mf, bool is_write,
+  //                                 unsigned long long time,
+  //                                 bool probe_mode = false) const;
+  // enum cache_request_status probe(new_addr_type addr, unsigned &idx,
+  //                                 mem_access_sector_mask_t mask, bool is_write,
+  //                                 unsigned long long time,
+  //                                 bool probe_mode = false,
+  //                                 mem_fetch *mf = NULL) const;
+  // addr is block_addr
   enum cache_request_status probe(new_addr_type addr, unsigned &idx,
                                   mem_fetch *mf, bool is_write,
                                   unsigned long long time,
-                                  bool probe_mode = false) const;
+                                  bool probe_mode = false);
   enum cache_request_status probe(new_addr_type addr, unsigned &idx,
                                   mem_access_sector_mask_t mask, bool is_write,
                                   unsigned long long time,
                                   bool probe_mode = false,
-                                  mem_fetch *mf = NULL) const;
+                                  mem_fetch *mf = NULL);  
   enum cache_request_status access(new_addr_type addr, unsigned time,
                                    unsigned &idx, mem_fetch *mf);
   enum cache_request_status access(new_addr_type addr, unsigned time,
@@ -1172,6 +1196,16 @@ class tag_array {
   void remove_pending_line(mem_fetch *mf);
   void inc_dirty() { m_dirty++; }
 
+  bool has_been_recorded_in_mshr(new_addr_type block_addr) {
+    return m_mshr_recorded_block_addresses[block_addr];
+  }
+  unsigned mshr_recorded_lines() {
+    return m_mshr_recorded_block_addresses.size();
+  }
+  std::map<new_addr_type, bool> get_mshr_recorded_blocks_addresses() {
+    return m_mshr_recorded_block_addresses;
+  }
+
  protected:
   // This constructor is intended for use only from derived classes that wish to
   // avoid unnecessary memory allocation that takes place in the
@@ -1184,6 +1218,10 @@ class tag_array {
   cache_config &m_config;
 
   cache_block_t **m_lines; /* nbanks x nset x assoc lines in total */
+
+  void set_recorded_in_mshr(const new_addr_type& block_addr) {
+    m_mshr_recorded_block_addresses[block_addr] = true;
+  }
 
   unsigned m_access;
   unsigned m_reads;
@@ -1198,6 +1236,8 @@ class tag_array {
   unsigned m_wr_sector_miss;
   unsigned m_sector_miss;
   unsigned m_dirty;
+
+  std::map<new_addr_type, bool> m_mshr_recorded_block_addresses;  
 
   // performance counters for calculating the amount of misses within a time
   // window
@@ -1234,7 +1274,8 @@ class mshr_table {
   /// Checks if there is space for tracking a new memory access
   bool full(new_addr_type block_addr) const;
   /// Add or merge this access
-  void add(new_addr_type block_addr, mem_fetch *mf, bool& is_new_entry, const char* cache_name="");
+  void add(new_addr_type mshr_addr, mem_fetch *mf, bool& is_new_entry, const char* cache_name="");
+  unsigned occupied_slots(new_addr_type mshr_addr);
   /// Returns true if cannot accept new fill responses
   bool busy() const { return false; }
   /// Accept a new cache fill response: mark entry ready for processing
@@ -1737,7 +1778,7 @@ class baseline_cache : public cache_t {
   std::vector<new_addr_type> m_l1d_rd_miss_addresses;
   cache_config &m_config;
   tag_array *m_tag_array;
-  mshr_table m_mshrs;
+  mshr_table m_mshrs;  
   std::list<mem_fetch *> m_miss_queue;
   enum mem_fetch_status m_miss_queue_status;
   mem_fetch_interface *m_memport;
@@ -1776,7 +1817,6 @@ class baseline_cache : public cache_t {
 
   // Line Fill Buffer (LFB) to buffer response from downstream when MSHR is disabled
   std::list<mem_fetch *> m_lfb;
-
 
   /// Checks whether this request can be handled on this cycle. num_miss equals
   /// max # of misses to be handled on this cycle
