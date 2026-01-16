@@ -196,6 +196,8 @@ struct cache_block_t {
   cache_block_t() {
     m_tag = 0;
     m_block_addr = 0;
+    m_was_recorded_in_mshr   = false;
+    m_recorded_times_in_mshr = 0;
   }
 
   virtual void allocate(new_addr_type tag, new_addr_type block_addr,
@@ -208,6 +210,9 @@ struct cache_block_t {
   virtual bool is_valid_line() = 0;
   virtual bool is_reserved_line() = 0;
   virtual bool is_modified_line() = 0;
+
+  virtual bool was_recorded_in_mshr() { return m_was_recorded_in_mshr; }
+  virtual unsigned get_recorded_times_in_mshr() { return m_recorded_times_in_mshr; }
 
   virtual enum cache_block_state get_status(
       mem_access_sector_mask_t sector_mask) = 0;
@@ -237,6 +242,8 @@ struct cache_block_t {
 
   new_addr_type m_tag;
   new_addr_type m_block_addr;
+  bool m_was_recorded_in_mshr; // "was" means that the line might be invalid now
+  unsigned m_recorded_times_in_mshr;
 };
 
 struct line_cache_block : public cache_block_t {
@@ -653,10 +660,12 @@ class cache_config {
     assert(config);
 
     assert(mshr_config);
-    [[maybe_unused]] int ntok_mshr = sscanf(mshr_config, "%c", &m_mshr_disable);
+    [[maybe_unused]] int ntok_mshr = 
+      sscanf(mshr_config, "%c:%c", &m_mshr_disable, &m_mshr_corr_repl);
     fprintf(Trace::out, 
-      "----------- %s mshr_config is below -----------\n m_mshr_disable = %c\n",
-      cache_name, m_mshr_disable);
+      "----------- %s mshr_config is below -----------\n "
+      "m_mshr_disable = %c m_mshr_corr_repl = %c\n",
+      cache_name, m_mshr_disable, m_mshr_corr_repl);
 
     char ct, rp, wp, ap, mshr_type, wap;
 
@@ -1064,6 +1073,7 @@ class cache_config {
       m_write_alloc_policy;  // 'W' = Write allocate, 'N' = No write allocate
 
   char m_mshr_disable;
+  char m_mshr_corr_repl;
 
   union {
     unsigned m_mshr_entries;
@@ -1174,9 +1184,10 @@ class tag_array {
                                    evicted_block_info &evicted, mem_fetch *mf);
 
   void fill(new_addr_type addr, unsigned time, mem_fetch *mf, bool is_write);
-  void fill(unsigned idx, unsigned time, mem_fetch *mf);
+  void fill(unsigned index, unsigned time, mem_fetch *mf);
   void fill(new_addr_type addr, unsigned time, mem_access_sector_mask_t mask,
             mem_access_byte_mask_t byte_mask, bool is_write);
+  void set_recorded_in_mshr(unsigned index);
 
   unsigned size() const { return m_config.get_num_lines(); }
   cache_block_t *get_block(unsigned idx) { return m_lines[idx]; }
@@ -1196,15 +1207,15 @@ class tag_array {
   void remove_pending_line(mem_fetch *mf);
   void inc_dirty() { m_dirty++; }
 
-  bool has_been_recorded_in_mshr(new_addr_type block_addr) {
-    return m_mshr_recorded_block_addresses[block_addr];
-  }
-  unsigned mshr_recorded_lines() {
-    return m_mshr_recorded_block_addresses.size();
-  }
-  std::map<new_addr_type, bool> get_mshr_recorded_blocks_addresses() {
-    return m_mshr_recorded_block_addresses;
-  }
+  // bool has_been_recorded_in_mshr(new_addr_type block_addr) {
+  //   return m_mshr_recorded_block_addresses[block_addr];
+  // }
+  // unsigned mshr_recorded_lines() {
+  //   return m_mshr_recorded_block_addresses.size();
+  // }
+  // std::map<new_addr_type, bool> get_mshr_recorded_blocks_addresses() {
+  //   return m_mshr_recorded_block_addresses;
+  // }
 
  protected:
   // This constructor is intended for use only from derived classes that wish to
@@ -1219,9 +1230,9 @@ class tag_array {
 
   cache_block_t **m_lines; /* nbanks x nset x assoc lines in total */
 
-  void set_recorded_in_mshr(const new_addr_type& block_addr) {
-    m_mshr_recorded_block_addresses[block_addr] = true;
-  }
+  // void set_recorded_in_mshr(const new_addr_type& block_addr) {
+  //   m_mshr_recorded_block_addresses[block_addr] = true;
+  // }
 
   unsigned m_access;
   unsigned m_reads;

@@ -384,7 +384,7 @@ void tag_array::init(int core_id, int type_id) {
   m_type_id = type_id;
   is_used = false;
   m_dirty = 0;
-  m_mshr_recorded_block_addresses.clear();
+  // m_mshr_recorded_block_addresses.clear();
 }
 
 void tag_array::add_pending_line(mem_fetch *mf) {
@@ -449,43 +449,31 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
         tag, block_addr, set_index
       );   
     }
-  }  
-
-  if (DTRACE(TAG_PROBE_ADDR)) {
-    if (mf) {
-      fprintf(Trace::out, "%llu %s tag probed block_addr %#llx "
-        "{tag %#llx set_index %#x} on mf:{ TPC:%u SM:%u WARP:%u req_uid:%u}. "
-        "mshr_recorded_lines = %u\n",
-        time, 
-        str_cache_name.c_str(),
-        addr, tag, set_index,
-        mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(),
-        mshr_recorded_lines()
-      );      
-      if (mshr_recorded_lines() <= 4) {
-        unsigned index = 0;
-        std::map<new_addr_type, bool> mshr_recorded_block_addresses = get_mshr_recorded_blocks_addresses();
-        for (auto iter = mshr_recorded_block_addresses.begin(); iter != mshr_recorded_block_addresses.end(); ++iter) {
-          fprintf(Trace::out, "  mshr_recorded_lines[%u].first = %#llx\n",
-            index, (*iter).first);
-          index++;
-        }
-      }
-    }
   }
 
   unsigned invalid_line = (unsigned)-1;
   unsigned valid_line = (unsigned)-1;
   unsigned long long valid_timestamp = (unsigned)-1;
+  unsigned max_recordes_in_mshr = (unsigned) - 1;
   unsigned cnt_update_valid_timestamp = 0;
 
   bool all_reserved = true;
   bool all_miss = true;
   bool all_sector_valid = true;
   // check for hit or pending hit  
+  // [Feature]
+  std::vector<std::pair<unsigned long long /* timestamp */, bool /* was_recorded_in_mshr */>> repl_candidates(m_config.m_assoc);  
+  std::vector<std::pair<unsigned long long /* timestamp */, unsigned /* unfolded index */>> repl_candidates_no_record_in_mshr;
+  std::vector<std::pair<unsigned /* recorded times */, unsigned /* unfolded index */>> repl_candidates_recorded_in_mshr;
+  for (size_t way = 0; way < repl_candidates.size(); way++)
+  {
+    repl_candidates[way].first  = (unsigned long long) - 1;
+    repl_candidates[way].second = false;
+  }
+  
   for (unsigned way = 0; way < m_config.m_assoc; way++) {
     unsigned index = set_index * m_config.m_assoc + way;
-    cache_block_t *line = m_lines[index];
+    cache_block_t *line = m_lines[index]; 
 
     if (line->m_tag == tag) {
       all_miss = false;
@@ -539,6 +527,7 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
         all_sector_valid = false;
       }
     } // cacheline hit
+
     if (!line->is_reserved_line()) {
       // percentage of dirty lines in the cache
       // number of dirty lines / total lines in the cache
@@ -555,17 +544,34 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
         if (line->is_invalid_line()) {
           invalid_line = index;
         } else {
+          repl_candidates[way].first  = line->get_last_access_time();
+          repl_candidates[way].second = line->was_recorded_in_mshr();
+          if (!repl_candidates[way].second) {
+            repl_candidates_no_record_in_mshr.push_back(
+              std::pair<unsigned long long, unsigned>(repl_candidates[way].first, index));
+              if (DTRACE(MSHR_CORRELATED_REPLACEMENT)) {
+                fprintf(Trace::out, "%llu %s repl_candidates_no_record_in_mshr.push_back"
+                  "(timestamp:%#llx, index:%#x);\n",
+                  time, str_cache_name.c_str(), repl_candidates[way].first, index);
+              }
+          } else {
+            repl_candidates_recorded_in_mshr.push_back(
+              std::pair<unsigned, unsigned>(line->get_recorded_times_in_mshr(), index));
+          }
+
           // valid line : keep track of most appropriate replacement candidate
           if (m_config.m_replacement_policy == LRU) {
+            // Reuse LRU replacement policy in case when
             if (line->get_last_access_time() < valid_timestamp) {
               valid_timestamp = line->get_last_access_time();
               valid_line = index;
 
               if (DTRACE(TAG_PROBE_SPECIFIC_ADDR)) {
                 if (time == 55267) { // for debug backprop
-                  fprintf(Trace::out, "%llu %s updating target valid_line with "
-                    "index:%u way:%u for addr %#llx\n",
-                    time, str_cache_name.c_str(), index, way, addr);
+                  fprintf(Trace::out, "%llu %s got replace candidate lines[index:%#x] "
+                    "was_recorded_in_mshr = %u\n",
+                    time, str_cache_name.c_str(), index, 
+                    line->was_recorded_in_mshr());
                 }       
               }
               // If cnt below > 1, it indicates valid_timestamp is used as a load.
@@ -579,7 +585,7 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
             }
           }
         } // valid line
-      }
+      } // evict conditions (clean || too many dirty lines)
     } // if (!line->is_reserved_line())
   } // for (unsigned way = 0; way < m_config.m_assoc; way++)
 
@@ -605,38 +611,95 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
         check_tag_block_addr_eq_info.c_str());
     }
   }
-  
-  // if (m_config.m_replacement_policy == LRU) {
-  //   for (unsigned way = 0; way < m_config.m_assoc; way++) {
-  //     unsigned index = set_index * m_config.m_assoc + way;
-  //     cache_block_t *line = m_lines[index];
-  //     if (line->get_last_access_time() < valid_timestamp) {
-  //       if (DTRACE(RECORDED_IN_MSHR)) {
-  //         if (has_been_recorded_in_mshr(addr)) {
-  //           fprintf(Trace::out, "%llu %s mshr recorded block_addr %#llx "
-  //             "should be at lower-pri for replacement. mshr_recorded_lines = %u\n",
-  //             time, 
-  //             str_cache_name.c_str(), addr, mshr_recorded_lines());
-  //         }
-  //       }
-  //       valid_timestamp = line->get_last_access_time();
-  //       valid_line = index;
-  //       cnt_update_valid_timestamp++;
-  //     }    
-  //   }
-  // }
 
-  if (invalid_line != (unsigned)-1) {
+  if (invalid_line != (unsigned) - 1) {
     idx = invalid_line;
-  } else if (valid_line != (unsigned)-1) {
-    idx = valid_line;
+  } else if (valid_line != (unsigned) - 1) {
+    if (m_config.m_mshr_corr_repl == 'T') {
+      if (repl_candidates_no_record_in_mshr.size()) {
+        unsigned long long max_timestamp = (unsigned long long) - 1;
+        for (size_t i = 0; i < repl_candidates_no_record_in_mshr.size(); i++)
+        {
+          if (repl_candidates_no_record_in_mshr[i].first < max_timestamp) { // Just use LRU
+            max_timestamp = repl_candidates_no_record_in_mshr[i].first;
+            idx = repl_candidates_no_record_in_mshr[i].second;
+            if (DTRACE(MSHR_CORRELATED_REPLACEMENT)) {
+              fprintf(Trace::out, "%llu %s got repl cand idx:%#x "
+                "from repl_candidates_no_record_in_mshr. timestamp = %#llx\n",
+                time, str_cache_name.c_str(), idx, max_timestamp
+              );
+            }
+          } else {
+            if (DTRACE(MSHR_CORRELATED_REPLACEMENT)) {
+              fprintf(Trace::out, "%llu %s repl_candidates_no_record_in_mshr[%u] "
+                "timestamp:%#llx >= max_timestamp:%#llx. ---> bypass this cand\n",
+                time, str_cache_name.c_str(), i, 
+                repl_candidates_no_record_in_mshr[i].first, max_timestamp
+              );
+            }
+          }
+        }
+        if (DTRACE(MSHR_CORRELATED_REPLACEMENT)) {
+          fprintf(Trace::out, "%llu %s finally got repl cand idx:%#x "
+            "from repl_candidates_no_record_in_mshr. timestamp = %#llx\n",
+            time, str_cache_name.c_str(), idx, max_timestamp
+          );
+        }
+      } else {
+        // All candidates were recorded in MSHR. valid_line fetched here was generated by LRU        
+        // if (m_config.m_replacement_policy == MSHR_M) {
+        //   assert(m_config.m_mshr_disable == 'F');
+        //   if (repl_candidates_recorded_in_mshr.size()) {
+        //     for (size_t i = 0; i < repl_candidates_recorded_in_mshr.size(); i++)
+        //     {
+        //       if (repl_candidates_recorded_in_mshr[i].first < max_recordes_in_mshr) {
+        //         max_recordes_in_mshr = repl_candidates_recorded_in_mshr[i].first;
+        //         valid_line = repl_candidates_recorded_in_mshr[i].second;
+        //       }
+        //     }
+        //   } else {
+        //     idx = valid_line;
+        //   }
+        // } else { // {LRU, FIFO} generated previously
+        //   idx = valid_line; 
+        // }
+        // 1-15 further opt 17:20 Just try
+        assert(repl_candidates_recorded_in_mshr.size());
+        unsigned index_gen_use_mshr_m_rep = (unsigned) - 1;
+        for (size_t i = 0; i < repl_candidates_recorded_in_mshr.size(); i++) {
+          if (repl_candidates_recorded_in_mshr[i].first < max_recordes_in_mshr) {
+            max_recordes_in_mshr = repl_candidates_recorded_in_mshr[i].first;
+            index_gen_use_mshr_m_rep = repl_candidates_recorded_in_mshr[i].second;
+          }
+        }
+        // 1st try
+        if (index_gen_use_mshr_m_rep != ((unsigned) - 1)) {
+          idx = index_gen_use_mshr_m_rep;
+        } else {
+          if (DTRACE(MSHR_CORRELATED_REPLACEMENT) || 
+              DTRACE(MSHR_CORRELATED_REPL_CORNER_CASE)) {
+            fprintf(Trace::out, "%llu %s hit unexpected case of idx:%#lx generated by mshr_m\n",
+              time, str_cache_name.c_str(), index_gen_use_mshr_m_rep);
+          }
+          idx = valid_line;
+        }
+        // 2nd try
+        assert(index_gen_use_mshr_m_rep != ((unsigned) - 1));
+        idx = index_gen_use_mshr_m_rep;
+        // Following is always correct.
+        // idx = valid_line;  // default LRU generated index
+      }
+    } else {
+      idx = valid_line;
+    }
+
+    // 1-15 Commented and use logic above
+    // idx = valid_line;
     if (all_miss) {
       if (DTRACE(REPLACE_LINE_UNDER_ALL_MISS)) {
         fprintf(Trace::out, "%llu %s missed addr %#llx, "
-          "and replaced idx %#x with valid_line. "
-          "has_been_recorded_in_mshr(addr:%#llx) = %u\n",
-          time, str_cache_name.c_str(), addr, idx,
-          addr, has_been_recorded_in_mshr(addr)
+          "and selected the oldest line:%#x for eviction\n",
+          time, str_cache_name.c_str(), addr, idx
         );
       }
     }    
@@ -764,6 +827,11 @@ void tag_array::fill(unsigned index, unsigned time, mem_fetch *mf) {
   if (m_lines[index]->is_modified_line() && !before) {
     m_dirty++;
   }
+}
+
+void tag_array::set_recorded_in_mshr(unsigned index) {
+  m_lines[index]->m_was_recorded_in_mshr = true;
+  m_lines[index]->m_recorded_times_in_mshr++;
 }
 
 // TODO: we need write back the flushed data to the upper level
@@ -2526,6 +2594,7 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
   } else {
     m_mshrs.mark_ready(m_is_l2 ? "L2" : m_is_l1d ? "L1D" : "other$", 
       e->second.m_block_addr, has_atomic, time);
+    m_tag_array->set_recorded_in_mshr(e->second.m_cache_index);
   }
 
   if (has_atomic) {
@@ -2744,28 +2813,31 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
 
       [[maybe_unused]] bool is_l2 = !strcmp(m_config.get_cache_name(), "L2");
       bool is_new_mshr_entry = false;
-      m_tag_array->set_recorded_in_mshr(block_addr);
+      // m_tag_array->set_recorded_in_mshr(block_addr);
       m_mshrs.add(mshr_addr, mf, is_new_mshr_entry, cache_type); // orig GPGPU-SIM logic
 
       if (m_is_l2) {
         m_stats.inc_l2_mshr_slots_fills(mf->get_streamID(), mf->get_sub_partition());
       }
       if (DTRACE(RECORDED_IN_MSHR)) {
-        // fprintf(Trace::out, "%llu %s mshr_addr %#llx on mf: {TPC:%u SM:%u WARP:%u} "
-        //   "is recorded in MSHR (mshr hit). Compare {mshr_addr:%#llx, block_addr:%#llx}\n",
-        //   time, cache_type, mshr_addr, mf->get_tpc(), mf->get_sid(), mf->get_wid(),
-        //   mshr_addr, block_addr
-        // );
+        // fprintf(Trace::out, "%llu %s block_addr %#llx {tag %#llx set_index %#x} "
+        //   "is recorded in MSHR (mshr hit) occupied_slots[mshr_addr:%#llx] = %u. "
+        //   "mf:{ TPC:%u SM:%u WARP:%u req_uid:%u} "
+        //   "mshr_recorded_lines = %u\n",
+        //   time, cache_type, block_addr, 
+        //   m_config.tag(block_addr), m_config.set_index(block_addr),
+        //   mshr_addr, m_mshrs.occupied_slots(mshr_addr),
+        //   mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(),
+        //   m_tag_array->mshr_recorded_lines()
+        // ); 
         fprintf(Trace::out, "%llu %s block_addr %#llx {tag %#llx set_index %#x} "
           "is recorded in MSHR (mshr hit) occupied_slots[mshr_addr:%#llx] = %u. "
-          "mf:{ TPC:%u SM:%u WARP:%u req_uid:%u} "
-          "mshr_recorded_lines = %u\n",
+          "mf:{ TPC:%u SM:%u WARP:%u req_uid:%u}\n",
           time, cache_type, block_addr, 
           m_config.tag(block_addr), m_config.set_index(block_addr),
           mshr_addr, m_mshrs.occupied_slots(mshr_addr),
-          mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(),
-          m_tag_array->mshr_recorded_lines()
-        ); 
+          mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid()
+        );         
       }      
 
       if (DTRACE(CACHE_EVENT) || DTRACE(MSHR_EVENT)) {
@@ -2818,27 +2890,30 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
       }
 
       bool is_new_mshr_entry = false;
-      m_tag_array->set_recorded_in_mshr(block_addr);
+      // m_tag_array->set_recorded_in_mshr(block_addr);
       m_mshrs.add(mshr_addr, mf, is_new_mshr_entry, cache_type); // orig GPGPU-SIM logic      
       if (m_is_l2) {
         m_stats.inc_l2_mshr_slots_fills(mf->get_streamID(), mf->get_sub_partition());
       }
       if (DTRACE(RECORDED_IN_MSHR)) {
-        // fprintf(Trace::out, "%llu %s mshr_addr %#llx on mf: {TPC:%u SM:%u WARP:%u} "
-        //   "is recorded in MSHR (mshr miss). Compare {mshr_addr:%#llx, block_addr:%#llx}\n",
-        //   time, cache_type, mshr_addr, mf->get_tpc(), mf->get_sid(), mf->get_wid(),
-        //   mshr_addr, block_addr
-        // );
+        // fprintf(Trace::out, "%llu %s block_addr %#llx {tag %#llx set_index %#x} "
+        //   "is recorded in MSHR (mshr miss) occupied_slots[mshr_addr:%#llx] = %u. "
+        //   "mf:{ TPC:%u SM:%u WARP:%u req_uid:%u} "
+        //   "mshr_recorded_lines = %u\n",
+        //   time, cache_type, block_addr, 
+        //   m_config.tag(block_addr), m_config.set_index(block_addr),
+        //   mshr_addr, m_mshrs.occupied_slots(mshr_addr),
+        //   mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(),
+        //   m_tag_array->mshr_recorded_lines()
+        // ); 
         fprintf(Trace::out, "%llu %s block_addr %#llx {tag %#llx set_index %#x} "
           "is recorded in MSHR (mshr miss) occupied_slots[mshr_addr:%#llx] = %u. "
-          "mf:{ TPC:%u SM:%u WARP:%u req_uid:%u} "
-          "mshr_recorded_lines = %u\n",
+          "mf:{ TPC:%u SM:%u WARP:%u req_uid:%u}\n",
           time, cache_type, block_addr, 
           m_config.tag(block_addr), m_config.set_index(block_addr),
           mshr_addr, m_mshrs.occupied_slots(mshr_addr),
-          mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(),
-          m_tag_array->mshr_recorded_lines()
-        ); 
+          mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid()
+        );         
       }
 
       if (DTRACE(CACHE_EVENT) || DTRACE(MSHR_EVENT)) {
