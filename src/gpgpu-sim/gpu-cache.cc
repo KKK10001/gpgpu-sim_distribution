@@ -405,21 +405,56 @@ void tag_array::remove_pending_line(mem_fetch *mf) {
   }
 }
 
-enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
+enum cache_request_status tag_array::probe(const std::string& caller,
+                                           new_addr_type addr, unsigned &idx,
                                            mem_fetch *mf, bool is_write,
                                            unsigned long long time,
                                            bool probe_mode) {
   mem_access_sector_mask_t mask = mf->get_access_sector_mask();
-
-  return probe(addr, idx, mask, is_write, time, probe_mode, mf);
+  std::string final_caller = caller + "-> tag_array::probe";
+  return probe(final_caller.c_str(), addr, idx, mask, is_write, time, probe_mode, mf);
 }
 
-enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
+void tag_array::inc_rrpv_for_one_set(unsigned set_index) {
+  for (unsigned way = 0; way < m_config.m_assoc; way++) {
+    unsigned index = set_index * m_config.m_assoc + way;
+    cache_block_t *line = m_lines[index];
+    if (line->get_rrpv() == 3) {
+      // do nothing
+      if (DTRACE(DEBUG_SRRIP)) {
+        fprintf(Trace::out, "m_lines[index:%#x]->get_rrpv = 3 "
+          "inside inc_rrpv_for_one_set\n", index);
+      }
+    } else {
+      line->inc_rrpv();
+    }
+    assert(line->get_rrpv() <= 3);
+  }
+}
+bool tag_array::already_has_max_rrpv_in_one_set(unsigned set_index) {
+  for (unsigned way = 0; way < m_config.m_assoc; way++) {
+    unsigned index = set_index * m_config.m_assoc + way;
+    cache_block_t *line = m_lines[index];
+    if (line->get_rrpv() == 3) {
+      return true;
+    }    
+  }
+  return false;
+}
+
+enum cache_request_status tag_array::probe(const std::string& caller,
+                                           new_addr_type addr, unsigned &idx,
                                            mem_access_sector_mask_t mask,
                                            bool is_write, 
                                            unsigned long long time,
                                            bool probe_mode,
                                            mem_fetch *mf) {
+
+  if (DTRACE(TAG_PROBE)) {
+    fprintf(Trace::out, "%llu %s called tag_array::probe(3rd in-arg mask) addr:%#llx\n", 
+      time, caller.c_str(), addr);
+  }
+
   unsigned set_index = m_config.set_index(addr);
   new_addr_type tag = m_config.tag(addr);
 
@@ -440,22 +475,10 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
     str_cache_name += "]";
   }
 
-  if (DTRACE(TAG_PROBE_SPECIFIC_ADDR) && mf) {
-    if (time == 5232) {
-      fprintf(Trace::out, "%llu %s tag probed target "
-        "{tag:%#llx block_addr:%#llx set_index:%#x}\n",
-        time, 
-        str_cache_name.c_str(),
-        tag, block_addr, set_index
-      );   
-    }
-  }
-
   unsigned invalid_line = (unsigned)-1;
   unsigned valid_line = (unsigned)-1;
   unsigned long long valid_timestamp = (unsigned)-1;
   unsigned max_recordes_in_mshr = (unsigned) - 1;
-  unsigned cnt_update_valid_timestamp = 0;
 
   bool all_reserved = true;
   bool all_miss = true;
@@ -470,12 +493,18 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
     repl_candidates[way].first  = (unsigned long long) - 1;
     repl_candidates[way].second = false;
   }
+  bool cache_hit = false;
+  bool has_unreserved_line = false;
   
   for (unsigned way = 0; way < m_config.m_assoc; way++) {
     unsigned index = set_index * m_config.m_assoc + way;
     cache_block_t *line = m_lines[index]; 
 
     if (line->m_tag == tag) {
+      cache_hit = true;
+      if (m_config.m_replacement_policy == SRRIP) {
+        line->set_rrpv(0);
+      }
       all_miss = false;
       if (line->get_status(mask) == RESERVED) {
         idx = index;
@@ -488,39 +517,11 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
           idx = index;
           return HIT;
         } else {
-          idx = index;
-          if (DTRACE(CACHE_MISS)) {
-            if (mf != nullptr) {
-              fprintf(Trace::out, "%llu: [%s][%s] at address: %llu\n", 
-                (unsigned long long)time, 
-                mem_access_type_str(mf->get_access_type()),
-                cache_request_status_str(SECTOR_MISS),
-                (unsigned long long)addr);
-            } else {
-              fprintf(Trace::out, "%llu: [null mf][%s] at address: %llu\n", 
-                (unsigned long long)time, 
-                cache_request_status_str(SECTOR_MISS),
-                (unsigned long long)addr);              
-            } 
-          }
+          idx = index;          
           return SECTOR_MISS;
         }
       } else if (line->is_valid_line() && line->get_status(mask) == INVALID) {
         idx = index;
-        if (DTRACE(CACHE_MISS)) {
-          if (mf != nullptr) {
-            fprintf(Trace::out, "%llu: invalid line causes [%s][%s] at address: %#llx\n", 
-              (unsigned long long)time, 
-              mem_access_type_str(mf->get_access_type()),
-              cache_request_status_str(SECTOR_MISS),
-              (unsigned long long)addr);
-          } else {
-            fprintf(Trace::out, "%llu: invalid line causes [null mf][%s] at address: %#llx\n", 
-              (unsigned long long)time, 
-              cache_request_status_str(SECTOR_MISS),
-              (unsigned long long)addr);
-          }
-        }
         return SECTOR_MISS;
       } else {
         assert(line->get_status(mask) == INVALID);
@@ -528,7 +529,30 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
       }
     } // cacheline hit
 
+    if (DTRACE(DEBUG_SRRIP)) {
+      if (m_config.m_replacement_policy == SRRIP) {
+        if (line->get_rrpv() == 3) {
+          float dirty_line_percentage =
+              ((float)m_dirty / (m_config.m_nset * m_config.m_assoc)) * 100;
+          if (line->is_reserved_line()) {
+            fprintf(Trace::out, "%llu Failed evicting m_lines[index:%#x]->get_rrpv = 3 "
+              "because line->is_reversed_line\n", time, index);
+          } else if (line->is_modified_line() && 
+            (dirty_line_percentage < m_config.m_wr_percent)) {
+            fprintf(Trace::out, "%llu Failed evicting m_lines[index:%#x]->get_rrpv = 3 "
+              "because line->is_modified_line and "
+              "dirty_line_percentage:%f < m_config.m_wr_percent:%u\n", 
+              time, index, dirty_line_percentage, m_config.m_wr_percent);
+          } else if (line->is_invalid_line()) {
+            fprintf(Trace::out, "%llu Failed evicting m_lines[index:%#x]->get_rrpv = 3 "
+              "but line->is_invalid_line\n", time, index);
+          }
+        }
+      }
+    }
+
     if (!line->is_reserved_line()) {
+      has_unreserved_line = true;
       // percentage of dirty lines in the cache
       // number of dirty lines / total lines in the cache
       float dirty_line_percentage =
@@ -549,34 +573,22 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
           if (!repl_candidates[way].second) {
             repl_candidates_no_record_in_mshr.push_back(
               std::pair<unsigned long long, unsigned>(repl_candidates[way].first, index));
-              if (DTRACE(MSHR_CORRELATED_REPLACEMENT)) {
-                fprintf(Trace::out, "%llu %s repl_candidates_no_record_in_mshr.push_back"
-                  "(timestamp:%#llx, index:%#x);\n",
-                  time, str_cache_name.c_str(), repl_candidates[way].first, index);
-              }
           } else {
             repl_candidates_recorded_in_mshr.push_back(
               std::pair<unsigned, unsigned>(line->get_recorded_times_in_mshr(), index));
           }
 
           // valid line : keep track of most appropriate replacement candidate
-          if (m_config.m_replacement_policy == LRU) {
-            // Reuse LRU replacement policy in case when
+          if (m_config.m_replacement_policy == SRRIP) {     
+            if (line->get_rrpv() == 3) {
+              valid_line = index;
+            } else {
+              // Continue checking if other line would reach here and satisfy rrpv=3
+            }
+          } else if (m_config.m_replacement_policy == LRU) {
             if (line->get_last_access_time() < valid_timestamp) {
               valid_timestamp = line->get_last_access_time();
               valid_line = index;
-
-              if (DTRACE(TAG_PROBE_SPECIFIC_ADDR)) {
-                if (time == 55267) { // for debug backprop
-                  fprintf(Trace::out, "%llu %s got replace candidate lines[index:%#x] "
-                    "was_recorded_in_mshr = %u\n",
-                    time, str_cache_name.c_str(), index, 
-                    line->was_recorded_in_mshr());
-                }       
-              }
-              // If cnt below > 1, it indicates valid_timestamp is used as a load.
-              // That is, LRU works. (Exactly)
-              cnt_update_valid_timestamp++;
             }
           } else if (m_config.m_replacement_policy == FIFO) {
             if (line->get_alloc_time() < valid_timestamp) {
@@ -589,28 +601,30 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
     } // if (!line->is_reserved_line())
   } // for (unsigned way = 0; way < m_config.m_assoc; way++)
 
+  if (cache_hit) {
+    assert(all_sector_valid == false);
+  }
+  if (m_config.m_replacement_policy == SRRIP) {
+    if (all_reserved) {
+      assert(m_config.m_alloc_policy == ON_MISS);
+      return RESERVATION_FAIL;  // miss and not enough space in cache to allocate on miss
+    }
+    if (invalid_line != (unsigned) - 1) {
+      idx = invalid_line;
+    } else if (valid_line != (unsigned) - 1) {
+      idx = valid_line;
+    } else {
+      inc_rrpv_for_one_set(set_index);
+    }
+    return MISS;
+  }
+
   if (all_reserved) {
     assert(m_config.m_alloc_policy == ON_MISS);
-    return RESERVATION_FAIL;  // miss and not enough space in cache to allocate
-                              // on miss
+    return RESERVATION_FAIL;  // miss and not enough space in cache to allocate on miss
   }
   
   assert(all_miss == all_sector_valid);
-  if (all_miss) {    
-    if (DTRACE(TAG_PROBE_FOUND_ALL_MISS)) {
-      std::string check_tag_block_addr_eq_info = "tag and block_addr ";
-      if (tag != block_addr) {
-        check_tag_block_addr_eq_info += "differ";
-      } else {
-        check_tag_block_addr_eq_info += "match";
-      }
-      fprintf(Trace::out, "%llu %s missed at addr %#llx. "
-        "{tag:%#llx set_index:%u, block_addr:%#llx} %s\n", 
-        time, str_cache_name.c_str(), addr,
-        tag, set_index, block_addr,
-        check_tag_block_addr_eq_info.c_str());
-    }
-  }
 
   if (invalid_line != (unsigned) - 1) {
     idx = invalid_line;
@@ -623,89 +637,25 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
           if (repl_candidates_no_record_in_mshr[i].first < max_timestamp) { // Just use LRU
             max_timestamp = repl_candidates_no_record_in_mshr[i].first;
             idx = repl_candidates_no_record_in_mshr[i].second;
-            if (DTRACE(MSHR_CORRELATED_REPLACEMENT)) {
-              fprintf(Trace::out, "%llu %s got repl cand idx:%#x "
-                "from repl_candidates_no_record_in_mshr. timestamp = %#llx\n",
-                time, str_cache_name.c_str(), idx, max_timestamp
-              );
-            }
-          } else {
-            if (DTRACE(MSHR_CORRELATED_REPLACEMENT)) {
-              fprintf(Trace::out, "%llu %s repl_candidates_no_record_in_mshr[%u] "
-                "timestamp:%#llx >= max_timestamp:%#llx. ---> bypass this cand\n",
-                time, str_cache_name.c_str(), i, 
-                repl_candidates_no_record_in_mshr[i].first, max_timestamp
-              );
-            }
           }
         }
-        if (DTRACE(MSHR_CORRELATED_REPLACEMENT)) {
-          fprintf(Trace::out, "%llu %s finally got repl cand idx:%#x "
-            "from repl_candidates_no_record_in_mshr. timestamp = %#llx\n",
-            time, str_cache_name.c_str(), idx, max_timestamp
-          );
-        }
       } else {
-        // All candidates were recorded in MSHR. valid_line fetched here was generated by LRU        
-        // if (m_config.m_replacement_policy == MSHR_M) {
-        //   assert(m_config.m_mshr_disable == 'F');
-        //   if (repl_candidates_recorded_in_mshr.size()) {
-        //     for (size_t i = 0; i < repl_candidates_recorded_in_mshr.size(); i++)
-        //     {
-        //       if (repl_candidates_recorded_in_mshr[i].first < max_recordes_in_mshr) {
-        //         max_recordes_in_mshr = repl_candidates_recorded_in_mshr[i].first;
-        //         valid_line = repl_candidates_recorded_in_mshr[i].second;
-        //       }
-        //     }
-        //   } else {
-        //     idx = valid_line;
-        //   }
-        // } else { // {LRU, FIFO} generated previously
-        //   idx = valid_line; 
-        // }
-        // 1-15 further opt 17:20 Just try
         assert(repl_candidates_recorded_in_mshr.size());
         unsigned index_gen_use_mshr_m_rep = (unsigned) - 1;
         for (size_t i = 0; i < repl_candidates_recorded_in_mshr.size(); i++) {
           if (repl_candidates_recorded_in_mshr[i].first < max_recordes_in_mshr) {
-            max_recordes_in_mshr = repl_candidates_recorded_in_mshr[i].first;
+            max_recordes_in_mshr     = repl_candidates_recorded_in_mshr[i].first;
             index_gen_use_mshr_m_rep = repl_candidates_recorded_in_mshr[i].second;
           }
         }
-        // 1st try
-        if (index_gen_use_mshr_m_rep != ((unsigned) - 1)) {
-          idx = index_gen_use_mshr_m_rep;
-        } else {
-          if (DTRACE(MSHR_CORRELATED_REPLACEMENT) || 
-              DTRACE(MSHR_CORRELATED_REPL_CORNER_CASE)) {
-            fprintf(Trace::out, "%llu %s hit unexpected case of idx:%#lx generated by mshr_m\n",
-              time, str_cache_name.c_str(), index_gen_use_mshr_m_rep);
-          }
-          idx = valid_line;
-        }
-        // 2nd try
         assert(index_gen_use_mshr_m_rep != ((unsigned) - 1));
         idx = index_gen_use_mshr_m_rep;
-        // Following is always correct.
-        // idx = valid_line;  // default LRU generated index
       }
     } else {
       idx = valid_line;
     }
-
-    // 1-15 Commented and use logic above
-    // idx = valid_line;
-    if (all_miss) {
-      if (DTRACE(REPLACE_LINE_UNDER_ALL_MISS)) {
-        fprintf(Trace::out, "%llu %s missed addr %#llx, "
-          "and selected the oldest line:%#x for eviction\n",
-          time, str_cache_name.c_str(), addr, idx
-        );
-      }
-    }    
   } else {
-    abort();  // if an unreserved block exists, it is either invalid or
-                  // replaceable
+    abort();  // if an unreserved block exists, it is either invalid or replaceable
   }
 
   return MISS;
@@ -727,7 +677,7 @@ enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
   m_access++;
   is_used = true;
   shader_cache_access_log(m_core_id, m_type_id, 0);  // log accesses to cache
-  enum cache_request_status status = probe(addr, idx, mf, mf->is_write(), time);
+  enum cache_request_status status = probe("tag_array::access", addr, idx, mf, mf->is_write(), time);
   switch (status) {
     case HIT_RESERVED:
       m_pending_hit++;
@@ -794,7 +744,7 @@ void tag_array::fill(new_addr_type addr, unsigned time,
                      mem_access_byte_mask_t byte_mask, bool is_write) {
   // assert( m_config.m_alloc_policy == ON_FILL );
   unsigned idx;
-  enum cache_request_status status = probe(addr, idx, mask, is_write, time);
+  enum cache_request_status status = probe("tag_array::fill", addr, idx, mask, is_write, time);
 
   if (status == RESERVATION_FAIL) {
     return;
@@ -3639,8 +3589,8 @@ enum cache_request_status read_only_cache::access(
   assert(!mf->get_is_write());
   new_addr_type block_addr = m_config.block_addr(addr);
   unsigned cache_index = (unsigned)-1;
-  enum cache_request_status status =
-      m_tag_array->probe(block_addr, cache_index, mf, mf->is_write(), time);
+  enum cache_request_status status = m_tag_array->probe(
+    "read_only_cache::access", block_addr, cache_index, mf, mf->is_write(), time);
   enum cache_request_status cache_status = RESERVATION_FAIL;
 
   if (status == HIT) {
@@ -3742,16 +3692,23 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
                                              unsigned long long time,
                                              std::list<cache_event> &events) {
   
-  // std::cerr << "[DEBUG] " << m_config.get_cache_name() << 
-  //   " mf->get_data_size() = " << mf->get_data_size() << 
-  //   ", m_config.get_atom_sz() = " << m_config.get_atom_sz() << std::endl;
-
   assert(mf->get_data_size() <= m_config.get_atom_sz());
   bool wr = mf->get_is_write();
   new_addr_type block_addr = m_config.block_addr(addr);
   unsigned cache_index = (unsigned)-1;
-  enum cache_request_status probe_status =
-      m_tag_array->probe(block_addr, cache_index, mf, mf->is_write(), time, true);
+  enum cache_request_status probe_status = m_tag_array->probe(
+    "data_cache::access", block_addr, cache_index, mf, mf->is_write(), time, true);
+  
+  // SRRIP-specific logic
+  if (m_config.m_replacement_policy == SRRIP) {
+    while (cache_index == ((unsigned) - 1) && 
+      probe_status == cache_request_status::MISS) {
+
+      probe_status = m_tag_array->probe(
+        "SRRIP-specific while data_cache::access", block_addr, cache_index, mf, mf->is_write(), time, true);
+    }
+  }
+
   enum cache_request_status access_status =
       process_tag_probe(wr, probe_status, addr, cache_index, mf, time, events);
   m_stats.inc_stats(mf->get_access_type(),

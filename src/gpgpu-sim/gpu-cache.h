@@ -68,7 +68,7 @@ enum mshr_config_t {
   NUM_MSHR_CONFIGS
 };
 
-enum replacement_policy_t { LRU, FIFO };
+enum replacement_policy_t { LRU, FIFO, SRRIP };
 
 enum write_policy_t {
   READ_ONLY,
@@ -223,6 +223,9 @@ struct cache_block_t {
   virtual mem_access_byte_mask_t get_dirty_byte_mask() = 0;
   virtual mem_access_sector_mask_t get_dirty_sector_mask() = 0;
   virtual unsigned long long get_last_access_time() = 0;
+  virtual unsigned get_rrpv() = 0;
+  virtual void set_rrpv(unsigned rrpv) = 0;
+  virtual void inc_rrpv() = 0;
   virtual void set_last_access_time(unsigned long long time,
                                     mem_access_sector_mask_t sector_mask) = 0;
   virtual unsigned long long get_alloc_time() = 0;
@@ -249,8 +252,9 @@ struct cache_block_t {
 struct line_cache_block : public cache_block_t {
   line_cache_block() {
     m_alloc_time = 0;
-    m_fill_time = 0;
     m_last_access_time = 0;
+    m_fill_time = 0;
+    m_rrpv = 3;
     m_status = INVALID;
     m_ignore_on_fill_status = false;
     m_set_modified_on_fill = false;
@@ -264,6 +268,7 @@ struct line_cache_block : public cache_block_t {
     m_alloc_time = time;
     m_last_access_time = time;
     m_fill_time = 0;
+    m_rrpv = 2;
     m_status = RESERVED;
     m_ignore_on_fill_status = false;
     m_set_modified_on_fill = false;
@@ -272,9 +277,6 @@ struct line_cache_block : public cache_block_t {
   }
   virtual void fill(unsigned time, mem_access_sector_mask_t sector_mask,
                     mem_access_byte_mask_t byte_mask) {
-    // if(!m_ignore_on_fill_status)
-    //	assert( m_status == RESERVED );
-
     m_status = m_set_modified_on_fill ? MODIFIED : VALID;
 
     if (m_set_readable_on_fill) {
@@ -285,6 +287,7 @@ struct line_cache_block : public cache_block_t {
     }
 
     m_fill_time = time;
+    m_rrpv = 2;
   }
   virtual bool is_invalid_line() { return m_status == INVALID; }
   virtual bool is_valid_line() { return m_status == VALID; }
@@ -322,10 +325,15 @@ struct line_cache_block : public cache_block_t {
   virtual unsigned long long get_last_access_time() {
     return m_last_access_time;
   }
+  virtual unsigned get_rrpv() { return m_rrpv; }
+
   virtual void set_last_access_time(unsigned long long time,
                                     mem_access_sector_mask_t sector_mask) {
     m_last_access_time = time;
   }
+  virtual void set_rrpv(unsigned rrpv) { m_rrpv = rrpv; }
+  virtual void inc_rrpv() { m_rrpv++; }
+
   virtual unsigned long long get_alloc_time() { return m_alloc_time; }
   virtual void set_ignore_on_fill(bool m_ignore,
                                   mem_access_sector_mask_t sector_mask) {
@@ -360,6 +368,7 @@ struct line_cache_block : public cache_block_t {
   unsigned long long m_alloc_time;
   unsigned long long m_last_access_time;
   unsigned long long m_fill_time;
+  unsigned m_rrpv;
   cache_block_state m_status;
   bool m_ignore_on_fill_status;
   bool m_set_modified_on_fill;
@@ -385,6 +394,7 @@ struct sector_cache_block : public cache_block_t {
     }
     m_line_alloc_time = 0;
     m_line_last_access_time = 0;
+    m_rrpv = 3;
     m_line_fill_time = 0;
     m_dirty_byte_mask.reset();
   }
@@ -417,6 +427,7 @@ struct sector_cache_block : public cache_block_t {
     // set line stats
     m_line_alloc_time       = time;  // only set this for the first allocated sector
     m_line_last_access_time = time;
+    m_rrpv = 2;
     m_line_fill_time        = 0;            // no-used var.
   }
 
@@ -429,8 +440,7 @@ struct sector_cache_block : public cache_block_t {
     m_sector_alloc_time[sidx] = time;        // no-used var.
     m_last_sector_access_time[sidx] = time;  // no-used var.
     m_sector_fill_time[sidx] = 0;            // no-used var.
-    if (m_status[sidx] == MODIFIED)  // this should be the case only for
-                                     // fetch-on-write policy //TO DO
+    if (m_status[sidx] == MODIFIED)  // this should be the case only for fetch-on-write policy //TO DO
       m_set_modified_on_fill[sidx] = true;
     else
       m_set_modified_on_fill[sidx] = false;
@@ -444,7 +454,8 @@ struct sector_cache_block : public cache_block_t {
 
     // set line stats
     m_line_last_access_time = time;
-    m_line_fill_time = 0;
+    m_rrpv = 2;
+    m_line_fill_time = 0;    
   }
 
   virtual void fill(unsigned time, mem_access_sector_mask_t sector_mask,
@@ -465,6 +476,7 @@ struct sector_cache_block : public cache_block_t {
 
     m_sector_fill_time[sidx] = time;
     m_line_fill_time = time;
+    m_rrpv = 2;
   }
   virtual bool is_invalid_line() {
     // all the sectors should be invalid
@@ -525,6 +537,7 @@ struct sector_cache_block : public cache_block_t {
   virtual unsigned long long get_last_access_time() {
     return m_line_last_access_time;
   }
+  virtual unsigned get_rrpv() { return m_rrpv; }
 
   virtual void set_last_access_time(unsigned long long time,
                                     mem_access_sector_mask_t sector_mask) {
@@ -533,6 +546,8 @@ struct sector_cache_block : public cache_block_t {
     m_last_sector_access_time[sidx] = time;
     m_line_last_access_time = time;
   }
+  virtual void set_rrpv(unsigned rrpv) { m_rrpv = rrpv; }
+  virtual void inc_rrpv() { m_rrpv++; }
 
   virtual unsigned long long get_alloc_time() { return m_line_alloc_time; }
 
@@ -603,9 +618,11 @@ struct sector_cache_block : public cache_block_t {
   bool m_ignore_on_fill_status[SECTOR_CHUNK_SIZE];  
   //////////////////////////////////////////////////////////////
 
-  // replacement_policy related control info.
+  // LRU replacement_policy related control info.
   unsigned m_line_alloc_time;
   unsigned m_line_last_access_time;
+  // Static Re-reference Interval Prediction (SRRIP) related control info.
+  unsigned m_rrpv;
   
   // MetaData
   cache_block_state m_status[SECTOR_CHUNK_SIZE];  
@@ -725,6 +742,10 @@ class cache_config {
         exit_parse_error();
     }
     switch (rp) {
+      case 'R':
+        m_replacement_policy = SRRIP;
+        rp_str = "SRRIP";
+        break;      
       case 'L':
         m_replacement_policy = LRU;
         rp_str = "LRU";
@@ -1158,30 +1179,25 @@ class tag_array {
   tag_array(cache_config &config, int core_id, int type_id);
   ~tag_array();
 
-  // enum cache_request_status probe(new_addr_type addr, unsigned &idx,
-  //                                 mem_fetch *mf, bool is_write,
-  //                                 unsigned long long time,
-  //                                 bool probe_mode = false) const;
-  // enum cache_request_status probe(new_addr_type addr, unsigned &idx,
-  //                                 mem_access_sector_mask_t mask, bool is_write,
-  //                                 unsigned long long time,
-  //                                 bool probe_mode = false,
-  //                                 mem_fetch *mf = NULL) const;
   // addr is block_addr
-  enum cache_request_status probe(new_addr_type addr, unsigned &idx,
+  enum cache_request_status probe(const std::string& caller,
+                                  new_addr_type addr, unsigned &idx,
                                   mem_fetch *mf, bool is_write,
                                   unsigned long long time,
                                   bool probe_mode = false);
-  enum cache_request_status probe(new_addr_type addr, unsigned &idx,
+  enum cache_request_status probe(const std::string& caller,
+                                  new_addr_type addr, unsigned &idx,
                                   mem_access_sector_mask_t mask, bool is_write,
                                   unsigned long long time,
                                   bool probe_mode = false,
-                                  mem_fetch *mf = NULL);  
+                                  mem_fetch *mf = NULL);
   enum cache_request_status access(new_addr_type addr, unsigned time,
                                    unsigned &idx, mem_fetch *mf);
   enum cache_request_status access(new_addr_type addr, unsigned time,
                                    unsigned &idx, bool &wb,
                                    evicted_block_info &evicted, mem_fetch *mf);
+  void inc_rrpv_for_one_set(unsigned set_index);
+  bool already_has_max_rrpv_in_one_set(unsigned set_index);
 
   void fill(new_addr_type addr, unsigned time, mem_fetch *mf, bool is_write);
   void fill(unsigned index, unsigned time, mem_fetch *mf);
