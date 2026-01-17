@@ -355,17 +355,25 @@ void tag_array::update_cache_parameters(cache_config &config) {
 
 tag_array::tag_array(cache_config &config, int core_id, int type_id)
     : m_config(config) {
-  // assert( m_config.m_write_policy == READ_ONLY ); Old assert
   unsigned cache_lines_num = config.get_max_num_lines();
   m_lines = new cache_block_t *[cache_lines_num];
   if (config.m_cache_type == NORMAL) {
-    for (unsigned i = 0; i < cache_lines_num; ++i)
+    for (unsigned i = 0; i < cache_lines_num; ++i) {
       m_lines[i] = new line_cache_block();
+      unsigned max_rrpv_val = (1 << m_config.m_rrpv_bits) - 1;
+      m_lines[i]->set_rrpv(max_rrpv_val); // for SRRIP
+      m_lines[i]->set_max_rrpv(max_rrpv_val); // for SRRIP
+    }      
   } else if (config.m_cache_type == SECTOR) {
-    for (unsigned i = 0; i < cache_lines_num; ++i)
+    for (unsigned i = 0; i < cache_lines_num; ++i) {
       m_lines[i] = new sector_cache_block();
-  } else
+      unsigned max_rrpv_val = (1 << m_config.m_rrpv_bits) - 1;
+      m_lines[i]->set_rrpv(max_rrpv_val); // for SRRIP
+      m_lines[i]->set_max_rrpv(max_rrpv_val); // for SRRIP
+    }      
+  } else {
     assert(0);
+  }    
 
   init(core_id, type_id);
 }
@@ -419,7 +427,7 @@ void tag_array::inc_rrpv_for_one_set(unsigned set_index) {
   for (unsigned way = 0; way < m_config.m_assoc; way++) {
     unsigned index = set_index * m_config.m_assoc + way;
     cache_block_t *line = m_lines[index];
-    if (line->get_rrpv() == 3) {
+    if (line->get_rrpv() == line->get_max_rrpv()) {
       // do nothing
       if (DTRACE(DEBUG_SRRIP)) {
         fprintf(Trace::out, "m_lines[index:%#x]->get_rrpv = 3 "
@@ -428,14 +436,14 @@ void tag_array::inc_rrpv_for_one_set(unsigned set_index) {
     } else {
       line->inc_rrpv();
     }
-    assert(line->get_rrpv() <= 3);
+    assert(line->get_rrpv() <= line->get_max_rrpv());
   }
 }
 bool tag_array::already_has_max_rrpv_in_one_set(unsigned set_index) {
   for (unsigned way = 0; way < m_config.m_assoc; way++) {
     unsigned index = set_index * m_config.m_assoc + way;
     cache_block_t *line = m_lines[index];
-    if (line->get_rrpv() == 3) {
+    if (line->get_rrpv() == line->get_max_rrpv()) {
       return true;
     }    
   }
@@ -531,7 +539,7 @@ enum cache_request_status tag_array::probe(const std::string& caller,
 
     if (DTRACE(DEBUG_SRRIP)) {
       if (m_config.m_replacement_policy == SRRIP) {
-        if (line->get_rrpv() == 3) {
+        if (line->get_rrpv() == line->get_max_rrpv()) {
           float dirty_line_percentage =
               ((float)m_dirty / (m_config.m_nset * m_config.m_assoc)) * 100;
           if (line->is_reserved_line()) {
@@ -580,7 +588,7 @@ enum cache_request_status tag_array::probe(const std::string& caller,
 
           // valid line : keep track of most appropriate replacement candidate
           if (m_config.m_replacement_policy == SRRIP) {     
-            if (line->get_rrpv() == 3) {
+            if (line->get_rrpv() == line->get_max_rrpv()) {
               valid_line = index;
             } else {
               // Continue checking if other line would reach here and satisfy rrpv=3

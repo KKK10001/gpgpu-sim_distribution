@@ -259,6 +259,9 @@ void memory_config::reg_options(class OptionParser *opp) {
                          "per-GPC shared L2 MSHR config "
                          "<mshr_disable>",
                          "none");
+  option_parser_register(opp, "-gpgpu_cache:l2_rrpv", OPT_UINT32,
+                         &m_L2_config.m_rrpv_bits,
+                         "per-GPC shared L2 cache RRPV bits", "2");                         
 
   option_parser_register(
       opp, "-disable_wr_merge", OPT_BOOL,
@@ -357,6 +360,9 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "per-shader L1T MSHR config "
                          "<mshr_disable>",
                          "none");
+  option_parser_register(opp, "-gpgpu_cache:l1t_rrpv", OPT_UINT32,
+                         &m_L1T_config.m_rrpv_bits,
+                         "per-shader L1T cache RRPV bits", "2");
               
   option_parser_register(
       opp, "-gpgpu_const_cache:l1", OPT_CSTR, &m_L1C_config.m_config_string,
@@ -369,6 +375,9 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "per-shader L1C MSHR config "
                          "<mshr_disable>",
                          "none");
+  option_parser_register(opp, "-gpgpu_cache:l1c_rrpv", OPT_UINT32,
+                         &m_L1C_config.m_rrpv_bits,
+                         "per-shader L1C cache RRPV bits", "2");
       
   option_parser_register(
       opp, "-gpgpu_cache:il1", OPT_CSTR, &m_L1I_config.m_config_string,
@@ -381,6 +390,9 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "per-shader L1I MSHR config "
                          "<mshr_disable>",
                          "none");
+  option_parser_register(opp, "-gpgpu_cache:l1i_rrpv", OPT_UINT32,
+                         &m_L1I_config.m_rrpv_bits,
+                         "per-shader L1I cache RRPV bits", "2");
 
   option_parser_register(opp, "-gpgpu_cache:dl1", OPT_CSTR,
                          &m_L1D_config.m_config_string,
@@ -394,6 +406,9 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "per-shader L1D MSHR config "
                          "<mshr_disable>",
                          "none");
+  option_parser_register(opp, "-gpgpu_cache:l1d_rrpv", OPT_UINT32,
+                         &m_L1D_config.m_rrpv_bits,
+                         "per-shader L1D cache RRPV bits", "2");
 
   option_parser_register(opp, "-gpgpu_l1_cache_write_ratio", OPT_UINT32,
                          &m_L1D_config.m_wr_percent, "L1D write ratio", "0");

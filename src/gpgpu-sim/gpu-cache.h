@@ -225,6 +225,8 @@ struct cache_block_t {
   virtual unsigned long long get_last_access_time() = 0;
   virtual unsigned get_rrpv() = 0;
   virtual void set_rrpv(unsigned rrpv) = 0;
+  virtual void set_max_rrpv(unsigned rrpv) = 0;
+  virtual unsigned get_max_rrpv() = 0;
   virtual void inc_rrpv() = 0;
   virtual void set_last_access_time(unsigned long long time,
                                     mem_access_sector_mask_t sector_mask) = 0;
@@ -254,7 +256,6 @@ struct line_cache_block : public cache_block_t {
     m_alloc_time = 0;
     m_last_access_time = 0;
     m_fill_time = 0;
-    m_rrpv = 3;
     m_status = INVALID;
     m_ignore_on_fill_status = false;
     m_set_modified_on_fill = false;
@@ -268,7 +269,7 @@ struct line_cache_block : public cache_block_t {
     m_alloc_time = time;
     m_last_access_time = time;
     m_fill_time = 0;
-    m_rrpv = 2;
+    m_rrpv = get_max_rrpv(); // for SRRIP 3'b111
     m_status = RESERVED;
     m_ignore_on_fill_status = false;
     m_set_modified_on_fill = false;
@@ -287,7 +288,7 @@ struct line_cache_block : public cache_block_t {
     }
 
     m_fill_time = time;
-    m_rrpv = 2;
+    m_rrpv = (get_max_rrpv() >> 1) + 1; // for SRRIP 3'b111->3'b100
   }
   virtual bool is_invalid_line() { return m_status == INVALID; }
   virtual bool is_valid_line() { return m_status == VALID; }
@@ -332,6 +333,8 @@ struct line_cache_block : public cache_block_t {
     m_last_access_time = time;
   }
   virtual void set_rrpv(unsigned rrpv) { m_rrpv = rrpv; }
+  virtual void set_max_rrpv(unsigned rrpv) { m_max_rrpv = rrpv; }
+  virtual unsigned get_max_rrpv() { return m_max_rrpv; }
   virtual void inc_rrpv() { m_rrpv++; }
 
   virtual unsigned long long get_alloc_time() { return m_alloc_time; }
@@ -369,6 +372,7 @@ struct line_cache_block : public cache_block_t {
   unsigned long long m_last_access_time;
   unsigned long long m_fill_time;
   unsigned m_rrpv;
+  unsigned m_max_rrpv;
   cache_block_state m_status;
   bool m_ignore_on_fill_status;
   bool m_set_modified_on_fill;
@@ -394,10 +398,9 @@ struct sector_cache_block : public cache_block_t {
     }
     m_line_alloc_time = 0;
     m_line_last_access_time = 0;
-    m_rrpv = 3;
     m_line_fill_time = 0;
     m_dirty_byte_mask.reset();
-  }
+  }  
 
   virtual void allocate(new_addr_type tag, new_addr_type block_addr,
                         unsigned time, mem_access_sector_mask_t sector_mask) {
@@ -427,7 +430,7 @@ struct sector_cache_block : public cache_block_t {
     // set line stats
     m_line_alloc_time       = time;  // only set this for the first allocated sector
     m_line_last_access_time = time;
-    m_rrpv = 2;
+    m_rrpv = get_max_rrpv(); // for SRRIP 3'b111
     m_line_fill_time        = 0;            // no-used var.
   }
 
@@ -454,7 +457,7 @@ struct sector_cache_block : public cache_block_t {
 
     // set line stats
     m_line_last_access_time = time;
-    m_rrpv = 2;
+    m_rrpv = get_max_rrpv(); // for SRRIP 3'b111
     m_line_fill_time = 0;    
   }
 
@@ -476,7 +479,7 @@ struct sector_cache_block : public cache_block_t {
 
     m_sector_fill_time[sidx] = time;
     m_line_fill_time = time;
-    m_rrpv = 2;
+    m_rrpv = (get_max_rrpv() >> 1) + 1; // for SRRIP 3'b111->3'b100
   }
   virtual bool is_invalid_line() {
     // all the sectors should be invalid
@@ -547,6 +550,8 @@ struct sector_cache_block : public cache_block_t {
     m_line_last_access_time = time;
   }
   virtual void set_rrpv(unsigned rrpv) { m_rrpv = rrpv; }
+  virtual void set_max_rrpv(unsigned rrpv) { m_max_rrpv = rrpv; }
+  virtual unsigned get_max_rrpv() { return m_max_rrpv; }  
   virtual void inc_rrpv() { m_rrpv++; }
 
   virtual unsigned long long get_alloc_time() { return m_line_alloc_time; }
@@ -623,6 +628,7 @@ struct sector_cache_block : public cache_block_t {
   unsigned m_line_last_access_time;
   // Static Re-reference Interval Prediction (SRRIP) related control info.
   unsigned m_rrpv;
+  unsigned m_max_rrpv;
   
   // MetaData
   cache_block_state m_status[SECTOR_CHUNK_SIZE];  
@@ -1047,6 +1053,7 @@ class cache_config {
   char *m_config_stringPrefShared;
   FuncCache cache_status;  
   unsigned m_wr_percent;
+  unsigned m_rrpv_bits;
   write_allocate_policy_t get_write_allocate_policy() {
     return m_write_alloc_policy;
   }
