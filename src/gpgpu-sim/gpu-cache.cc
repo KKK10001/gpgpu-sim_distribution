@@ -322,7 +322,9 @@ unsigned cache_config::hash_function(new_addr_type addr, unsigned m_nset,
 }
 
 void l2_cache_config::init(linear_to_raw_address_translation *address_mapping) {
-  cache_config::init(m_config_string, m_mshr_config_string, FuncCachePreferNone, "L2");
+  cache_config::init(
+    m_config_string, m_mshr_config_string, m_rrpv_config_string, 
+    FuncCachePreferNone, "L2");
   m_address_mapping = address_mapping;
 }
 
@@ -413,14 +415,15 @@ void tag_array::remove_pending_line(mem_fetch *mf) {
   }
 }
 
-enum cache_request_status tag_array::probe(const std::string& caller,
+enum cache_request_status tag_array::probe(bool& force_using_lru,
+                                           const std::string& caller,
                                            new_addr_type addr, unsigned &idx,
                                            mem_fetch *mf, bool is_write,
                                            unsigned long long time,
                                            bool probe_mode) {
   mem_access_sector_mask_t mask = mf->get_access_sector_mask();
   std::string final_caller = caller + "-> tag_array::probe";
-  return probe(final_caller.c_str(), addr, idx, mask, is_write, time, probe_mode, mf);
+  return probe(force_using_lru, final_caller.c_str(), addr, idx, mask, is_write, time, probe_mode, mf);
 }
 
 void tag_array::inc_rrpv_for_one_set(unsigned set_index) {
@@ -450,7 +453,8 @@ bool tag_array::already_has_max_rrpv_in_one_set(unsigned set_index) {
   return false;
 }
 
-enum cache_request_status tag_array::probe(const std::string& caller,
+enum cache_request_status tag_array::probe(bool& force_using_lru,
+                                           const std::string& caller,
                                            new_addr_type addr, unsigned &idx,
                                            mem_access_sector_mask_t mask,
                                            bool is_write, 
@@ -510,7 +514,7 @@ enum cache_request_status tag_array::probe(const std::string& caller,
 
     if (line->m_tag == tag) {
       cache_hit = true;
-      if (m_config.m_replacement_policy == SRRIP) {
+      if (m_config.m_replacement_policy == SRRIP && !force_using_lru) {
         line->set_rrpv(0);
       }
       all_miss = false;
@@ -538,7 +542,7 @@ enum cache_request_status tag_array::probe(const std::string& caller,
     } // cacheline hit
 
     if (DTRACE(DEBUG_SRRIP)) {
-      if (m_config.m_replacement_policy == SRRIP) {
+      if (m_config.m_replacement_policy == SRRIP && !force_using_lru) {
         if (line->get_rrpv() == line->get_max_rrpv()) {
           float dirty_line_percentage =
               ((float)m_dirty / (m_config.m_nset * m_config.m_assoc)) * 100;
@@ -587,11 +591,19 @@ enum cache_request_status tag_array::probe(const std::string& caller,
           }
 
           // valid line : keep track of most appropriate replacement candidate
-          if (m_config.m_replacement_policy == SRRIP) {     
+          if (m_config.m_replacement_policy == SRRIP && !force_using_lru) {
             if (line->get_rrpv() == line->get_max_rrpv()) {
               valid_line = index;
             } else {
               // Continue checking if other line would reach here and satisfy rrpv=3
+            }
+          } else if (m_config.m_replacement_policy == SRRIP && force_using_lru) {
+            if (line->get_last_access_time() < valid_timestamp) {
+              valid_timestamp = line->get_last_access_time();
+              valid_line = index;
+              if (line->get_rrpv() < line->get_max_rrpv()) {
+                line->inc_rrpv();
+              }
             }
           } else if (m_config.m_replacement_policy == LRU) {
             if (line->get_last_access_time() < valid_timestamp) {
@@ -612,7 +624,7 @@ enum cache_request_status tag_array::probe(const std::string& caller,
   if (cache_hit) {
     assert(all_sector_valid == false);
   }
-  if (m_config.m_replacement_policy == SRRIP) {
+  if (m_config.m_replacement_policy == SRRIP && !force_using_lru) {
     if (all_reserved) {
       assert(m_config.m_alloc_policy == ON_MISS);
       return RESERVATION_FAIL;  // miss and not enough space in cache to allocate on miss
@@ -622,7 +634,11 @@ enum cache_request_status tag_array::probe(const std::string& caller,
     } else if (valid_line != (unsigned) - 1) {
       idx = valid_line;
     } else {
-      inc_rrpv_for_one_set(set_index);
+      if (m_config.m_combined_rrpv_lru) {
+        force_using_lru = true;
+      } else {
+        inc_rrpv_for_one_set(set_index);
+      }
     }
     return MISS;
   }
@@ -685,7 +701,19 @@ enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
   m_access++;
   is_used = true;
   shader_cache_access_log(m_core_id, m_type_id, 0);  // log accesses to cache
-  enum cache_request_status status = probe("tag_array::access", addr, idx, mf, mf->is_write(), time);
+  bool force_using_lru = false;
+  enum cache_request_status status = 
+    probe(force_using_lru, "tag_array::access", addr, idx, mf, mf->is_write(), time);
+
+  // SRRIP-specific logic
+  if (m_config.m_replacement_policy == SRRIP) {    
+    while (idx == ((unsigned) - 1) && 
+      status == cache_request_status::MISS) {
+      status = probe(force_using_lru, "SRRIP-specific while tag_array::access", 
+        addr, idx, mf, mf->is_write(), time);
+    }
+  }
+    
   switch (status) {
     case HIT_RESERVED:
       m_pending_hit++;
@@ -752,7 +780,18 @@ void tag_array::fill(new_addr_type addr, unsigned time,
                      mem_access_byte_mask_t byte_mask, bool is_write) {
   // assert( m_config.m_alloc_policy == ON_FILL );
   unsigned idx;
-  enum cache_request_status status = probe("tag_array::fill", addr, idx, mask, is_write, time);
+  bool force_using_lru = false;
+  enum cache_request_status status = 
+    probe(force_using_lru, "tag_array::fill", addr, idx, mask, is_write, time);
+
+  // SRRIP-specific logic
+  if (m_config.m_replacement_policy == SRRIP) {    
+    while (idx == ((unsigned) - 1) && 
+      status == cache_request_status::MISS) {
+      status = probe(force_using_lru, "SRRIP-specific while tag_array::fill", 
+        addr, idx, mask, is_write, time);
+    }
+  }
 
   if (status == RESERVATION_FAIL) {
     return;
@@ -3597,8 +3636,9 @@ enum cache_request_status read_only_cache::access(
   assert(!mf->get_is_write());
   new_addr_type block_addr = m_config.block_addr(addr);
   unsigned cache_index = (unsigned)-1;
+  bool force_using_lru = true;
   enum cache_request_status status = m_tag_array->probe(
-    "read_only_cache::access", block_addr, cache_index, mf, mf->is_write(), time);
+    force_using_lru, "read_only_cache::access", block_addr, cache_index, mf, mf->is_write(), time);
   enum cache_request_status cache_status = RESERVATION_FAIL;
 
   if (status == HIT) {
@@ -3704,16 +3744,18 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
   bool wr = mf->get_is_write();
   new_addr_type block_addr = m_config.block_addr(addr);
   unsigned cache_index = (unsigned)-1;
+  bool force_using_lru = false;
   enum cache_request_status probe_status = m_tag_array->probe(
-    "data_cache::access", block_addr, cache_index, mf, mf->is_write(), time, true);
+    force_using_lru, "data_cache::access", block_addr, cache_index, mf, mf->is_write(), time, true);
   
   // SRRIP-specific logic
-  if (m_config.m_replacement_policy == SRRIP) {
+  if (m_config.m_replacement_policy == SRRIP) {    
     while (cache_index == ((unsigned) - 1) && 
       probe_status == cache_request_status::MISS) {
-
       probe_status = m_tag_array->probe(
-        "SRRIP-specific while data_cache::access", block_addr, cache_index, mf, mf->is_write(), time, true);
+        force_using_lru,
+        "SRRIP-specific while data_cache::access", 
+        block_addr, cache_index, mf, mf->is_write(), time, true);
     }
   }
 

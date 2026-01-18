@@ -677,7 +677,8 @@ class cache_config {
     m_is_streaming = false;
     m_wr_percent = 0;
   }
-  void init(char *config, char* mshr_config, FuncCache status, const char* cache_name = "") {
+  void init(char *config, char* mshr_config, char* rrpv_config, 
+    FuncCache status, const char* cache_name = "") {
     cache_status = status;
     m_cache_name = cache_name;
     assert(config);
@@ -689,6 +690,14 @@ class cache_config {
       "----------- %s mshr_config is below -----------\n "
       "m_mshr_disable = %c m_mshr_corr_repl = %c\n",
       cache_name, m_mshr_disable, m_mshr_corr_repl);
+
+    assert(rrpv_config);
+    [[maybe_unused]] int ntok_rrpv = 
+      sscanf(rrpv_config, "%u:%c", &m_rrpv_bits, &m_combined_rrpv_lru);
+    fprintf(Trace::out, 
+      "----------- %s rrpv_config is below -----------\n "
+      "m_rrpv_bits = %u m_combined_rrpv_lru = %c\n",
+      cache_name, m_rrpv_bits, m_combined_rrpv_lru);
 
     char ct, rp, wp, ap, mshr_type, wap;
 
@@ -1049,11 +1058,11 @@ class cache_config {
   }
   char *m_config_string;
   char *m_mshr_config_string;
+  char *m_rrpv_config_string;
   char *m_config_stringPrefL1;
   char *m_config_stringPrefShared;
   FuncCache cache_status;  
   unsigned m_wr_percent;
-  unsigned m_rrpv_bits;
   write_allocate_policy_t get_write_allocate_policy() {
     return m_write_alloc_policy;
   }
@@ -1104,6 +1113,11 @@ class cache_config {
   char m_mshr_corr_repl;
 
   union {
+    unsigned m_rrpv_bits;
+    char m_combined_rrpv_lru;
+  };
+
+  union {
     unsigned m_mshr_entries;
     unsigned m_fragment_fifo_entries;
   };
@@ -1135,10 +1149,10 @@ class l1d_cache_config : public cache_config {
   l1d_cache_config() : cache_config() {
   }
   unsigned set_bank(new_addr_type addr) const;
-  void init(char *config, char *mshr_config, FuncCache status, const char* cache_name = "L1D") {
+  void init(char *config, char *mshr_config, char* rrpv_config, FuncCache status, const char* cache_name = "L1D") {
     l1_banks_byte_interleaving_log2 = LOGB2(l1_banks_byte_interleaving);
     l1_banks_log2 = LOGB2(l1_banks);
-    cache_config::init(config, mshr_config, status, cache_name);
+    cache_config::init(config, mshr_config, rrpv_config, status, cache_name);
   }
   unsigned l1_latency;
   unsigned l1_banks;
@@ -1187,12 +1201,14 @@ class tag_array {
   ~tag_array();
 
   // addr is block_addr
-  enum cache_request_status probe(const std::string& caller,
+  enum cache_request_status probe(bool& force_using_lru,
+                                  const std::string& caller,
                                   new_addr_type addr, unsigned &idx,
                                   mem_fetch *mf, bool is_write,
                                   unsigned long long time,
                                   bool probe_mode = false);
-  enum cache_request_status probe(const std::string& caller,
+  enum cache_request_status probe(bool& force_using_lru,
+                                  const std::string& caller,
                                   new_addr_type addr, unsigned &idx,
                                   mem_access_sector_mask_t mask, bool is_write,
                                   unsigned long long time,

@@ -259,9 +259,11 @@ void memory_config::reg_options(class OptionParser *opp) {
                          "per-GPC shared L2 MSHR config "
                          "<mshr_disable>",
                          "none");
-  option_parser_register(opp, "-gpgpu_cache:l2_rrpv", OPT_UINT32,
-                         &m_L2_config.m_rrpv_bits,
-                         "per-GPC shared L2 cache RRPV bits", "2");                         
+  option_parser_register(opp, "-gpgpu_cache:l2_rrpv", OPT_CSTR,
+                         &m_L2_config.m_rrpv_config_string,
+                         "per-GPC shared L2 cache RRPV config "
+                         "<rrpv_bits>:<combined_rrpv_lru>",
+                         "2,F");                         
 
   option_parser_register(
       opp, "-disable_wr_merge", OPT_BOOL,
@@ -360,9 +362,11 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "per-shader L1T MSHR config "
                          "<mshr_disable>",
                          "none");
-  option_parser_register(opp, "-gpgpu_cache:l1t_rrpv", OPT_UINT32,
-                         &m_L1T_config.m_rrpv_bits,
-                         "per-shader L1T cache RRPV bits", "2");
+  option_parser_register(opp, "-gpgpu_cache:l1t_rrpv", OPT_CSTR,
+                         &m_L1T_config.m_rrpv_config_string,
+                         "per-shader L1T cache RRPV config "
+                         "<rrpv_bits>:<combined_rrpv_lru>",
+                         "2,F");   
               
   option_parser_register(
       opp, "-gpgpu_const_cache:l1", OPT_CSTR, &m_L1C_config.m_config_string,
@@ -375,9 +379,11 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "per-shader L1C MSHR config "
                          "<mshr_disable>",
                          "none");
-  option_parser_register(opp, "-gpgpu_cache:l1c_rrpv", OPT_UINT32,
-                         &m_L1C_config.m_rrpv_bits,
-                         "per-shader L1C cache RRPV bits", "2");
+  option_parser_register(opp, "-gpgpu_cache:l1c_rrpv", OPT_CSTR,
+                         &m_L1C_config.m_rrpv_config_string,
+                         "per-shader L1C cache RRPV config "
+                         "<rrpv_bits>:<combined_rrpv_lru>",
+                         "2,F");                         
       
   option_parser_register(
       opp, "-gpgpu_cache:il1", OPT_CSTR, &m_L1I_config.m_config_string,
@@ -390,9 +396,11 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "per-shader L1I MSHR config "
                          "<mshr_disable>",
                          "none");
-  option_parser_register(opp, "-gpgpu_cache:l1i_rrpv", OPT_UINT32,
-                         &m_L1I_config.m_rrpv_bits,
-                         "per-shader L1I cache RRPV bits", "2");
+  option_parser_register(opp, "-gpgpu_cache:l1i_rrpv", OPT_CSTR,
+                         &m_L1I_config.m_rrpv_config_string,
+                         "per-shader L1I cache RRPV config "
+                         "<rrpv_bits>:<combined_rrpv_lru>",
+                         "2,F");                 
 
   option_parser_register(opp, "-gpgpu_cache:dl1", OPT_CSTR,
                          &m_L1D_config.m_config_string,
@@ -406,9 +414,11 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "per-shader L1D MSHR config "
                          "<mshr_disable>",
                          "none");
-  option_parser_register(opp, "-gpgpu_cache:l1d_rrpv", OPT_UINT32,
-                         &m_L1D_config.m_rrpv_bits,
-                         "per-shader L1D cache RRPV bits", "2");
+  option_parser_register(opp, "-gpgpu_cache:l1d_rrpv", OPT_CSTR,
+                         &m_L1D_config.m_rrpv_config_string,
+                         "per-shader L1D cache RRPV config "
+                         "<rrpv_bits>:<combined_rrpv_lru>",
+                         "2,F");                              
 
   option_parser_register(opp, "-gpgpu_l1_cache_write_ratio", OPT_UINT32,
                          &m_L1D_config.m_wr_percent, "L1D write ratio", "0");
@@ -1511,7 +1521,8 @@ void gpgpu_sim::change_cache_config(FuncCache cache_config) {
     case FuncCachePreferNone:
       m_shader_config->m_L1D_config.init(
           m_shader_config->m_L1D_config.m_config_string, 
-          m_shader_config->m_L1D_config.m_mshr_config_string, 
+          m_shader_config->m_L1D_config.m_mshr_config_string,
+          m_shader_config->m_L1D_config.m_rrpv_config_string,
           FuncCachePreferNone);
       m_shader_config->gpgpu_shmem_size =
           m_shader_config->gpgpu_shmem_sizeDefault;
@@ -1522,7 +1533,8 @@ void gpgpu_sim::change_cache_config(FuncCache cache_config) {
         printf("WARNING: missing Preferred L1 configuration\n");
         m_shader_config->m_L1D_config.init(
             m_shader_config->m_L1D_config.m_config_string, 
-            m_shader_config->m_L1D_config.m_mshr_config_string, 
+            m_shader_config->m_L1D_config.m_mshr_config_string,
+            m_shader_config->m_L1D_config.m_rrpv_config_string,
             FuncCachePreferNone);
         m_shader_config->gpgpu_shmem_size =
             m_shader_config->gpgpu_shmem_sizeDefault;
@@ -1531,6 +1543,7 @@ void gpgpu_sim::change_cache_config(FuncCache cache_config) {
         m_shader_config->m_L1D_config.init(
             m_shader_config->m_L1D_config.m_config_stringPrefL1,
             m_shader_config->m_L1D_config.m_mshr_config_string,
+            m_shader_config->m_L1D_config.m_rrpv_config_string,
             FuncCachePreferL1);
         m_shader_config->gpgpu_shmem_size =
             m_shader_config->gpgpu_shmem_sizePrefL1;
@@ -1543,12 +1556,14 @@ void gpgpu_sim::change_cache_config(FuncCache cache_config) {
         m_shader_config->m_L1D_config.init(
             m_shader_config->m_L1D_config.m_config_string, 
             m_shader_config->m_L1D_config.m_mshr_config_string,
+            m_shader_config->m_L1D_config.m_rrpv_config_string,
             FuncCachePreferNone);
         m_shader_config->gpgpu_shmem_size =
             m_shader_config->gpgpu_shmem_sizeDefault;
       } else {
         m_shader_config->m_L1D_config.init(
             m_shader_config->m_L1D_config.m_mshr_config_string,
+            m_shader_config->m_L1D_config.m_rrpv_config_string,
             m_shader_config->m_L1D_config.m_config_stringPrefShared,
             FuncCachePreferShared);
         m_shader_config->gpgpu_shmem_size =
