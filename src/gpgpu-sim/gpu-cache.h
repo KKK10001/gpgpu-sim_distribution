@@ -68,7 +68,18 @@ enum mshr_config_t {
   NUM_MSHR_CONFIGS
 };
 
-enum replacement_policy_t { LRU, FIFO, SRRIP };
+enum replacement_policy_t { 
+  LRU = 0, 
+  FIFO, 
+  SRRIP,
+  NUM_REPLACEMENT_POLICY
+};
+
+enum srrip_update_policy_t {
+  HP = 0, // Hit Policy
+  FP,     // Frequency Policy
+  NUM_SRRIP_UPDATE_POLICY
+};
 
 enum write_policy_t {
   READ_ONLY,
@@ -196,8 +207,11 @@ struct cache_block_t {
   cache_block_t() {
     m_tag = 0;
     m_block_addr = 0;
-    m_was_recorded_in_mshr   = false;
-    m_recorded_times_in_mshr = 0;
+    m_was_recorded_in_mshr     = false;
+    m_recorded_times_in_mshr   = 0;
+    m_last_record_time_in_mshr = 0;
+    m_record_interval_in_mshr  = 0;
+    m_evictions                = 0;
   }
 
   virtual void allocate(new_addr_type tag, new_addr_type block_addr,
@@ -213,6 +227,9 @@ struct cache_block_t {
 
   virtual bool was_recorded_in_mshr() { return m_was_recorded_in_mshr; }
   virtual unsigned get_recorded_times_in_mshr() { return m_recorded_times_in_mshr; }
+  virtual unsigned get_record_interval_in_mshr() { return m_record_interval_in_mshr; }
+  virtual unsigned get_evictions() { return m_evictions; }
+  virtual unsigned get_accesses() { return m_accesses; }
 
   virtual enum cache_block_state get_status(
       mem_access_sector_mask_t sector_mask) = 0;
@@ -222,12 +239,16 @@ struct cache_block_t {
   virtual void set_byte_mask(mem_access_byte_mask_t byte_mask) = 0;
   virtual mem_access_byte_mask_t get_dirty_byte_mask() = 0;
   virtual mem_access_sector_mask_t get_dirty_sector_mask() = 0;
-  virtual unsigned long long get_last_access_time() = 0;
-  virtual unsigned get_rrpv() = 0;
+  virtual unsigned long long get_last_access_time() = 0;  
   virtual void set_rrpv(unsigned rrpv) = 0;
+  virtual unsigned get_rrpv() = 0;
   virtual void set_max_rrpv(unsigned rrpv) = 0;
   virtual unsigned get_max_rrpv() = 0;
+
+  virtual void set_cache_name(char* cache_name) = 0;
+  virtual char* get_cache_name() = 0;  
   virtual void inc_rrpv() = 0;
+  virtual void dec_rrpv() = 0;
   virtual void set_last_access_time(unsigned long long time,
                                     mem_access_sector_mask_t sector_mask) = 0;
   virtual unsigned long long get_alloc_time() = 0;
@@ -242,13 +263,19 @@ struct cache_block_t {
   virtual void set_m_readable(bool readable,
                               mem_access_sector_mask_t sector_mask) = 0;
   virtual bool is_readable(mem_access_sector_mask_t sector_mask) = 0;
-  virtual void print_status() = 0;
+  virtual void print_status() = 0;  
   virtual ~cache_block_t() {}
 
   new_addr_type m_tag;
   new_addr_type m_block_addr;
   bool m_was_recorded_in_mshr; // "was" means that the line might be invalid now
   unsigned m_recorded_times_in_mshr;
+  unsigned long long m_last_record_time_in_mshr;
+  unsigned long long m_record_interval_in_mshr;
+
+  // My Invention
+  unsigned m_evictions; 
+  unsigned m_accesses;
 };
 
 struct line_cache_block : public cache_block_t {
@@ -256,6 +283,11 @@ struct line_cache_block : public cache_block_t {
     m_alloc_time = 0;
     m_last_access_time = 0;
     m_fill_time = 0;
+    // m_rrpv = (1 << m_config.m_rrpv_bits) - 1;
+    // m_max_rrpv = (1 << m_config.m_rrpv_bits) - 1;
+    const unsigned rrpv_bits = 2;
+    m_rrpv     = (1 << rrpv_bits) - 1;
+    m_max_rrpv = (1 << rrpv_bits) - 1;    
     m_status = INVALID;
     m_ignore_on_fill_status = false;
     m_set_modified_on_fill = false;
@@ -269,7 +301,11 @@ struct line_cache_block : public cache_block_t {
     m_alloc_time = time;
     m_last_access_time = time;
     m_fill_time = 0;
-    m_rrpv = get_max_rrpv(); // for SRRIP 3'b111
+    // m_rrpv = get_max_rrpv(); // for SRRIP 3'b111
+    // // 1-19 eve
+    m_rrpv = (get_max_rrpv() >> 1) + 1; // for SRRIP 3'b111->3'b100 // 1-19 eve
+    // m_rrpv = (get_max_rrpv() >> 1);
+    // m_rrpv = 0;
     m_status = RESERVED;
     m_ignore_on_fill_status = false;
     m_set_modified_on_fill = false;
@@ -326,16 +362,19 @@ struct line_cache_block : public cache_block_t {
   virtual unsigned long long get_last_access_time() {
     return m_last_access_time;
   }
-  virtual unsigned get_rrpv() { return m_rrpv; }
-
+  
   virtual void set_last_access_time(unsigned long long time,
                                     mem_access_sector_mask_t sector_mask) {
     m_last_access_time = time;
   }
   virtual void set_rrpv(unsigned rrpv) { m_rrpv = rrpv; }
+  virtual unsigned get_rrpv() { return m_rrpv; }
   virtual void set_max_rrpv(unsigned rrpv) { m_max_rrpv = rrpv; }
   virtual unsigned get_max_rrpv() { return m_max_rrpv; }
+  virtual void set_cache_name(char* cache_name) { m_cache_name = cache_name; }
+  virtual char* get_cache_name() { return m_cache_name; }
   virtual void inc_rrpv() { m_rrpv++; }
+  virtual void dec_rrpv() { m_rrpv--; }
 
   virtual unsigned long long get_alloc_time() { return m_alloc_time; }
   virtual void set_ignore_on_fill(bool m_ignore,
@@ -373,6 +412,7 @@ struct line_cache_block : public cache_block_t {
   unsigned long long m_fill_time;
   unsigned m_rrpv;
   unsigned m_max_rrpv;
+  char* m_cache_name;
   cache_block_state m_status;
   bool m_ignore_on_fill_status;
   bool m_set_modified_on_fill;
@@ -398,6 +438,13 @@ struct sector_cache_block : public cache_block_t {
     }
     m_line_alloc_time = 0;
     m_line_last_access_time = 0;
+
+    // m_rrpv = (1 << m_config.m_rrpv_bits) - 1;
+    // m_max_rrpv = (1 << m_config.m_rrpv_bits) - 1;
+    const unsigned rrpv_bits = 2;
+    m_rrpv     = (1 << rrpv_bits) - 1;
+    m_max_rrpv = (1 << rrpv_bits) - 1;  
+
     m_line_fill_time = 0;
     m_dirty_byte_mask.reset();
   }  
@@ -430,7 +477,10 @@ struct sector_cache_block : public cache_block_t {
     // set line stats
     m_line_alloc_time       = time;  // only set this for the first allocated sector
     m_line_last_access_time = time;
-    m_rrpv = get_max_rrpv(); // for SRRIP 3'b111
+    // m_rrpv = get_max_rrpv(); // for SRRIP 3'b111
+    m_rrpv = (get_max_rrpv() >> 1) + 1; // 1-19 eve
+    // m_rrpv = (get_max_rrpv() >> 1);
+    // m_rrpv = 0;
     m_line_fill_time        = 0;            // no-used var.
   }
 
@@ -457,8 +507,11 @@ struct sector_cache_block : public cache_block_t {
 
     // set line stats
     m_line_last_access_time = time;
-    m_rrpv = get_max_rrpv(); // for SRRIP 3'b111
-    m_line_fill_time = 0;    
+    // m_rrpv = get_max_rrpv(); // for SRRIP 3'b111
+    m_rrpv = (get_max_rrpv() >> 1) + 1; // 1-19 eve
+    // m_rrpv = (get_max_rrpv() >> 1);
+    // m_rrpv = 0;
+    m_line_fill_time = 0; 
   }
 
   virtual void fill(unsigned time, mem_access_sector_mask_t sector_mask,
@@ -540,8 +593,7 @@ struct sector_cache_block : public cache_block_t {
   virtual unsigned long long get_last_access_time() {
     return m_line_last_access_time;
   }
-  virtual unsigned get_rrpv() { return m_rrpv; }
-
+  
   virtual void set_last_access_time(unsigned long long time,
                                     mem_access_sector_mask_t sector_mask) {
     unsigned sidx = get_sector_index(sector_mask);
@@ -550,9 +602,13 @@ struct sector_cache_block : public cache_block_t {
     m_line_last_access_time = time;
   }
   virtual void set_rrpv(unsigned rrpv) { m_rrpv = rrpv; }
+  virtual unsigned get_rrpv() { return m_rrpv; }
   virtual void set_max_rrpv(unsigned rrpv) { m_max_rrpv = rrpv; }
   virtual unsigned get_max_rrpv() { return m_max_rrpv; }  
+  virtual void set_cache_name(char* cache_name) { m_cache_name = cache_name; }
+  virtual char* get_cache_name() { return m_cache_name; }  
   virtual void inc_rrpv() { m_rrpv++; }
+  virtual void dec_rrpv() { m_rrpv--; }
 
   virtual unsigned long long get_alloc_time() { return m_line_alloc_time; }
 
@@ -629,6 +685,7 @@ struct sector_cache_block : public cache_block_t {
   // Static Re-reference Interval Prediction (SRRIP) related control info.
   unsigned m_rrpv;
   unsigned m_max_rrpv;
+  char* m_cache_name;
   
   // MetaData
   cache_block_state m_status[SECTOR_CHUNK_SIZE];  
@@ -685,7 +742,7 @@ class cache_config {
 
     assert(mshr_config);
     [[maybe_unused]] int ntok_mshr = 
-      sscanf(mshr_config, "%c:%c", &m_mshr_disable, &m_mshr_corr_repl);
+      sscanf(mshr_config, "%c,%c", &m_mshr_disable, &m_mshr_corr_repl);
     fprintf(Trace::out, 
       "----------- %s mshr_config is below -----------\n "
       "m_mshr_disable = %c m_mshr_corr_repl = %c\n",
@@ -693,11 +750,25 @@ class cache_config {
 
     assert(rrpv_config);
     [[maybe_unused]] int ntok_rrpv = 
-      sscanf(rrpv_config, "%u:%c", &m_rrpv_bits, &m_combined_rrpv_lru);
+      sscanf(rrpv_config, 
+            "%u,%c,%c", 
+            &m_rrpv_bits, &m_combined_srrip_lru, &m_srrip_up);
+
     fprintf(Trace::out, 
-      "----------- %s rrpv_config is below -----------\n "
-      "m_rrpv_bits = %u m_combined_rrpv_lru = %c\n",
-      cache_name, m_rrpv_bits, m_combined_rrpv_lru);
+      "----------- %s srrip_config is below -----------\n "
+      "m_rrpv_bits = %u m_combined_srrip_lru = %c m_srrip_up = %c\n",
+      cache_name, m_rrpv_bits, m_combined_srrip_lru, m_srrip_up);
+    switch (m_srrip_up) {
+      case 'H':
+        m_srrip_update_policy = srrip_update_policy_t::HP;
+        break;
+      case 'F':
+        m_srrip_update_policy = srrip_update_policy_t::FP;
+        break;
+      default:
+        exit_parse_error();
+    }
+
 
     char ct, rp, wp, ap, mshr_type, wap;
 
@@ -1112,10 +1183,10 @@ class cache_config {
   char m_mshr_disable;
   char m_mshr_corr_repl;
 
-  union {
-    unsigned m_rrpv_bits;
-    char m_combined_rrpv_lru;
-  };
+  enum srrip_update_policy_t m_srrip_update_policy;
+  unsigned m_rrpv_bits;
+  char m_combined_srrip_lru;
+  char m_srrip_up;
 
   union {
     unsigned m_mshr_entries;
@@ -1201,14 +1272,12 @@ class tag_array {
   ~tag_array();
 
   // addr is block_addr
-  enum cache_request_status probe(bool& force_using_lru,
-                                  const std::string& caller,
+  enum cache_request_status probe(const std::string& caller,
                                   new_addr_type addr, unsigned &idx,
                                   mem_fetch *mf, bool is_write,
                                   unsigned long long time,
                                   bool probe_mode = false);
-  enum cache_request_status probe(bool& force_using_lru,
-                                  const std::string& caller,
+  enum cache_request_status probe(const std::string& caller,
                                   new_addr_type addr, unsigned &idx,
                                   mem_access_sector_mask_t mask, bool is_write,
                                   unsigned long long time,
@@ -1226,7 +1295,7 @@ class tag_array {
   void fill(unsigned index, unsigned time, mem_fetch *mf);
   void fill(new_addr_type addr, unsigned time, mem_access_sector_mask_t mask,
             mem_access_byte_mask_t byte_mask, bool is_write);
-  void set_recorded_in_mshr(unsigned index);
+  void set_recorded_in_mshr(unsigned index, unsigned long long time);
 
   unsigned size() const { return m_config.get_num_lines(); }
   cache_block_t *get_block(unsigned idx) { return m_lines[idx]; }
@@ -1246,16 +1315,6 @@ class tag_array {
   void remove_pending_line(mem_fetch *mf);
   void inc_dirty() { m_dirty++; }
 
-  // bool has_been_recorded_in_mshr(new_addr_type block_addr) {
-  //   return m_mshr_recorded_block_addresses[block_addr];
-  // }
-  // unsigned mshr_recorded_lines() {
-  //   return m_mshr_recorded_block_addresses.size();
-  // }
-  // std::map<new_addr_type, bool> get_mshr_recorded_blocks_addresses() {
-  //   return m_mshr_recorded_block_addresses;
-  // }
-
  protected:
   // This constructor is intended for use only from derived classes that wish to
   // avoid unnecessary memory allocation that takes place in the
@@ -1268,10 +1327,7 @@ class tag_array {
   cache_config &m_config;
 
   cache_block_t **m_lines; /* nbanks x nset x assoc lines in total */
-
-  // void set_recorded_in_mshr(const new_addr_type& block_addr) {
-  //   m_mshr_recorded_block_addresses[block_addr] = true;
-  // }
+  unsigned m_total_records_in_mshr;
 
   unsigned m_access;
   unsigned m_reads;
@@ -1378,6 +1434,7 @@ class mshr_table {
 struct cache_sub_stats {
   unsigned long long accesses;
   unsigned long long misses;
+  unsigned long long sector_misses;
   unsigned long long pending_hits;
   unsigned long long res_fails;
 
@@ -1389,6 +1446,7 @@ struct cache_sub_stats {
   void clear() {
     accesses = 0;
     misses = 0;
+    sector_misses = 0;
     pending_hits = 0;
     res_fails = 0;
     port_available_cycles = 0;
@@ -1401,6 +1459,7 @@ struct cache_sub_stats {
     ///
     accesses += css.accesses;
     misses += css.misses;
+    sector_misses += css.sector_misses;
     pending_hits += css.pending_hits;
     res_fails += css.res_fails;
     port_available_cycles += css.port_available_cycles;
@@ -1416,6 +1475,7 @@ struct cache_sub_stats {
     cache_sub_stats ret;
     ret.accesses = accesses + cs.accesses;
     ret.misses = misses + cs.misses;
+    ret.sector_misses = sector_misses + cs.sector_misses;
     ret.pending_hits = pending_hits + cs.pending_hits;
     ret.res_fails = res_fails + cs.res_fails;
     ret.port_available_cycles =
@@ -1507,7 +1567,8 @@ class cache_stats {
   void inc_l2_icnt_q_accesses(unsigned long long streamID, unsigned l2_sub);
   void inc_l2_mshr_slots_fills(unsigned long long streamID, unsigned l2_sub);
   void inc_l2_miss_q_pops();
-  void inc_stats(int access_type, int access_outcome, unsigned long long streamID);
+  void gather_lines_stats(unsigned long long streamID, unsigned unfolded_index);
+  void inc_stats(int access_type, int access_outcome, unsigned long long streamID);  
   // Increment AerialVision cache stats
   void inc_stats_pw(int access_type, int access_outcome, unsigned long long streamID);
   void inc_fail_stats(int access_type, int fail_outcome,
@@ -1592,6 +1653,10 @@ class cache_stats {
   std::map<unsigned long long, std::vector<std::vector<unsigned long long>>> m_miss_q_full;
   std::map<unsigned long long, std::vector<std::vector<unsigned long long>>> m_mshr_merge_entry_fail;
   std::map<unsigned long long, std::vector<unsigned long long>> m_fail_stats_total;
+
+  std::map<unsigned long long /* streamID */, std::vector<unsigned /* unfolded_index */>> m_lines_evictons;
+  std::map<unsigned long long /* streamID */, std::vector<unsigned /* unfolded_index */>> m_lines_accesses;
+
   std::map<
     unsigned long long /* streamID */, 
     std::vector< /* SMs */
@@ -1629,6 +1694,9 @@ bool was_writeallocate_sent(const std::list<cache_event> &events);
 /// Each subclass implements its own 'access' function
 class baseline_cache : public cache_t {
   friend class tex_cache;
+  friend class shader_core_ctx;
+  friend class ldst_unit;
+  friend class memory_sub_partition;
   /// Sub-class containing all metadata for port bandwidth management
   class bandwidth_management {
     public:

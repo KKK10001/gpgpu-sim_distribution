@@ -85,6 +85,29 @@ const char *cache_request_status_str(enum cache_request_status status) {
   return static_cache_request_status_str[status];
 }
 
+const char *replacement_policy_str(enum replacement_policy_t rp) {
+  static const char *staic_replacement_policy_str[] = {
+    "LRU",
+    "FIFO", 
+    "SRRIP"
+  };
+  assert(sizeof(staic_replacement_policy_str) / sizeof(const char *) ==
+         NUM_REPLACEMENT_POLICY);
+  assert(rp < NUM_REPLACEMENT_POLICY);
+  return staic_replacement_policy_str[rp];
+}
+
+const char *srrip_update_policy_str(enum srrip_update_policy_t up) {
+  static const char *static_srrip_update_policy_str[] = {
+    "HP",
+    "FP"
+  };
+  assert(sizeof(static_srrip_update_policy_str) / sizeof(const char *) ==
+         NUM_SRRIP_UPDATE_POLICY);
+  assert(up < NUM_SRRIP_UPDATE_POLICY);
+  return static_srrip_update_policy_str[up];
+}
+
 const char *mshr_config_t_str(enum mshr_config_t type) {
   static const char *static_mshr_config_t_str[] = {
     "TEX_FIFO",
@@ -394,6 +417,7 @@ void tag_array::init(int core_id, int type_id) {
   m_type_id = type_id;
   is_used = false;
   m_dirty = 0;
+  m_total_records_in_mshr = 0;
   // m_mshr_recorded_block_addresses.clear();
 }
 
@@ -415,46 +439,17 @@ void tag_array::remove_pending_line(mem_fetch *mf) {
   }
 }
 
-enum cache_request_status tag_array::probe(bool& force_using_lru,
-                                           const std::string& caller,
+enum cache_request_status tag_array::probe(const std::string& caller,
                                            new_addr_type addr, unsigned &idx,
                                            mem_fetch *mf, bool is_write,
                                            unsigned long long time,
                                            bool probe_mode) {
   mem_access_sector_mask_t mask = mf->get_access_sector_mask();
   std::string final_caller = caller + "-> tag_array::probe";
-  return probe(force_using_lru, final_caller.c_str(), addr, idx, mask, is_write, time, probe_mode, mf);
+  return probe(final_caller.c_str(), addr, idx, mask, is_write, time, probe_mode, mf);
 }
 
-void tag_array::inc_rrpv_for_one_set(unsigned set_index) {
-  for (unsigned way = 0; way < m_config.m_assoc; way++) {
-    unsigned index = set_index * m_config.m_assoc + way;
-    cache_block_t *line = m_lines[index];
-    if (line->get_rrpv() == line->get_max_rrpv()) {
-      // do nothing
-      if (DTRACE(DEBUG_SRRIP)) {
-        fprintf(Trace::out, "m_lines[index:%#x]->get_rrpv = 3 "
-          "inside inc_rrpv_for_one_set\n", index);
-      }
-    } else {
-      line->inc_rrpv();
-    }
-    assert(line->get_rrpv() <= line->get_max_rrpv());
-  }
-}
-bool tag_array::already_has_max_rrpv_in_one_set(unsigned set_index) {
-  for (unsigned way = 0; way < m_config.m_assoc; way++) {
-    unsigned index = set_index * m_config.m_assoc + way;
-    cache_block_t *line = m_lines[index];
-    if (line->get_rrpv() == line->get_max_rrpv()) {
-      return true;
-    }    
-  }
-  return false;
-}
-
-enum cache_request_status tag_array::probe(bool& force_using_lru,
-                                           const std::string& caller,
+enum cache_request_status tag_array::probe(const std::string& caller,
                                            new_addr_type addr, unsigned &idx,
                                            mem_access_sector_mask_t mask,
                                            bool is_write, 
@@ -489,17 +484,33 @@ enum cache_request_status tag_array::probe(bool& force_using_lru,
 
   unsigned invalid_line = (unsigned)-1;
   unsigned valid_line = (unsigned)-1;
+  bool srrip_has_picked = false;
+  unsigned srrip_picked_line = (unsigned) - 1;
+  unsigned lru_picked_line   = (unsigned) - 1; // Also ensure the pick engine work when no valid line be picked by SRRIP when rep=SRRIP
   unsigned long long valid_timestamp = (unsigned)-1;
-  unsigned max_recordes_in_mshr = (unsigned) - 1;
 
   bool all_reserved = true;
   bool all_miss = true;
   bool all_sector_valid = true;
   // check for hit or pending hit  
   // [Feature]
+  std::vector<std::pair<unsigned /* unfolded index */, unsigned /* rrpv */>> lru_repl_candidates;
+
   std::vector<std::pair<unsigned long long /* timestamp */, bool /* was_recorded_in_mshr */>> repl_candidates(m_config.m_assoc);  
-  std::vector<std::pair<unsigned long long /* timestamp */, unsigned /* unfolded index */>> repl_candidates_no_record_in_mshr;
-  std::vector<std::pair<unsigned /* recorded times */, unsigned /* unfolded index */>> repl_candidates_recorded_in_mshr;
+  std::vector<std::pair<unsigned long long /* timestamp */, unsigned /* unfolded index */>> lru_candidates_no_recorded_in_mshr;
+
+  std::vector<
+    std::tuple<
+      unsigned /* recorded times */, 
+      unsigned /* record interval */,
+      unsigned /* unfolded index */>> srrip_candidates_no_recorded_in_mshr;
+
+  std::vector<
+    std::tuple<
+      unsigned /* recorded times */, 
+      unsigned /* record interval */,
+      unsigned /* unfolded index */>> repl_candidates_recorded_in_mshr;
+
   for (size_t way = 0; way < repl_candidates.size(); way++)
   {
     repl_candidates[way].first  = (unsigned long long) - 1;
@@ -510,58 +521,51 @@ enum cache_request_status tag_array::probe(bool& force_using_lru,
   
   for (unsigned way = 0; way < m_config.m_assoc; way++) {
     unsigned index = set_index * m_config.m_assoc + way;
-    cache_block_t *line = m_lines[index]; 
+    cache_block_t *line = m_lines[index];
 
     if (line->m_tag == tag) {
       cache_hit = true;
-      if (m_config.m_replacement_policy == SRRIP && !force_using_lru) {
-        line->set_rrpv(0);
+      if (m_config.m_replacement_policy == SRRIP) {
+        if (m_config.m_srrip_update_policy == srrip_update_policy_t::HP) {
+          line->set_rrpv(0);
+        } else if (m_config.m_srrip_update_policy == srrip_update_policy_t::FP) {
+          if (line->get_rrpv() >= 1) {
+            line->dec_rrpv();
+            assert(line->get_rrpv() != ((unsigned) - 1));
+          }
+        } else {
+          assert(0);
+        }
       }
+
       all_miss = false;
       if (line->get_status(mask) == RESERVED) {
         idx = index;
+        m_lines[idx]->m_accesses++;
         return HIT_RESERVED;
       } else if (line->get_status(mask) == VALID) {
         idx = index;
+        m_lines[idx]->m_accesses++;
         return HIT;
       } else if (line->get_status(mask) == MODIFIED) {
         if ((!is_write && line->is_readable(mask)) || is_write) {
           idx = index;
+          m_lines[idx]->m_accesses++;
           return HIT;
         } else {
-          idx = index;          
+          idx = index;
+          m_lines[idx]->m_accesses++;
           return SECTOR_MISS;
         }
       } else if (line->is_valid_line() && line->get_status(mask) == INVALID) {
         idx = index;
+        m_lines[idx]->m_accesses++;
         return SECTOR_MISS;
       } else {
         assert(line->get_status(mask) == INVALID);
         all_sector_valid = false;
       }
     } // cacheline hit
-
-    if (DTRACE(DEBUG_SRRIP)) {
-      if (m_config.m_replacement_policy == SRRIP && !force_using_lru) {
-        if (line->get_rrpv() == line->get_max_rrpv()) {
-          float dirty_line_percentage =
-              ((float)m_dirty / (m_config.m_nset * m_config.m_assoc)) * 100;
-          if (line->is_reserved_line()) {
-            fprintf(Trace::out, "%llu Failed evicting m_lines[index:%#x]->get_rrpv = 3 "
-              "because line->is_reversed_line\n", time, index);
-          } else if (line->is_modified_line() && 
-            (dirty_line_percentage < m_config.m_wr_percent)) {
-            fprintf(Trace::out, "%llu Failed evicting m_lines[index:%#x]->get_rrpv = 3 "
-              "because line->is_modified_line and "
-              "dirty_line_percentage:%f < m_config.m_wr_percent:%u\n", 
-              time, index, dirty_line_percentage, m_config.m_wr_percent);
-          } else if (line->is_invalid_line()) {
-            fprintf(Trace::out, "%llu Failed evicting m_lines[index:%#x]->get_rrpv = 3 "
-              "but line->is_invalid_line\n", time, index);
-          }
-        }
-      }
-    }
 
     if (!line->is_reserved_line()) {
       has_unreserved_line = true;
@@ -583,27 +587,38 @@ enum cache_request_status tag_array::probe(bool& force_using_lru,
           repl_candidates[way].first  = line->get_last_access_time();
           repl_candidates[way].second = line->was_recorded_in_mshr();
           if (!repl_candidates[way].second) {
-            repl_candidates_no_record_in_mshr.push_back(
+            lru_candidates_no_recorded_in_mshr.push_back(
               std::pair<unsigned long long, unsigned>(repl_candidates[way].first, index));
+
+            srrip_candidates_no_recorded_in_mshr.push_back(
+              std::tuple<unsigned, unsigned, unsigned>(
+                line->get_recorded_times_in_mshr(),
+                line->get_record_interval_in_mshr(),
+                index));
           } else {
             repl_candidates_recorded_in_mshr.push_back(
-              std::pair<unsigned, unsigned>(line->get_recorded_times_in_mshr(), index));
+              std::tuple<unsigned, unsigned, unsigned>(
+                line->get_recorded_times_in_mshr(),
+                line->get_record_interval_in_mshr(),
+                index));
           }
 
-          // valid line : keep track of most appropriate replacement candidate
-          if (m_config.m_replacement_policy == SRRIP && !force_using_lru) {
-            if (line->get_rrpv() == line->get_max_rrpv()) {
-              valid_line = index;
-            } else {
-              // Continue checking if other line would reach here and satisfy rrpv=3
+          if (m_config.m_replacement_policy == SRRIP) {
+            if (!srrip_has_picked) {
+              if (line->get_rrpv() == line->get_max_rrpv()) {
+                valid_line        = index;
+                srrip_picked_line = index;
+                srrip_has_picked  = true;
+              } else {
+                if (line->get_rrpv() < line->get_max_rrpv()) {
+                  line->inc_rrpv();
+                }
+              }
             }
-          } else if (m_config.m_replacement_policy == SRRIP && force_using_lru) {
+            // Always do LRU in parallel in case no valid idx being picked by SRRIP
             if (line->get_last_access_time() < valid_timestamp) {
               valid_timestamp = line->get_last_access_time();
-              valid_line = index;
-              if (line->get_rrpv() < line->get_max_rrpv()) {
-                line->inc_rrpv();
-              }
+              lru_picked_line = index;
             }
           } else if (m_config.m_replacement_policy == LRU) {
             if (line->get_last_access_time() < valid_timestamp) {
@@ -624,24 +639,6 @@ enum cache_request_status tag_array::probe(bool& force_using_lru,
   if (cache_hit) {
     assert(all_sector_valid == false);
   }
-  if (m_config.m_replacement_policy == SRRIP && !force_using_lru) {
-    if (all_reserved) {
-      assert(m_config.m_alloc_policy == ON_MISS);
-      return RESERVATION_FAIL;  // miss and not enough space in cache to allocate on miss
-    }
-    if (invalid_line != (unsigned) - 1) {
-      idx = invalid_line;
-    } else if (valid_line != (unsigned) - 1) {
-      idx = valid_line;
-    } else {
-      if (m_config.m_combined_rrpv_lru) {
-        force_using_lru = true;
-      } else {
-        inc_rrpv_for_one_set(set_index);
-      }
-    }
-    return MISS;
-  }
 
   if (all_reserved) {
     assert(m_config.m_alloc_policy == ON_MISS);
@@ -653,36 +650,112 @@ enum cache_request_status tag_array::probe(bool& force_using_lru,
   if (invalid_line != (unsigned) - 1) {
     idx = invalid_line;
   } else if (valid_line != (unsigned) - 1) {
+    if (m_config.m_replacement_policy == SRRIP) {
+      assert(srrip_has_picked);
+    }
     if (m_config.m_mshr_corr_repl == 'T') {
-      if (repl_candidates_no_record_in_mshr.size()) {
-        unsigned long long max_timestamp = (unsigned long long) - 1;
-        for (size_t i = 0; i < repl_candidates_no_record_in_mshr.size(); i++)
+      if (lru_candidates_no_recorded_in_mshr.size() && m_config.m_replacement_policy == LRU) {
+        unsigned long long min_timestamp = (unsigned long long) - 1;
+        for (size_t i = 0; i < lru_candidates_no_recorded_in_mshr.size(); i++)
         {
-          if (repl_candidates_no_record_in_mshr[i].first < max_timestamp) { // Just use LRU
-            max_timestamp = repl_candidates_no_record_in_mshr[i].first;
-            idx = repl_candidates_no_record_in_mshr[i].second;
+          if (lru_candidates_no_recorded_in_mshr[i].first < min_timestamp) {
+            min_timestamp = lru_candidates_no_recorded_in_mshr[i].first;
+            idx           = lru_candidates_no_recorded_in_mshr[i].second;
+            assert(idx != ((unsigned) - 1));
+          }
+        }
+      } else if (srrip_candidates_no_recorded_in_mshr.size() && m_config.m_replacement_policy == SRRIP) {
+        unsigned min_recorded_times = (unsigned) - 1;
+        for (size_t i = 0; i < srrip_candidates_no_recorded_in_mshr.size(); i++) {
+          assert(std::get<2>(srrip_candidates_no_recorded_in_mshr[i]) != ((unsigned) - 1));        
+          if (std::get<0>(srrip_candidates_no_recorded_in_mshr[i]) < min_recorded_times) {
+            min_recorded_times = std::get<0>(srrip_candidates_no_recorded_in_mshr[i]);
+            idx                = std::get<2>(srrip_candidates_no_recorded_in_mshr[i]);
+            assert(idx != ((unsigned) - 1));
           }
         }
       } else {
         assert(repl_candidates_recorded_in_mshr.size());
-        unsigned index_gen_use_mshr_m_rep = (unsigned) - 1;
-        for (size_t i = 0; i < repl_candidates_recorded_in_mshr.size(); i++) {
-          if (repl_candidates_recorded_in_mshr[i].first < max_recordes_in_mshr) {
-            max_recordes_in_mshr     = repl_candidates_recorded_in_mshr[i].first;
-            index_gen_use_mshr_m_rep = repl_candidates_recorded_in_mshr[i].second;
+        // 1. MSHR-aware pick (min record. Preferred)
+        unsigned min_recorded_times = (unsigned) - 1;
+        for (size_t i = 0; i < repl_candidates_recorded_in_mshr.size(); i++) {          
+          if (std::get<0>(repl_candidates_recorded_in_mshr[i]) < min_recorded_times) {
+            min_recorded_times = std::get<0>(repl_candidates_recorded_in_mshr[i]);
+            idx                = std::get<2>(repl_candidates_recorded_in_mshr[i]);
+            assert(idx != ((unsigned) - 1));
           }
         }
-        assert(index_gen_use_mshr_m_rep != ((unsigned) - 1));
-        idx = index_gen_use_mshr_m_rep;
+        // 2. MSHR-aware pick (max interval)
+        // unsigned max_record_interval = 0;
+        // for (size_t i = 0; i < repl_candidates_recorded_in_mshr.size(); i++)
+        // {
+        //   if (std::get<1>(repl_candidates_recorded_in_mshr[i]) > max_record_interval) {
+        //     max_record_interval = std::get<1>(repl_candidates_recorded_in_mshr[i]);
+        //     idx                 = std::get<2>(repl_candidates_recorded_in_mshr[i]);
+        //   }
+        // }
+        assert(idx != ((unsigned) - 1));
       }
-    } else {
+    } // if (m_config.m_mshr_corr_repl == 'T') { 
+    else {
       idx = valid_line;
     }
-  } else {
-    abort();  // if an unreserved block exists, it is either invalid or replaceable
+  } else if (valid_line == (unsigned) - 1) {
+    if (m_config.m_replacement_policy == LRU) {
+      assert(0);
+    } else if (m_config.m_replacement_policy == SRRIP) {
+      assert(!srrip_has_picked);
+      idx = lru_picked_line;
+      if (DTRACE(LRU_SAVED_SRRIP_PICKING)) {
+        fprintf(Trace::out, "%llu %s LRU saved SRRIP picking idx:%x\n",
+          time, m_config.m_cache_name, idx);
+      }      
+    }
+  }
+  m_lines[idx]->m_evictions++;
+  m_lines[idx]->m_accesses++;
+  if (DTRACE(EVICTIONS_PROBABILITY)) {
+    fprintf(Trace::out, "%llu %s m_lines[idx:%#x] evict_ratio = %f (%u / %u)\n",
+      time, m_config.m_cache_name, idx, 
+      float(m_lines[idx]->m_evictions) / (m_lines[idx]->m_accesses),
+      m_lines[idx]->m_evictions, m_lines[idx]->m_accesses
+    );
   }
 
   return MISS;
+}
+
+void tag_array::inc_rrpv_for_one_set(unsigned set_index) {
+  for (unsigned way = 0; way < m_config.m_assoc; way++) {
+    unsigned index = set_index * m_config.m_assoc + way;
+    cache_block_t *line = m_lines[index];
+    if (line->get_rrpv() == line->get_max_rrpv()) {
+      // do nothing
+      if (DTRACE(DEBUG_SRRIP)) {
+        fprintf(Trace::out, "m_lines[index:%#x]->get_rrpv = 3 "
+          "inside inc_rrpv_for_one_set\n", index);
+      }
+    } else {
+      line->inc_rrpv();
+      if (DTRACE(SRRIP_INC_RRPV)) {
+        fprintf(Trace::out, "%llu %s Inside tag_array::inc_rrpv_for_one_set, "
+          "m_lines[index:%#x] inc_rrpv. rrpv = %u\n",
+          time, m_config.m_cache_name, index, line->get_rrpv()
+        );
+      }
+    }
+    assert(line->get_rrpv() <= line->get_max_rrpv());
+  }
+}
+bool tag_array::already_has_max_rrpv_in_one_set(unsigned set_index) {
+  for (unsigned way = 0; way < m_config.m_assoc; way++) {
+    unsigned index = set_index * m_config.m_assoc + way;
+    cache_block_t *line = m_lines[index];
+    if (line->get_rrpv() == line->get_max_rrpv()) {
+      return true;
+    }    
+  }
+  return false;
 }
 
 enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
@@ -701,19 +774,9 @@ enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
   m_access++;
   is_used = true;
   shader_cache_access_log(m_core_id, m_type_id, 0);  // log accesses to cache
-  bool force_using_lru = false;
   enum cache_request_status status = 
-    probe(force_using_lru, "tag_array::access", addr, idx, mf, mf->is_write(), time);
+    probe("tag_array::access", addr, idx, mf, mf->is_write(), time);
 
-  // SRRIP-specific logic
-  if (m_config.m_replacement_policy == SRRIP) {    
-    while (idx == ((unsigned) - 1) && 
-      status == cache_request_status::MISS) {
-      status = probe(force_using_lru, "SRRIP-specific while tag_array::access", 
-        addr, idx, mf, mf->is_write(), time);
-    }
-  }
-    
   switch (status) {
     case HIT_RESERVED:
       m_pending_hit++;
@@ -780,18 +843,8 @@ void tag_array::fill(new_addr_type addr, unsigned time,
                      mem_access_byte_mask_t byte_mask, bool is_write) {
   // assert( m_config.m_alloc_policy == ON_FILL );
   unsigned idx;
-  bool force_using_lru = false;
   enum cache_request_status status = 
-    probe(force_using_lru, "tag_array::fill", addr, idx, mask, is_write, time);
-
-  // SRRIP-specific logic
-  if (m_config.m_replacement_policy == SRRIP) {    
-    while (idx == ((unsigned) - 1) && 
-      status == cache_request_status::MISS) {
-      status = probe(force_using_lru, "SRRIP-specific while tag_array::fill", 
-        addr, idx, mask, is_write, time);
-    }
-  }
+    probe("tag_array::fill", addr, idx, mask, is_write, time);
 
   if (status == RESERVATION_FAIL) {
     return;
@@ -826,8 +879,15 @@ void tag_array::fill(unsigned index, unsigned time, mem_fetch *mf) {
   }
 }
 
-void tag_array::set_recorded_in_mshr(unsigned index) {
+void tag_array::set_recorded_in_mshr(unsigned index, unsigned long long time) {
   m_lines[index]->m_was_recorded_in_mshr = true;
+  m_lines[index]->m_record_interval_in_mshr = 
+    !(m_lines[index]->m_recorded_times_in_mshr) ? time :
+    (time - m_lines[index]->m_last_record_time_in_mshr); 
+
+  m_lines[index]->m_last_record_time_in_mshr = 
+    !(m_lines[index]->m_recorded_times_in_mshr) ? 0 : time;
+
   m_lines[index]->m_recorded_times_in_mshr++;
 }
 
@@ -1222,6 +1282,13 @@ void cache_stats::inc_l2_mshr_slots_fills(unsigned long long streamID, unsigned 
 
 void cache_stats::inc_l2_miss_q_pops() {
   m_l2_miss_q_pops++;
+}
+
+void cache_stats::gather_lines_stats(unsigned long long streamID, unsigned unfolded_index) {
+  if (m_lines_evictons.find(streamID) == m_lines_evictons.end()) {
+    std::vector<unsigned> new_val;
+    new_val.resize(1); 
+  }
 }
 
 void cache_stats::inc_stats(int access_type, int access_outcome,
@@ -2258,9 +2325,12 @@ void cache_stats::get_sub_stats(struct cache_sub_stats &css) const {
         if (status == HIT || status == MISS || status == SECTOR_MISS || status == HIT_RESERVED) {
           t_css.accesses += m_stats.at(streamID)[type][status];
         }      
-        if (status == MISS || status == SECTOR_MISS) {          
+        if (status == MISS) {
           t_css.misses += m_stats.at(streamID)[type][status];
         }
+        if (status == SECTOR_MISS) {          
+          t_css.sector_misses += m_stats.at(streamID)[type][status];
+        }        
         if (status == HIT_RESERVED) {
           t_css.pending_hits += m_stats.at(streamID)[type][status];
         }
@@ -2591,7 +2661,19 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
   } else {
     m_mshrs.mark_ready(m_is_l2 ? "L2" : m_is_l1d ? "L1D" : "other$", 
       e->second.m_block_addr, has_atomic, time);
-    m_tag_array->set_recorded_in_mshr(e->second.m_cache_index);
+    m_tag_array->set_recorded_in_mshr(e->second.m_cache_index, time);
+    m_tag_array->m_total_records_in_mshr++;
+
+    std::string str_cache_name = m_config.get_cache_name();
+    if (!strcmp(m_config.get_cache_name(), "L2") && mf) {
+      str_cache_name += "_sub[";
+      str_cache_name += std::to_string(mf->get_sub_partition());
+      str_cache_name += "]";
+    }    
+    if (DTRACE(MSHR_RECORD_MONITOR)) {
+      fprintf(Trace::out, "%llu %s m_total_records_in_mshr = %u\n", 
+        time, str_cache_name.c_str(), m_tag_array->m_total_records_in_mshr);
+    }
   }
 
   if (has_atomic) {
@@ -3636,9 +3718,8 @@ enum cache_request_status read_only_cache::access(
   assert(!mf->get_is_write());
   new_addr_type block_addr = m_config.block_addr(addr);
   unsigned cache_index = (unsigned)-1;
-  bool force_using_lru = true;
   enum cache_request_status status = m_tag_array->probe(
-    force_using_lru, "read_only_cache::access", block_addr, cache_index, mf, mf->is_write(), time);
+    "read_only_cache::access", block_addr, cache_index, mf, mf->is_write(), time);
   enum cache_request_status cache_status = RESERVATION_FAIL;
 
   if (status == HIT) {
@@ -3744,20 +3825,8 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
   bool wr = mf->get_is_write();
   new_addr_type block_addr = m_config.block_addr(addr);
   unsigned cache_index = (unsigned)-1;
-  bool force_using_lru = false;
   enum cache_request_status probe_status = m_tag_array->probe(
-    force_using_lru, "data_cache::access", block_addr, cache_index, mf, mf->is_write(), time, true);
-  
-  // SRRIP-specific logic
-  if (m_config.m_replacement_policy == SRRIP) {    
-    while (cache_index == ((unsigned) - 1) && 
-      probe_status == cache_request_status::MISS) {
-      probe_status = m_tag_array->probe(
-        force_using_lru,
-        "SRRIP-specific while data_cache::access", 
-        block_addr, cache_index, mf, mf->is_write(), time, true);
-    }
-  }
+    "data_cache::access", block_addr, cache_index, mf, mf->is_write(), time, true);
 
   enum cache_request_status access_status =
       process_tag_probe(wr, probe_status, addr, cache_index, mf, time, events);

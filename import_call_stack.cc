@@ -214,3 +214,32 @@ libcudart.so!gpgpu_sim::cycle(gpgpu_sim * const this) (\home\kuanbba\dev\accel-s
 accel_sim_framework::simulate(accel_sim_framework * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\accel-sim.cc:165)
 accel_sim_framework::simulation_loop(accel_sim_framework * const this) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\accel-sim.cc:75)
 main(int argc, const char ** argv) (\home\kuanbba\dev\accel-sim\accel-sim-framework\gpu-simulator\main.cc:30)
+
+
+// MSHR LFB pop_front之前的驱动
+// 1. L1D
+m_lfb.pop_front();
+libcudart.so!mshr_table::next_access(mshr_table * const this, const char * cache_type, unsigned long long cycle) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/gpu-cache.cc:1082)
+libcudart.so!baseline_cache::next_access(baseline_cache * const this, const char * cache_name, unsigned long long cycle) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/gpu-cache.h:1801)
+libcudart.so!ldst_unit::writeback(ldst_unit * const this) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/shader.cc:3263)
+mem_fetch *mf = m_L1D->next_access(
+  cache_type, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+// 这里拿到上头返回的*mf
+libcudart.so!ldst_unit::cycle(ldst_unit * const this) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/shader.cc:3312)
+libcudart.so!shader_core_ctx::execute(shader_core_ctx * const this) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/shader.cc:2019)
+libcudart.so!shader_core_ctx::cycle(shader_core_ctx * const this) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/shader.cc:4206)
+libcudart.so!simt_core_cluster::core_cycle(simt_core_cluster * const this) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/shader.cc:5023)
+libcudart.so!gpgpu_sim::cycle(gpgpu_sim * const this) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/gpu-sim.cc:2281)
+accel_sim_framework::simulate(accel_sim_framework * const this) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/accel-sim.cc:165)
+accel_sim_framework::simulation_loop(accel_sim_framework * const this) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/accel-sim.cc:75)
+main(int argc, const char ** argv) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/main.cc:30)
+
+// 2. L2
+libcudart.so!mshr_table::next_access(mshr_table * const this, const char * cache_type, unsigned long long cycle) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/gpu-cache.cc:1082)
+libcudart.so!baseline_cache::next_access(baseline_cache * const this, const char * cache_name, unsigned long long cycle) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/gpu-cache.h:1801)
+libcudart.so!memory_sub_partition::cache_cycle(memory_sub_partition * const this, unsigned long long cycle, mem_fetch * mf_monitor) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/l2cache.cc:546)
+mem_fetch *mf = m_L2cache->next_access("L2", cycle); // 这里拿到上头返回的*mf
+libcudart.so!gpgpu_sim::cycle(gpgpu_sim * const this) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/gpu-sim.cc:2255)
+accel_sim_framework::simulate(accel_sim_framework * const this) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/accel-sim.cc:165)
+accel_sim_framework::simulation_loop(accel_sim_framework * const this) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/accel-sim.cc:75)
+main(int argc, const char ** argv) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/main.cc:30)

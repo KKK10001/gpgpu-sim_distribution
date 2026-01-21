@@ -257,13 +257,13 @@ void memory_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_cache:l2_mshr", OPT_CSTR,
                          &m_L2_config.m_mshr_config_string,
                          "per-GPC shared L2 MSHR config "
-                         "<mshr_disable>",
-                         "none");
+                         "<mshr_disable>,<mshr_corr_repl>",
+                         "T,F");
   option_parser_register(opp, "-gpgpu_cache:l2_rrpv", OPT_CSTR,
                          &m_L2_config.m_rrpv_config_string,
                          "per-GPC shared L2 cache RRPV config "
-                         "<rrpv_bits>:<combined_rrpv_lru>",
-                         "2,F");                         
+                         "<rrpv_bits>:<combined_rrpv_lru>:<RRIP-update-policy>",
+                         "2,F,H");
 
   option_parser_register(
       opp, "-disable_wr_merge", OPT_BOOL,
@@ -360,13 +360,13 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_cache:l1t_mshr", OPT_CSTR,
                          &m_L1T_config.m_mshr_config_string,
                          "per-shader L1T MSHR config "
-                         "<mshr_disable>",
-                         "none");
+                         "<mshr_disable>,<mshr_corr_repl>",
+                         "T,F");
   option_parser_register(opp, "-gpgpu_cache:l1t_rrpv", OPT_CSTR,
                          &m_L1T_config.m_rrpv_config_string,
                          "per-shader L1T cache RRPV config "
-                         "<rrpv_bits>:<combined_rrpv_lru>",
-                         "2,F");   
+                         "<rrpv_bits>:<combined_rrpv_lru>:<RRIP-update-policy>",
+                         "2,F,H");
               
   option_parser_register(
       opp, "-gpgpu_const_cache:l1", OPT_CSTR, &m_L1C_config.m_config_string,
@@ -377,13 +377,13 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_cache:l1c_mshr", OPT_CSTR,
                          &m_L1C_config.m_mshr_config_string,
                          "per-shader L1C MSHR config "
-                         "<mshr_disable>",
-                         "none");
+                         "<mshr_disable>,<mshr_corr_repl>",
+                         "T,F");
   option_parser_register(opp, "-gpgpu_cache:l1c_rrpv", OPT_CSTR,
                          &m_L1C_config.m_rrpv_config_string,
                          "per-shader L1C cache RRPV config "
-                         "<rrpv_bits>:<combined_rrpv_lru>",
-                         "2,F");                         
+                         "<rrpv_bits>:<combined_rrpv_lru>:<RRIP-update-policy>",
+                         "2,F,H");
       
   option_parser_register(
       opp, "-gpgpu_cache:il1", OPT_CSTR, &m_L1I_config.m_config_string,
@@ -394,13 +394,13 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_cache:l1i_mshr", OPT_CSTR,
                          &m_L1I_config.m_mshr_config_string,
                          "per-shader L1I MSHR config "
-                         "<mshr_disable>",
-                         "none");
+                         "<mshr_disable>,<mshr_corr_repl>",
+                         "T,F");
   option_parser_register(opp, "-gpgpu_cache:l1i_rrpv", OPT_CSTR,
                          &m_L1I_config.m_rrpv_config_string,
                          "per-shader L1I cache RRPV config "
-                         "<rrpv_bits>:<combined_rrpv_lru>",
-                         "2,F");                 
+                         "<rrpv_bits>:<combined_rrpv_lru>:<RRIP-update-policy>",
+                         "2,F,H");
 
   option_parser_register(opp, "-gpgpu_cache:dl1", OPT_CSTR,
                          &m_L1D_config.m_config_string,
@@ -412,13 +412,13 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_cache:l1d_mshr", OPT_CSTR,
                          &m_L1D_config.m_mshr_config_string,
                          "per-shader L1D MSHR config "
-                         "<mshr_disable>",
-                         "none");
+                         "<mshr_disable>,<mshr_corr_repl>",
+                         "T,F");
   option_parser_register(opp, "-gpgpu_cache:l1d_rrpv", OPT_CSTR,
                          &m_L1D_config.m_rrpv_config_string,
                          "per-shader L1D cache RRPV config "
-                         "<rrpv_bits>:<combined_rrpv_lru>",
-                         "2,F");                              
+                         "<rrpv_bits>:<combined_rrpv_lru>:<RRIP-update-policy>",
+                         "2,F,H");
 
   option_parser_register(opp, "-gpgpu_l1_cache_write_ratio", OPT_UINT32,
                          &m_L1D_config.m_wr_percent, "L1D write ratio", "0");
@@ -1744,18 +1744,21 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
     if (!m_memory_config->m_L2_config.disabled() &&
         m_memory_config->m_L2_config.get_num_lines()) {
       // L2c_print_cache_stat();
-      printf("L2_total_cache_accesses = %llu\n", total_l2_css.accesses);
-      printf("L2_total_cache_misses = %llu\n", total_l2_css.misses);
-      if (total_l2_css.accesses > 0)
-        printf("L2_total_cache_miss_rate = %.4lf\n",
-               (double)total_l2_css.misses / (double)total_l2_css.accesses);
-      printf("L2_total_cache_pending_hits = %llu\n", total_l2_css.pending_hits);
-      printf("L2_total_cache_reservation_fails = %llu\n",
-             total_l2_css.res_fails);
-      printf("L2_total_cache_breakdown:\n");
-      l2_stats.print_stats(stdout, streamID, "L2_cache_stats_breakdown");
-      printf("L2_total_cache_reservation_fail_breakdown:\n");
-      l2_stats.print_fail_stats(stdout, streamID, "L2_cache_stats_fail_breakdown");
+      printf("L2_accesses = %llu\n", total_l2_css.accesses);
+      printf("L2_misses = %llu\n", total_l2_css.misses);
+      printf("L2_sector_misses = %llu\n", total_l2_css.sector_misses);
+      if (total_l2_css.accesses > 0) {
+        printf("L2_miss_rate = %.4lf\n",
+          (double)total_l2_css.misses / (double)total_l2_css.accesses);
+        printf("L2_sector_miss_rate = %.4lf\n",
+          (double)total_l2_css.sector_misses / (double)total_l2_css.accesses);          
+      }
+      printf("L2_pending_hits = %llu\n", total_l2_css.pending_hits);
+      printf("L2_reservation_fails = %llu\n", total_l2_css.res_fails);
+      printf("L2_breakdown:\n");
+      l2_stats.print_stats(stdout, streamID, "L2_stats_breakdown");
+      printf("L2_reservation_fail_breakdown:\n");
+      l2_stats.print_fail_stats(stdout, streamID, "L2_stats_fail_breakdown");
       printf("L2_total_mshr_stats:\n");
       l2_stats.print_mshr_stats(stdout, streamID, "L2_mshr_stats");
       printf("Gather l2_sub_queue_occupancy:\n");
