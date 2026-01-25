@@ -3606,6 +3606,7 @@ void gpgpu_sim::shader_print_cache_stats(FILE *fout) const {
       m_cluster[i]->get_L1I_sub_stats(css);
       total_css += css;
     }
+    fprintf(fout, "\tL1I_avg_evict_interval = %llu\n", total_css.avg_evict_interval);
     fprintf(fout, "\tL1I_accesses      = %llu\n", total_css.accesses);
     fprintf(fout, "\tL1I_misses        = %llu\n", total_css.misses);
     fprintf(fout, "\tL1I_sector_misses = %llu\n", total_css.sector_misses);
@@ -3646,12 +3647,20 @@ void gpgpu_sim::shader_print_cache_stats(FILE *fout) const {
 
       total_css += css;
     }
+    fprintf(fout, "\tL1D_avg_evict_interval = %llu\n", total_css.avg_evict_interval);
     fprintf(fout, "\tL1D_accesses      = %llu\n", total_css.accesses);
     fprintf(fout, "\tL1D_misses        = %llu\n", total_css.misses);
     fprintf(fout, "\tL1D_sector_misses = %llu\n", total_css.sector_misses);
     if (total_css.accesses > 0) {
-      fprintf(fout, "\tL1D_miss_rate = %.4lf\n",
-              (double)total_css.misses / (double)total_css.accesses);
+      if (m_shader_config->m_L1D_config.get_mshr_disable() == 'T') {
+        fprintf(fout, "\tL1D_miss_rate = %.4lf\n",
+          (double)(total_css.misses + total_css.sector_misses)
+          / (double)total_css.accesses);
+      } else {
+        fprintf(fout, "\tL1D_miss_rate = %.4lf\n",
+          (double)total_css.misses / (double)total_css.accesses);        
+      }
+
       fprintf(fout, "\tL1D_sector_miss_rate = %.4lf\n",
               (double)total_css.sector_misses / (double)total_css.accesses);              
     }
@@ -3679,6 +3688,7 @@ void gpgpu_sim::shader_print_cache_stats(FILE *fout) const {
       m_cluster[i]->get_L1C_sub_stats(css);
       total_css += css;
     }
+    fprintf(fout, "\tL1C_avg_evict_interval = %llu\n", total_css.avg_evict_interval);
     fprintf(fout, "\tL1C_accesses      = %llu\n", total_css.accesses);
     fprintf(fout, "\tL1C_misses        = %llu\n", total_css.misses);
     fprintf(fout, "\tL1C_sector_misses = %llu\n", total_css.sector_misses);
@@ -3711,6 +3721,7 @@ void gpgpu_sim::shader_print_cache_stats(FILE *fout) const {
       m_cluster[i]->get_L1T_sub_stats(css);
       total_css += css;
     }
+    fprintf(fout, "\tL1T_avg_evict_interval = %llu\n", total_css.avg_evict_interval);
     fprintf(fout, "\tL1T_accesses      = %llu\n", total_css.accesses);
     fprintf(fout, "\tL1T_misses        = %llu\n", total_css.misses);
     fprintf(fout, "\tL1T_sector_misses = %llu\n", total_css.sector_misses);

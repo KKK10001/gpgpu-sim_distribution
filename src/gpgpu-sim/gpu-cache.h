@@ -207,11 +207,11 @@ struct cache_block_t {
   cache_block_t() {
     m_tag = 0;
     m_block_addr = 0;
-    m_was_recorded_in_mshr     = false;
-    m_recorded_times_in_mshr   = 0;
-    m_last_record_time_in_mshr = 0;
-    m_record_interval_in_mshr  = 0;
-    m_evictions                = 0;
+    m_was_recorded_in_mshr        = false;
+    m_recorded_times_in_mshr      = 0;
+    m_last_record_time_in_mshr    = 0;
+    m_record_interval_in_mshr     = 0;
+    m_avg_record_interval_in_mshr = 0;
   }
 
   virtual void allocate(new_addr_type tag, new_addr_type block_addr,
@@ -228,8 +228,7 @@ struct cache_block_t {
   virtual bool was_recorded_in_mshr() { return m_was_recorded_in_mshr; }
   virtual unsigned get_recorded_times_in_mshr() { return m_recorded_times_in_mshr; }
   virtual unsigned get_record_interval_in_mshr() { return m_record_interval_in_mshr; }
-  virtual unsigned get_evictions() { return m_evictions; }
-  virtual unsigned get_accesses() { return m_accesses; }
+  virtual unsigned get_avg_record_interval_in_mshr() { return m_avg_record_interval_in_mshr; }
 
   virtual enum cache_block_state get_status(
       mem_access_sector_mask_t sector_mask) = 0;
@@ -239,7 +238,7 @@ struct cache_block_t {
   virtual void set_byte_mask(mem_access_byte_mask_t byte_mask) = 0;
   virtual mem_access_byte_mask_t get_dirty_byte_mask() = 0;
   virtual mem_access_sector_mask_t get_dirty_sector_mask() = 0;
-  virtual unsigned long long get_last_access_time() = 0;  
+
   virtual void set_rrpv(unsigned rrpv) = 0;
   virtual unsigned get_rrpv() = 0;
   virtual void set_max_rrpv(unsigned rrpv) = 0;
@@ -251,6 +250,19 @@ struct cache_block_t {
   virtual void dec_rrpv() = 0;
   virtual void set_last_access_time(unsigned long long time,
                                     mem_access_sector_mask_t sector_mask) = 0;
+  virtual unsigned long long get_last_access_time() = 0;
+  virtual void set_last_fill_time(unsigned long long time) = 0;
+  virtual unsigned long long get_last_fill_time() = 0;
+
+  virtual void update_recency_info(unsigned long long time) = 0;
+  virtual void inc_total_hits() = 0;
+  virtual unsigned long long get_total_accesses() = 0;
+  virtual unsigned long long get_total_evictions() = 0;
+  virtual unsigned long long get_last_evict_time() = 0;
+  virtual unsigned long long get_evict_interval() = 0; 
+  virtual unsigned long long get_avg_evict_interval() = 0;
+  virtual unsigned get_total_hits() = 0;
+
   virtual unsigned long long get_alloc_time() = 0;
   virtual void set_ignore_on_fill(bool m_ignore,
                                   mem_access_sector_mask_t sector_mask) = 0;
@@ -272,22 +284,26 @@ struct cache_block_t {
   unsigned m_recorded_times_in_mshr;
   unsigned long long m_last_record_time_in_mshr;
   unsigned long long m_record_interval_in_mshr;
+  unsigned long long m_avg_record_interval_in_mshr;
 
-  // My Invention
-  unsigned m_evictions; 
-  unsigned m_accesses;
 };
 
 struct line_cache_block : public cache_block_t {
   line_cache_block() {
     m_alloc_time = 0;
     m_last_access_time = 0;
+
+    m_total_evictions     = 0;
+    m_total_accesses      = 0;
+
+    m_avg_evict_interval = 0;
+    m_evict_interval     = 0;
+    m_last_evict_time    = 0;
+    m_total_hits         = 0;
+
     m_fill_time = 0;
-    // m_rrpv = (1 << m_config.m_rrpv_bits) - 1;
-    // m_max_rrpv = (1 << m_config.m_rrpv_bits) - 1;
-    const unsigned rrpv_bits = 2;
-    m_rrpv     = (1 << rrpv_bits) - 1;
-    m_max_rrpv = (1 << rrpv_bits) - 1;    
+    m_rrpv     = get_max_rrpv();
+    m_max_rrpv = get_max_rrpv();
     m_status = INVALID;
     m_ignore_on_fill_status = false;
     m_set_modified_on_fill = false;
@@ -301,11 +317,7 @@ struct line_cache_block : public cache_block_t {
     m_alloc_time = time;
     m_last_access_time = time;
     m_fill_time = 0;
-    // m_rrpv = get_max_rrpv(); // for SRRIP 3'b111
-    // // 1-19 eve
-    m_rrpv = (get_max_rrpv() >> 1) + 1; // for SRRIP 3'b111->3'b100 // 1-19 eve
-    // m_rrpv = (get_max_rrpv() >> 1);
-    // m_rrpv = 0;
+    m_rrpv = (get_max_rrpv() >> 1) + 1;
     m_status = RESERVED;
     m_ignore_on_fill_status = false;
     m_set_modified_on_fill = false;
@@ -324,7 +336,7 @@ struct line_cache_block : public cache_block_t {
     }
 
     m_fill_time = time;
-    m_rrpv = (get_max_rrpv() >> 1) + 1; // for SRRIP 3'b111->3'b100
+    m_rrpv = (get_max_rrpv() >> 1) + 1;
   }
   virtual bool is_invalid_line() { return m_status == INVALID; }
   virtual bool is_valid_line() { return m_status == VALID; }
@@ -359,14 +371,57 @@ struct line_cache_block : public cache_block_t {
     if (m_status == MODIFIED) sector_mask.set();
     return sector_mask;
   }
-  virtual unsigned long long get_last_access_time() {
-    return m_last_access_time;
-  }
-  
+
   virtual void set_last_access_time(unsigned long long time,
                                     mem_access_sector_mask_t sector_mask) {
     m_last_access_time = time;
   }
+  virtual unsigned long long get_last_access_time() {
+    return m_last_access_time;
+  }  
+  virtual void set_last_fill_time(unsigned long long time) {
+    m_last_fill_time = time;
+  }
+  virtual unsigned long long get_last_fill_time() {
+    return m_last_fill_time;
+  }
+
+  virtual void inc_total_hits() {
+    m_total_hits++;
+  }
+  virtual void update_recency_info(unsigned long long time) {
+    m_total_accesses++;
+    m_total_evictions++;
+    if (!m_last_access_time) {
+      m_avg_evict_interval = 0;
+      m_evict_interval     = 0;
+      m_last_evict_time    = 0;
+    } else {
+      m_avg_evict_interval = ((m_avg_evict_interval + m_evict_interval) >> 1);
+      m_evict_interval     = (time - m_last_evict_time);
+      m_last_evict_time    = time;
+    }
+  }
+  virtual unsigned long long get_total_accesses() {
+    return m_total_accesses;
+  }
+  virtual unsigned long long get_total_evictions() {
+    return m_total_evictions;
+  }  
+
+  virtual unsigned get_total_hits() {
+    return m_total_hits;
+  }
+  virtual unsigned long long get_avg_evict_interval() {
+    return m_avg_evict_interval;
+  }
+  virtual unsigned long long get_evict_interval() {
+    return m_evict_interval;
+  }
+  virtual unsigned long long get_last_evict_time() {
+    return m_last_evict_time;
+  }  
+
   virtual void set_rrpv(unsigned rrpv) { m_rrpv = rrpv; }
   virtual unsigned get_rrpv() { return m_rrpv; }
   virtual void set_max_rrpv(unsigned rrpv) { m_max_rrpv = rrpv; }
@@ -409,6 +464,16 @@ struct line_cache_block : public cache_block_t {
  private:
   unsigned long long m_alloc_time;
   unsigned long long m_last_access_time;
+  unsigned long long m_last_fill_time;
+
+  unsigned m_total_evictions;
+  unsigned m_total_accesses;  
+  
+  unsigned long long m_avg_evict_interval;
+  unsigned long long m_evict_interval;
+  unsigned long long m_last_evict_time;
+  unsigned m_total_hits;
+  
   unsigned long long m_fill_time;
   unsigned m_rrpv;
   unsigned m_max_rrpv;
@@ -438,14 +503,17 @@ struct sector_cache_block : public cache_block_t {
     }
     m_line_alloc_time = 0;
     m_line_last_access_time = 0;
+    m_line_last_fill_time   = 0;
+    m_total_evictions       = 0;
+    m_total_accesses        = 0;
+         
+    m_avg_evict_interval    = 0;
+    m_evict_interval        = 0; 
+    m_last_evict_time       = 0;
+    m_total_hits            = 0;
+    m_rrpv     = get_max_rrpv();
+    m_max_rrpv = get_max_rrpv();
 
-    // m_rrpv = (1 << m_config.m_rrpv_bits) - 1;
-    // m_max_rrpv = (1 << m_config.m_rrpv_bits) - 1;
-    const unsigned rrpv_bits = 2;
-    m_rrpv     = (1 << rrpv_bits) - 1;
-    m_max_rrpv = (1 << rrpv_bits) - 1;  
-
-    m_line_fill_time = 0;
     m_dirty_byte_mask.reset();
   }  
 
@@ -477,14 +545,10 @@ struct sector_cache_block : public cache_block_t {
     // set line stats
     m_line_alloc_time       = time;  // only set this for the first allocated sector
     m_line_last_access_time = time;
-    // m_rrpv = get_max_rrpv(); // for SRRIP 3'b111
-    m_rrpv = (get_max_rrpv() >> 1) + 1; // 1-19 eve
-    // m_rrpv = (get_max_rrpv() >> 1);
-    // m_rrpv = 0;
-    m_line_fill_time        = 0;            // no-used var.
+    m_rrpv = (get_max_rrpv() >> 1) + 1;
   }
 
-  void allocate_sector(unsigned time, mem_access_sector_mask_t sector_mask) {
+  void allocate_sector(unsigned long long time, mem_access_sector_mask_t sector_mask) {
     // allocate invalid sector of this allocated valid line
     assert(is_valid_line());
     unsigned sidx = get_sector_index(sector_mask);
@@ -507,11 +571,8 @@ struct sector_cache_block : public cache_block_t {
 
     // set line stats
     m_line_last_access_time = time;
-    // m_rrpv = get_max_rrpv(); // for SRRIP 3'b111
-    m_rrpv = (get_max_rrpv() >> 1) + 1; // 1-19 eve
-    // m_rrpv = (get_max_rrpv() >> 1);
-    // m_rrpv = 0;
-    m_line_fill_time = 0; 
+    m_line_last_fill_time   = time; 
+    m_rrpv = (get_max_rrpv() >> 1) + 1;    
   }
 
   virtual void fill(unsigned time, mem_access_sector_mask_t sector_mask,
@@ -531,7 +592,7 @@ struct sector_cache_block : public cache_block_t {
     }
 
     m_sector_fill_time[sidx] = time;
-    m_line_fill_time = time;
+    m_line_last_fill_time    = time;
     m_rrpv = (get_max_rrpv() >> 1) + 1; // for SRRIP 3'b111->3'b100
   }
   virtual bool is_invalid_line() {
@@ -590,9 +651,6 @@ struct sector_cache_block : public cache_block_t {
     }
     return sector_mask;
   }
-  virtual unsigned long long get_last_access_time() {
-    return m_line_last_access_time;
-  }
   
   virtual void set_last_access_time(unsigned long long time,
                                     mem_access_sector_mask_t sector_mask) {
@@ -601,6 +659,52 @@ struct sector_cache_block : public cache_block_t {
     m_last_sector_access_time[sidx] = time;
     m_line_last_access_time = time;
   }
+  virtual unsigned long long get_last_access_time() {
+    return m_line_last_access_time;
+  }
+  virtual void set_last_fill_time(unsigned long long time) {
+    m_line_last_fill_time = time;
+  }
+  virtual unsigned long long get_last_fill_time() {
+    return m_line_last_fill_time;
+  }
+
+  virtual void inc_total_hits() {
+    m_total_hits++;
+  }
+  virtual void update_recency_info(unsigned long long time) {
+    m_total_accesses++;
+    m_total_evictions++;
+    if (!m_line_last_access_time) {
+      m_avg_evict_interval = 0;
+      m_evict_interval     = 0;
+      m_last_evict_time    = 0;
+    } else {
+      m_avg_evict_interval = ((m_avg_evict_interval + m_evict_interval) >> 1);
+      m_evict_interval     = (time - m_last_evict_time);
+      m_last_evict_time    = time;
+    }
+  }
+  virtual unsigned long long get_total_accesses() {
+    return m_total_accesses;
+  }
+  virtual unsigned long long get_total_evictions() {
+    return m_total_evictions;
+  }    
+  
+  virtual unsigned get_total_hits() {
+    return m_total_hits;
+  }  
+  virtual unsigned long long get_last_evict_time() {
+    return m_last_evict_time;
+  }  
+  virtual unsigned long long get_evict_interval() {
+    return m_evict_interval;
+  }
+  virtual unsigned long long get_avg_evict_interval() {
+    return m_avg_evict_interval;
+  }
+
   virtual void set_rrpv(unsigned rrpv) { m_rrpv = rrpv; }
   virtual unsigned get_rrpv() { return m_rrpv; }
   virtual void set_max_rrpv(unsigned rrpv) { m_max_rrpv = rrpv; }
@@ -675,13 +779,19 @@ struct sector_cache_block : public cache_block_t {
   unsigned m_sector_alloc_time[SECTOR_CHUNK_SIZE];
   unsigned m_last_sector_access_time[SECTOR_CHUNK_SIZE];  
   unsigned m_sector_fill_time[SECTOR_CHUNK_SIZE];
-  unsigned m_line_fill_time;
   bool m_ignore_on_fill_status[SECTOR_CHUNK_SIZE];  
   //////////////////////////////////////////////////////////////
 
   // LRU replacement_policy related control info.
-  unsigned m_line_alloc_time;
-  unsigned m_line_last_access_time;
+  unsigned long long m_line_alloc_time;
+  unsigned long long m_line_last_access_time;
+  unsigned long long m_line_last_fill_time;
+  unsigned m_total_evictions;
+  unsigned m_total_accesses;
+  unsigned long long m_last_evict_time;
+  unsigned long long m_evict_interval;  
+  unsigned long long m_avg_evict_interval;
+  unsigned m_total_hits;
   // Static Re-reference Interval Prediction (SRRIP) related control info.
   unsigned m_rrpv;
   unsigned m_max_rrpv;
@@ -734,25 +844,41 @@ class cache_config {
     m_is_streaming = false;
     m_wr_percent = 0;
   }
-  void init(char *config, char* mshr_config, char* rrpv_config, 
+  void init(
+    char *config, 
+    char* mshr_config,     
+    char* rrpv_config, 
+    char* rep_enhance_config,
     FuncCache status, const char* cache_name = "") {
     cache_status = status;
     m_cache_name = cache_name;
     assert(config);
-
     assert(mshr_config);
+    assert(rrpv_config);
+    assert(rep_enhance_config);
+
     [[maybe_unused]] int ntok_mshr = 
       sscanf(mshr_config, "%c,%c", &m_mshr_disable, &m_mshr_corr_repl);
+    if (m_mshr_disable == 'T') {
+      assert(m_mshr_corr_repl == 'F');
+    }
     fprintf(Trace::out, 
       "----------- %s mshr_config is below -----------\n "
       "m_mshr_disable = %c m_mshr_corr_repl = %c\n",
       cache_name, m_mshr_disable, m_mshr_corr_repl);
 
-    assert(rrpv_config);
     [[maybe_unused]] int ntok_rrpv = 
       sscanf(rrpv_config, 
             "%u,%c,%c", 
             &m_rrpv_bits, &m_combined_srrip_lru, &m_srrip_up);
+
+    [[maybe_unused]] int ntok_rep_enhance = 
+      sscanf(rep_enhance_config, "%c,%c", 
+        &m_total_hits_ascend, &m_fill_time_ascend);
+    fprintf(Trace::out, 
+      "----------- %s rep_enhance_config is below -----------\n "
+      "m_total_hits_ascend = %c m_fill_time_ascend = %c\n",
+      cache_name, m_total_hits_ascend, m_fill_time_ascend);
 
     fprintf(Trace::out, 
       "----------- %s srrip_config is below -----------\n "
@@ -1130,6 +1256,7 @@ class cache_config {
   char *m_config_string;
   char *m_mshr_config_string;
   char *m_rrpv_config_string;
+  char *m_rep_enhance_string; // {timestamp, total_hits}
   char *m_config_stringPrefL1;
   char *m_config_stringPrefShared;
   FuncCache cache_status;  
@@ -1145,6 +1272,7 @@ class cache_config {
   const unsigned get_mshr_max_merge() const { return m_mshr_max_merge; }
   const unsigned get_mshr_entries() const { return m_mshr_entries; }
   const char get_sif() const { return m_sif; }
+  const char get_mshr_disable() const { return m_mshr_disable; }
 
  protected:
   void exit_parse_error() {
@@ -1182,6 +1310,8 @@ class cache_config {
 
   char m_mshr_disable;
   char m_mshr_corr_repl;
+  char m_total_hits_ascend;
+  char m_fill_time_ascend;
 
   enum srrip_update_policy_t m_srrip_update_policy;
   unsigned m_rrpv_bits;
@@ -1220,10 +1350,13 @@ class l1d_cache_config : public cache_config {
   l1d_cache_config() : cache_config() {
   }
   unsigned set_bank(new_addr_type addr) const;
-  void init(char *config, char *mshr_config, char* rrpv_config, FuncCache status, const char* cache_name = "L1D") {
+  void init(
+    char *config, char *mshr_config, char* rrpv_config, char* rep_enhance_config, 
+    FuncCache status, const char* cache_name = "L1D") {
     l1_banks_byte_interleaving_log2 = LOGB2(l1_banks_byte_interleaving);
     l1_banks_log2 = LOGB2(l1_banks);
-    cache_config::init(config, mshr_config, rrpv_config, status, cache_name);
+    cache_config::init(
+      config, mshr_config, rrpv_config, rep_enhance_config, status, cache_name);
   }
   unsigned l1_latency;
   unsigned l1_banks;
@@ -1264,12 +1397,95 @@ class prefetcher {
     ~prefetcher();
 };
 
+enum LINE_RECENCY_ITEMS {
+  AVG_EVICT_INTERVAL = 0,
+  TOTAL_HITS,
+  LAST_ACCESS_TIME,
+  UNFOLDED_IDX
+};
+
+struct LINE_RECENCY {
+  unsigned long long last_access_time;
+  unsigned long long last_fill_time;
+  unsigned total_hits;
+  unsigned total_evictions;
+  unsigned total_accesses;
+  unsigned long long last_evict_interval;
+  unsigned long long avg_evict_interval;
+  LINE_RECENCY(
+    unsigned long long last_access_time_,
+    unsigned long long last_fill_time_,
+    unsigned total_hits_,
+    unsigned total_evictions_,
+    unsigned total_accesses_,
+    unsigned long long last_evict_interval_,
+    unsigned long long avg_evict_interval_
+  ) : 
+  last_access_time(last_access_time_),
+  last_fill_time(last_fill_time_),
+  total_hits(total_hits_),
+  total_evictions(total_evictions_),
+  total_accesses(total_accesses_),
+  last_evict_interval(last_evict_interval_),
+  avg_evict_interval(avg_evict_interval_) {}
+};
+
 class tag_array {
   friend class baseline_cache;
  public:
   // Use this constructor
   tag_array(cache_config &config, int core_id, int type_id);
   ~tag_array();
+
+  static bool cmpForSmallerTimestamp(
+    const std::pair<unsigned, LINE_RECENCY>& a, 
+    const std::pair<unsigned, LINE_RECENCY>& b) {
+    return a.second.last_access_time < b.second.last_access_time;
+  }
+  static bool cmpForSmallerTotalHits(
+    const std::pair<unsigned, LINE_RECENCY>& a, 
+    const std::pair<unsigned, LINE_RECENCY>& b) {
+    return a.second.total_hits < b.second.total_hits;
+  }  
+  static bool cmpForSmallerFillTime(
+    const std::pair<unsigned, LINE_RECENCY>& a, 
+    const std::pair<unsigned, LINE_RECENCY>& b) {
+    return a.second.last_fill_time < b.second.last_fill_time;
+  }
+
+  void gather_rep_candidates(
+    cache_block_t* line, const unsigned& index,
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates);
+
+  void lru_pick(
+    cache_block_t* line, unsigned long long& valid_timestamp, 
+    unsigned& valid_line, bool& lru_has_picked, const unsigned& index);
+  void fill_time_pick(
+    cache_block_t* line, unsigned long long& valid_timestamp, 
+    unsigned& valid_line, const unsigned& index);
+
+  void pick_modified_by_timestamp_ascend(
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
+    unsigned& valid_line,
+    unsigned& lru_picked_total_hits,
+    unsigned long long& lru_picked_avg_evict_interval
+  );
+  void pick_modified_by_total_hits_ascend(
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
+    unsigned& valid_line, const unsigned& lru_picked_total_hits
+  );  
+  void pick_modified_by_fill_time_ascend(
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
+    unsigned& valid_line
+  );    
 
   // addr is block_addr
   enum cache_request_status probe(const std::string& caller,
@@ -1283,17 +1499,17 @@ class tag_array {
                                   unsigned long long time,
                                   bool probe_mode = false,
                                   mem_fetch *mf = NULL);
-  enum cache_request_status access(new_addr_type addr, unsigned time,
+  enum cache_request_status access(new_addr_type addr, unsigned long long time,
                                    unsigned &idx, mem_fetch *mf);
-  enum cache_request_status access(new_addr_type addr, unsigned time,
+  enum cache_request_status access(new_addr_type addr, unsigned long long time,
                                    unsigned &idx, bool &wb,
                                    evicted_block_info &evicted, mem_fetch *mf);
   void inc_rrpv_for_one_set(unsigned set_index);
   bool already_has_max_rrpv_in_one_set(unsigned set_index);
 
-  void fill(new_addr_type addr, unsigned time, mem_fetch *mf, bool is_write);
-  void fill(unsigned index, unsigned time, mem_fetch *mf);
-  void fill(new_addr_type addr, unsigned time, mem_access_sector_mask_t mask,
+  void fill(new_addr_type addr, unsigned long long time, mem_fetch *mf, bool is_write);
+  void fill(unsigned index, unsigned long long time, mem_fetch *mf);
+  void fill(new_addr_type addr, unsigned long long time, mem_access_sector_mask_t mask,
             mem_access_byte_mask_t byte_mask, bool is_write);
   void set_recorded_in_mshr(unsigned index, unsigned long long time);
 
@@ -1438,6 +1654,10 @@ struct cache_sub_stats {
   unsigned long long pending_hits;
   unsigned long long res_fails;
 
+  // different from others' overloading of "+" and "+="
+  // Here actually implements average
+  unsigned long long avg_evict_interval;
+
   unsigned long long port_available_cycles;
   unsigned long long data_port_busy_cycles;
   unsigned long long fill_port_busy_cycles;
@@ -1449,6 +1669,7 @@ struct cache_sub_stats {
     sector_misses = 0;
     pending_hits = 0;
     res_fails = 0;
+    avg_evict_interval = 0;
     port_available_cycles = 0;
     data_port_busy_cycles = 0;
     fill_port_busy_cycles = 0;
@@ -1462,6 +1683,7 @@ struct cache_sub_stats {
     sector_misses += css.sector_misses;
     pending_hits += css.pending_hits;
     res_fails += css.res_fails;
+    avg_evict_interval = (avg_evict_interval + css.avg_evict_interval) >> 1;
     port_available_cycles += css.port_available_cycles;
     data_port_busy_cycles += css.data_port_busy_cycles;
     fill_port_busy_cycles += css.fill_port_busy_cycles;
@@ -1478,6 +1700,7 @@ struct cache_sub_stats {
     ret.sector_misses = sector_misses + cs.sector_misses;
     ret.pending_hits = pending_hits + cs.pending_hits;
     ret.res_fails = res_fails + cs.res_fails;
+    ret.avg_evict_interval = (avg_evict_interval + cs.avg_evict_interval) >> 1;
     ret.port_available_cycles =
         port_available_cycles + cs.port_available_cycles;
     ret.data_port_busy_cycles =
@@ -1559,6 +1782,10 @@ class cache_stats {
   void clear_pw();
   unsigned get_mshr_merge_dist_cnt(unsigned long long streamID, unsigned sm_id, unsigned warp_id);
 
+  void inc_l1d_miss_served_cycles(
+    unsigned long long streamID, unsigned long long served_cycles);
+  void inc_l1d_misses(unsigned long long streamID);
+
   // Increment cache stats
   void inc_mshr_stats(unsigned long long streamID, unsigned sm_id, unsigned warp_id);
   void inc_accu_l2_dram_queue_size(unsigned long long streamID, unsigned l2_sub, unsigned size);
@@ -1566,9 +1793,15 @@ class cache_stats {
   void inc_l2_dram_q_accesses(unsigned long long streamID, unsigned l2_sub);
   void inc_l2_icnt_q_accesses(unsigned long long streamID, unsigned l2_sub);
   void inc_l2_mshr_slots_fills(unsigned long long streamID, unsigned l2_sub);
+  void inc_l2_sub_miss_served_cycles(
+    unsigned long long streamID, unsigned l2_sub,
+    unsigned long long served_cycles);
+  void inc_l2_sub_misses(unsigned long long streamID, unsigned l2_sub);
+
   void inc_l2_miss_q_pops();
   void gather_lines_stats(unsigned long long streamID, unsigned unfolded_index);
   void inc_stats(int access_type, int access_outcome, unsigned long long streamID);  
+  void update_evict_stats(unsigned long long streamID, unsigned long long victim_avg_evict_interval);
   // Increment AerialVision cache stats
   void inc_stats_pw(int access_type, int access_outcome, unsigned long long streamID);
   void inc_fail_stats(int access_type, int fail_outcome,
@@ -1588,6 +1821,12 @@ class cache_stats {
   // for m_accu_l2_dram_queue_size, m_accu_l2_icnt_queue_size, m_l2_dram_q_accesses
   unsigned operator()(unsigned l2_sub, unsigned long long streamID) const;
 
+  unsigned long long operator()( // l1d
+    unsigned long long streamID, const char* tgt_name) const;
+
+  unsigned long long operator()(
+    unsigned l2_sub, unsigned long long streamID, const char* tgt_name) const;
+
   unsigned long long operator()(int access_type, int access_outcome,
                                 bool is_fail_outcome,
                                 int fail_driver,
@@ -1606,8 +1845,11 @@ class cache_stats {
   void print_l2_icnt_queue_stats(
     FILE *fout, unsigned l2_icnt_q_capacity, unsigned long long streamID, const char *info = "") const;
 
+  void print_avg_core_cache_miss_served_cycles(FILE* fout, unsigned long long streamID) const;
+  void print_avg_l2_miss_served_cycles(FILE* fout, unsigned long long streamID) const;
   void print_l2_mshr_slots_stats(
-    FILE *fout, unsigned l2_mshr_allocated_slots, unsigned long long streamID, const char *info) const;
+    FILE *fout, unsigned l2_mshr_allocated_slots, 
+    unsigned long long streamID, const char *info) const;
 
   void print_l2_miss_q_pops(FILE *fout, const char *info = "") const;
 
@@ -1645,6 +1887,12 @@ class cache_stats {
 
   // CUDA streamID -> cache stats[NUM_MEM_ACCESS_TYPE]
   std::map<unsigned long long, std::vector<std::vector<unsigned long long>>> m_stats;
+  std::map<unsigned long long, unsigned /* avg_evict_interval */> m_evict_stats;
+  std::map<unsigned long long /* streamID */, unsigned long long /* miss_served_cycles */> m_l1d_miss_served_cycles;
+  std::map<unsigned long long /* streamID */, unsigned> m_l1d_misses;
+  std::map<unsigned long long /* streamID */, std::vector<unsigned long long>> m_l2_sub_miss_served_cycles;
+  std::map<unsigned long long /* streamID */, std::vector<unsigned>> m_l2_sub_misses;
+
   // AerialVision cache stats (per-window)
   std::map<unsigned long long, std::vector<std::vector<unsigned long long>>> m_stats_pw;
   std::map<unsigned long long, std::vector<std::vector<unsigned long long>>> m_fail_stats;

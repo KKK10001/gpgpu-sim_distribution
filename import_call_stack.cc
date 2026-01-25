@@ -243,3 +243,23 @@ libcudart.so!gpgpu_sim::cycle(gpgpu_sim * const this) (/home/hjs/dev/accel-sim/a
 accel_sim_framework::simulate(accel_sim_framework * const this) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/accel-sim.cc:165)
 accel_sim_framework::simulation_loop(accel_sim_framework * const this) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/accel-sim.cc:75)
 main(int argc, const char ** argv) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/main.cc:30)
+
+// 
+libcudart.so!tag_array::fill(tag_array * const this, unsigned int index, unsigned long long time, mem_fetch * mf) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/gpu-cache.cc:942)
+libcudart.so!baseline_cache::fill(baseline_cache * const this, mem_fetch * mf, unsigned long long time) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/gpu-cache.cc:2991)
+// |-> m_tag_array->fill(e->second.m_cache_index, time, mf);
+libcudart.so!memory_sub_partition::cache_cycle(memory_sub_partition * const this, unsigned long long cycle, mem_fetch * mf_monitor) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/l2cache.cc:625)
+// |-> m_L2cache->fill(mf, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset);
+libcudart.so!gpgpu_sim::cycle(gpgpu_sim * const this) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/gpu-sim.cc:2301)
+accel_sim_framework::simulate(accel_sim_framework * const this) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/accel-sim.cc:165)
+accel_sim_framework::simulation_loop(accel_sim_framework * const this) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/accel-sim.cc:75)
+main(int argc, const char ** argv) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/main.cc:30)
+
+libcudart.so!tag_array::fill(tag_array * const this, new_addr_type addr, unsigned long long time, mem_access_sector_mask_t mask, mem_access_byte_mask_t byte_mask, bool is_write) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/gpu-cache.cc:925)
+libcudart.so!baseline_cache::force_tag_access(baseline_cache * const this, new_addr_type addr, unsigned int time, mem_access_sector_mask_t mask) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/gpu-cache.h:2097)
+libcudart.so!memory_sub_partition::force_l2_tag_update(memory_sub_partition * const this, new_addr_type addr, unsigned int time, mem_access_sector_mask_t mask) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/l2cache.h:209)
+libcudart.so!memory_partition_unit::handle_memcpy_to_gpu(memory_partition_unit * const this, size_t addr, unsigned int global_subpart_id, mem_access_sector_mask_t mask) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/l2cache.cc:105)
+libcudart.so!gpgpu_sim::perf_memcpy_to_gpu(gpgpu_sim * const this, size_t dst_start_addr, size_t count) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/gpgpu-sim/src/gpgpu-sim/gpu-sim.cc:2508)
+accel_sim_framework::parse_commandlist(accel_sim_framework * const this) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/accel-sim.cc:113)
+accel_sim_framework::simulation_loop(accel_sim_framework * const this) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/accel-sim.cc:48)
+main(int argc, const char ** argv) (/home/hjs/dev/accel-sim/accel-sim-framework/gpu-simulator/main.cc:30)

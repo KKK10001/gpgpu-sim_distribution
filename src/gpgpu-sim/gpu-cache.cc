@@ -346,7 +346,7 @@ unsigned cache_config::hash_function(new_addr_type addr, unsigned m_nset,
 
 void l2_cache_config::init(linear_to_raw_address_translation *address_mapping) {
   cache_config::init(
-    m_config_string, m_mshr_config_string, m_rrpv_config_string, 
+    m_config_string, m_mshr_config_string, m_rrpv_config_string, m_rep_enhance_string,
     FuncCachePreferNone, "L2");
   m_address_mapping = address_mapping;
 }
@@ -449,6 +449,150 @@ enum cache_request_status tag_array::probe(const std::string& caller,
   return probe(final_caller.c_str(), addr, idx, mask, is_write, time, probe_mode, mf);
 }
 
+void tag_array::gather_rep_candidates(
+  cache_block_t* line, const unsigned& index,
+  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
+  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
+  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates) {
+
+  LINE_RECENCY recency(
+    line->get_last_access_time(), 
+    line->get_last_fill_time(),
+    line->get_total_hits(),
+    line->get_total_evictions(), 
+    line->get_total_accesses(),
+    line->get_evict_interval(), 
+    line->get_avg_evict_interval()
+  );
+  if (!line->was_recorded_in_mshr()) {
+    hybrid_rep_candidates_no_record_in_mshr.push_back(std::pair<unsigned, LINE_RECENCY>(index, recency));
+  } else {
+    hybrid_rep_candidates_recorded_in_mshr.push_back(std::pair<unsigned, LINE_RECENCY>(index, recency));
+  }
+  hybrid_rep_candidates.push_back(std::pair<unsigned, LINE_RECENCY>(index, recency));
+}
+
+void tag_array::lru_pick(
+  cache_block_t* line, unsigned long long& valid_timestamp, 
+  unsigned& valid_line, bool& lru_has_picked, const unsigned& index) {
+
+  if (line->get_last_access_time() < valid_timestamp) {
+    valid_timestamp = line->get_last_access_time();
+    valid_line      = index;
+    lru_has_picked  = true;
+  }
+}
+void tag_array::fill_time_pick(
+  cache_block_t* line, unsigned long long& valid_timestamp, 
+  unsigned& valid_line, const unsigned& index) {
+
+  if (line->get_last_fill_time() < valid_timestamp) {
+    valid_timestamp = line->get_last_fill_time();
+    valid_line      = index;
+  }
+}
+
+void tag_array::pick_modified_by_timestamp_ascend(
+  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
+  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
+  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
+  unsigned& valid_line,
+  unsigned& lru_picked_total_hits,
+  unsigned long long& lru_picked_avg_evict_interval) {
+
+  std::sort(hybrid_rep_candidates.begin(), hybrid_rep_candidates.end(), cmpForSmallerTimestamp);
+  if (DTRACE(CHECK_LRU_ARRAY)) {
+    if (valid_line != hybrid_rep_candidates[0].first) {
+      fprintf(Trace::out, "valid_line:%u != hybrid_rep_candidates[0].first:%u\n",
+        valid_line, hybrid_rep_candidates[0].first);
+      for (size_t i = 0; i < hybrid_rep_candidates.size(); i++)
+      {
+        fprintf(Trace::out, "hybrid_rep_candidates[%u] = {idx:%u timestamp:%llu}\n", 
+          i, hybrid_rep_candidates[i].first, hybrid_rep_candidates[i].second.last_access_time);
+      }      
+    }
+  }
+  // srad_v2 with mshr_en_but_no_aware_all_lru.config would appear below:
+  // valid_line:309 != hybrid_rep_candidates[0].first:321
+  // hybrid_rep_candidates[0] = {idx:321 timestamp:15367}
+  // hybrid_rep_candidates[1] = {idx:309 timestamp:15367}  
+  // lru_pick() gen valid_line:309
+  assert(hybrid_rep_candidates.size());
+  if (hybrid_rep_candidates.size() > 1) {
+    if (hybrid_rep_candidates[0].second.last_access_time != 
+        hybrid_rep_candidates[1].second.last_access_time) {
+      assert(valid_line == hybrid_rep_candidates[0].first);
+    }
+  } else if (hybrid_rep_candidates.size() == 1) {
+    assert(valid_line == hybrid_rep_candidates[0].first);
+  }
+
+  if (m_config.m_mshr_corr_repl == 'T') {
+    std::vector<std::pair<unsigned, LINE_RECENCY>> hybrid_rep_candidates_in_use;
+    if (hybrid_rep_candidates_no_record_in_mshr.size()) {
+      hybrid_rep_candidates_in_use = hybrid_rep_candidates_no_record_in_mshr;
+    } else {
+      hybrid_rep_candidates_in_use = hybrid_rep_candidates_recorded_in_mshr;
+    }
+    assert(hybrid_rep_candidates_in_use.size());
+    std::sort(hybrid_rep_candidates_in_use.begin(), hybrid_rep_candidates_in_use.end(), cmpForSmallerTimestamp);
+    valid_line                    = hybrid_rep_candidates_in_use[0].first; // update valid_line 
+    lru_picked_total_hits         = hybrid_rep_candidates_in_use[0].second.total_hits;
+    lru_picked_avg_evict_interval = hybrid_rep_candidates_in_use[0].second.avg_evict_interval;
+  } else {
+    valid_line                    = hybrid_rep_candidates[0].first;
+    lru_picked_total_hits         = hybrid_rep_candidates[0].second.total_hits;
+    lru_picked_avg_evict_interval = hybrid_rep_candidates[0].second.avg_evict_interval;
+  }
+}
+
+void tag_array::pick_modified_by_total_hits_ascend(
+  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
+  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
+  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
+  unsigned& valid_line, const unsigned& lru_picked_total_hits) {
+
+  if (m_config.m_mshr_corr_repl == 'T') {
+    std::vector<std::pair<unsigned, LINE_RECENCY>> hybrid_rep_candidates_in_use;
+    if (hybrid_rep_candidates_no_record_in_mshr.size()) {
+      hybrid_rep_candidates_in_use = hybrid_rep_candidates_no_record_in_mshr;
+    } else {
+      hybrid_rep_candidates_in_use = hybrid_rep_candidates_recorded_in_mshr;
+    }
+    
+    std::sort(hybrid_rep_candidates_in_use.begin(), hybrid_rep_candidates_in_use.end(), cmpForSmallerTotalHits);
+    if (hybrid_rep_candidates_in_use[0].second.total_hits < lru_picked_total_hits) {
+      valid_line = hybrid_rep_candidates_in_use[0].first;
+    }
+  } else {
+    std::sort(hybrid_rep_candidates.begin(), hybrid_rep_candidates.end(), cmpForSmallerTotalHits);
+    if (hybrid_rep_candidates[0].second.total_hits < lru_picked_total_hits) {
+      valid_line = hybrid_rep_candidates[0].first;
+    }
+  }
+}
+
+void tag_array::pick_modified_by_fill_time_ascend(
+  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
+  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
+  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
+  unsigned& valid_line) {
+
+  if (m_config.m_mshr_corr_repl == 'T') {
+    std::vector<std::pair<unsigned, LINE_RECENCY>> hybrid_rep_candidates_in_use;
+    if (hybrid_rep_candidates_no_record_in_mshr.size()) {
+      hybrid_rep_candidates_in_use = hybrid_rep_candidates_no_record_in_mshr;
+    } else {
+      hybrid_rep_candidates_in_use = hybrid_rep_candidates_recorded_in_mshr;
+    }    
+    std::sort(hybrid_rep_candidates_in_use.begin(), hybrid_rep_candidates_in_use.end(), cmpForSmallerFillTime);
+    valid_line = hybrid_rep_candidates_in_use[0].first;
+  } else {
+    std::sort(hybrid_rep_candidates.begin(), hybrid_rep_candidates.end(), cmpForSmallerFillTime);
+    valid_line = hybrid_rep_candidates[0].first;
+  }
+}
+
 enum cache_request_status tag_array::probe(const std::string& caller,
                                            new_addr_type addr, unsigned &idx,
                                            mem_access_sector_mask_t mask,
@@ -482,40 +626,27 @@ enum cache_request_status tag_array::probe(const std::string& caller,
     str_cache_name += "]";
   }
 
-  unsigned invalid_line = (unsigned)-1;
-  unsigned valid_line = (unsigned)-1;
+  unsigned invalid_line = (unsigned) - 1;
+  unsigned valid_line = (unsigned) - 1;
+  unsigned long long valid_timestamp = (unsigned) - 1;
+  unsigned long long valid_fill_time = (unsigned) - 1;
   bool srrip_has_picked = false;
-  unsigned srrip_picked_line = (unsigned) - 1;
-  unsigned lru_picked_line   = (unsigned) - 1; // Also ensure the pick engine work when no valid line be picked by SRRIP when rep=SRRIP
-  unsigned long long valid_timestamp = (unsigned)-1;
 
   bool all_reserved = true;
   bool all_miss = true;
   bool all_sector_valid = true;
-  // check for hit or pending hit  
-  // [Feature]
-  std::vector<std::pair<unsigned /* unfolded index */, unsigned /* rrpv */>> lru_repl_candidates;
 
-  std::vector<std::pair<unsigned long long /* timestamp */, bool /* was_recorded_in_mshr */>> repl_candidates(m_config.m_assoc);  
-  std::vector<std::pair<unsigned long long /* timestamp */, unsigned /* unfolded index */>> lru_candidates_no_recorded_in_mshr;
+  bool lru_has_picked            = false;
+  unsigned lru_picked_line       = (unsigned) - 1;
+  unsigned lru_picked_total_hits = (unsigned) - 1;
+  unsigned long long lru_picked_avg_evict_interval = (unsigned long long) - 1;
 
-  std::vector<
-    std::tuple<
-      unsigned /* recorded times */, 
-      unsigned /* record interval */,
-      unsigned /* unfolded index */>> srrip_candidates_no_recorded_in_mshr;
+  unsigned fill_time_picked_line = (unsigned) - 1;
 
-  std::vector<
-    std::tuple<
-      unsigned /* recorded times */, 
-      unsigned /* record interval */,
-      unsigned /* unfolded index */>> repl_candidates_recorded_in_mshr;
+  std::vector<std::pair<unsigned /* unfolded index */, LINE_RECENCY>> hybrid_rep_candidates;
+  std::vector<std::pair<unsigned /* unfolded index */, LINE_RECENCY>> hybrid_rep_candidates_no_record_in_mshr;
+  std::vector<std::pair<unsigned /* unfolded index */, LINE_RECENCY>> hybrid_rep_candidates_recorded_in_mshr;
 
-  for (size_t way = 0; way < repl_candidates.size(); way++)
-  {
-    repl_candidates[way].first  = (unsigned long long) - 1;
-    repl_candidates[way].second = false;
-  }
   bool cache_hit = false;
   bool has_unreserved_line = false;
   
@@ -524,6 +655,7 @@ enum cache_request_status tag_array::probe(const std::string& caller,
     cache_block_t *line = m_lines[index];
 
     if (line->m_tag == tag) {
+      line->inc_total_hits();
       cache_hit = true;
       if (m_config.m_replacement_policy == SRRIP) {
         if (m_config.m_srrip_update_policy == srrip_update_policy_t::HP) {
@@ -541,25 +673,20 @@ enum cache_request_status tag_array::probe(const std::string& caller,
       all_miss = false;
       if (line->get_status(mask) == RESERVED) {
         idx = index;
-        m_lines[idx]->m_accesses++;
         return HIT_RESERVED;
       } else if (line->get_status(mask) == VALID) {
         idx = index;
-        m_lines[idx]->m_accesses++;
         return HIT;
       } else if (line->get_status(mask) == MODIFIED) {
         if ((!is_write && line->is_readable(mask)) || is_write) {
           idx = index;
-          m_lines[idx]->m_accesses++;
           return HIT;
         } else {
           idx = index;
-          m_lines[idx]->m_accesses++;
           return SECTOR_MISS;
         }
       } else if (line->is_valid_line() && line->get_status(mask) == INVALID) {
         idx = index;
-        m_lines[idx]->m_accesses++;
         return SECTOR_MISS;
       } else {
         assert(line->get_status(mask) == INVALID);
@@ -584,30 +711,16 @@ enum cache_request_status tag_array::probe(const std::string& caller,
         if (line->is_invalid_line()) {
           invalid_line = index;
         } else {
-          repl_candidates[way].first  = line->get_last_access_time();
-          repl_candidates[way].second = line->was_recorded_in_mshr();
-          if (!repl_candidates[way].second) {
-            lru_candidates_no_recorded_in_mshr.push_back(
-              std::pair<unsigned long long, unsigned>(repl_candidates[way].first, index));
-
-            srrip_candidates_no_recorded_in_mshr.push_back(
-              std::tuple<unsigned, unsigned, unsigned>(
-                line->get_recorded_times_in_mshr(),
-                line->get_record_interval_in_mshr(),
-                index));
-          } else {
-            repl_candidates_recorded_in_mshr.push_back(
-              std::tuple<unsigned, unsigned, unsigned>(
-                line->get_recorded_times_in_mshr(),
-                line->get_record_interval_in_mshr(),
-                index));
-          }
+          gather_rep_candidates(
+            line, index,
+            hybrid_rep_candidates_no_record_in_mshr,
+            hybrid_rep_candidates_recorded_in_mshr,
+            hybrid_rep_candidates);
 
           if (m_config.m_replacement_policy == SRRIP) {
             if (!srrip_has_picked) {
               if (line->get_rrpv() == line->get_max_rrpv()) {
                 valid_line        = index;
-                srrip_picked_line = index;
                 srrip_has_picked  = true;
               } else {
                 if (line->get_rrpv() < line->get_max_rrpv()) {
@@ -616,21 +729,17 @@ enum cache_request_status tag_array::probe(const std::string& caller,
               }
             }
             // Always do LRU in parallel in case no valid idx being picked by SRRIP
-            if (line->get_last_access_time() < valid_timestamp) {
-              valid_timestamp = line->get_last_access_time();
-              lru_picked_line = index;
-            }
+            lru_pick(line, valid_timestamp, lru_picked_line, lru_has_picked, index);
+            fill_time_pick(line, valid_fill_time, fill_time_picked_line, index);
           } else if (m_config.m_replacement_policy == LRU) {
-            if (line->get_last_access_time() < valid_timestamp) {
-              valid_timestamp = line->get_last_access_time();
-              valid_line = index;
-            }
+            lru_pick(line, valid_timestamp, valid_line, lru_has_picked, index);
           } else if (m_config.m_replacement_policy == FIFO) {
             if (line->get_alloc_time() < valid_timestamp) {
               valid_timestamp = line->get_alloc_time();
               valid_line = index;
             }
           }
+
         } // valid line
       } // evict conditions (clean || too many dirty lines)
     } // if (!line->is_reserved_line())
@@ -649,77 +758,90 @@ enum cache_request_status tag_array::probe(const std::string& caller,
 
   if (invalid_line != (unsigned) - 1) {
     idx = invalid_line;
-  } else if (valid_line != (unsigned) - 1) {
-    if (m_config.m_replacement_policy == SRRIP) {
-      assert(srrip_has_picked);
-    }
-    if (m_config.m_mshr_corr_repl == 'T') {
-      if (lru_candidates_no_recorded_in_mshr.size() && m_config.m_replacement_policy == LRU) {
-        unsigned long long min_timestamp = (unsigned long long) - 1;
-        for (size_t i = 0; i < lru_candidates_no_recorded_in_mshr.size(); i++)
-        {
-          if (lru_candidates_no_recorded_in_mshr[i].first < min_timestamp) {
-            min_timestamp = lru_candidates_no_recorded_in_mshr[i].first;
-            idx           = lru_candidates_no_recorded_in_mshr[i].second;
-            assert(idx != ((unsigned) - 1));
-          }
-        }
-      } else if (srrip_candidates_no_recorded_in_mshr.size() && m_config.m_replacement_policy == SRRIP) {
-        unsigned min_recorded_times = (unsigned) - 1;
-        for (size_t i = 0; i < srrip_candidates_no_recorded_in_mshr.size(); i++) {
-          assert(std::get<2>(srrip_candidates_no_recorded_in_mshr[i]) != ((unsigned) - 1));        
-          if (std::get<0>(srrip_candidates_no_recorded_in_mshr[i]) < min_recorded_times) {
-            min_recorded_times = std::get<0>(srrip_candidates_no_recorded_in_mshr[i]);
-            idx                = std::get<2>(srrip_candidates_no_recorded_in_mshr[i]);
-            assert(idx != ((unsigned) - 1));
-          }
-        }
-      } else {
-        assert(repl_candidates_recorded_in_mshr.size());
-        // 1. MSHR-aware pick (min record. Preferred)
-        unsigned min_recorded_times = (unsigned) - 1;
-        for (size_t i = 0; i < repl_candidates_recorded_in_mshr.size(); i++) {          
-          if (std::get<0>(repl_candidates_recorded_in_mshr[i]) < min_recorded_times) {
-            min_recorded_times = std::get<0>(repl_candidates_recorded_in_mshr[i]);
-            idx                = std::get<2>(repl_candidates_recorded_in_mshr[i]);
-            assert(idx != ((unsigned) - 1));
-          }
-        }
-        // 2. MSHR-aware pick (max interval)
-        // unsigned max_record_interval = 0;
-        // for (size_t i = 0; i < repl_candidates_recorded_in_mshr.size(); i++)
-        // {
-        //   if (std::get<1>(repl_candidates_recorded_in_mshr[i]) > max_record_interval) {
-        //     max_record_interval = std::get<1>(repl_candidates_recorded_in_mshr[i]);
-        //     idx                 = std::get<2>(repl_candidates_recorded_in_mshr[i]);
-        //   }
-        // }
-        assert(idx != ((unsigned) - 1));
+  } else if (valid_line != (unsigned) - 1) {    
+    if (m_config.m_replacement_policy == LRU) {
+      assert(lru_has_picked);
+      assert(hybrid_rep_candidates.size());
+
+      pick_modified_by_timestamp_ascend(
+        hybrid_rep_candidates,
+        hybrid_rep_candidates_no_record_in_mshr,
+        hybrid_rep_candidates_recorded_in_mshr,
+        valid_line, lru_picked_total_hits, lru_picked_avg_evict_interval);
+
+      if (m_config.m_total_hits_ascend == 'T') {
+        pick_modified_by_total_hits_ascend(
+          hybrid_rep_candidates,
+          hybrid_rep_candidates_no_record_in_mshr,
+          hybrid_rep_candidates_recorded_in_mshr,
+          valid_line,
+          lru_picked_total_hits
+        );
+      } else if (m_config.m_fill_time_ascend == 'T') { // 1-25 flush lru results
+        pick_modified_by_fill_time_ascend(
+          hybrid_rep_candidates,
+          hybrid_rep_candidates_no_record_in_mshr,
+          hybrid_rep_candidates_recorded_in_mshr,
+          valid_line
+        );
       }
-    } // if (m_config.m_mshr_corr_repl == 'T') { 
-    else {
-      idx = valid_line;
-    }
+    } else if (m_config.m_replacement_policy == SRRIP) {
+      assert(srrip_has_picked);
+      if (m_config.m_total_hits_ascend == 'T') {
+        pick_modified_by_total_hits_ascend(
+          hybrid_rep_candidates,
+          hybrid_rep_candidates_no_record_in_mshr,
+          hybrid_rep_candidates_recorded_in_mshr,
+          valid_line,
+          lru_picked_total_hits
+        );
+      } else if (m_config.m_fill_time_ascend == 'T') {
+        pick_modified_by_fill_time_ascend(
+          hybrid_rep_candidates,
+          hybrid_rep_candidates_no_record_in_mshr,
+          hybrid_rep_candidates_recorded_in_mshr,
+          valid_line
+        );
+      }
+    }    
+    m_lines[valid_line]->update_recency_info(time);
+    mf->set_victim_avg_evict_interval(m_lines[valid_line]->get_avg_evict_interval());
+    idx = valid_line;
+    
   } else if (valid_line == (unsigned) - 1) {
     if (m_config.m_replacement_policy == LRU) {
       assert(0);
     } else if (m_config.m_replacement_policy == SRRIP) {
       assert(!srrip_has_picked);
+      assert(lru_has_picked);
+      assert(lru_picked_line != ((unsigned) - 1));
+
+      pick_modified_by_timestamp_ascend(
+        hybrid_rep_candidates,
+        hybrid_rep_candidates_no_record_in_mshr,
+        hybrid_rep_candidates_recorded_in_mshr,
+        lru_picked_line, lru_picked_total_hits, lru_picked_avg_evict_interval);
+      if (m_config.m_total_hits_ascend == 'T') {
+        pick_modified_by_total_hits_ascend(
+          hybrid_rep_candidates, 
+          hybrid_rep_candidates_no_record_in_mshr,
+          hybrid_rep_candidates_recorded_in_mshr,
+          lru_picked_line, lru_picked_total_hits
+        );
+      } else if (m_config.m_fill_time_ascend == 'T') {
+        pick_modified_by_fill_time_ascend(
+          hybrid_rep_candidates,
+          hybrid_rep_candidates_no_record_in_mshr,
+          hybrid_rep_candidates_recorded_in_mshr,
+          fill_time_picked_line
+        );
+      }
       idx = lru_picked_line;
       if (DTRACE(LRU_SAVED_SRRIP_PICKING)) {
         fprintf(Trace::out, "%llu %s LRU saved SRRIP picking idx:%x\n",
           time, m_config.m_cache_name, idx);
       }      
     }
-  }
-  m_lines[idx]->m_evictions++;
-  m_lines[idx]->m_accesses++;
-  if (DTRACE(EVICTIONS_PROBABILITY)) {
-    fprintf(Trace::out, "%llu %s m_lines[idx:%#x] evict_ratio = %f (%u / %u)\n",
-      time, m_config.m_cache_name, idx, 
-      float(m_lines[idx]->m_evictions) / (m_lines[idx]->m_accesses),
-      m_lines[idx]->m_evictions, m_lines[idx]->m_accesses
-    );
   }
 
   return MISS;
@@ -738,9 +860,9 @@ void tag_array::inc_rrpv_for_one_set(unsigned set_index) {
     } else {
       line->inc_rrpv();
       if (DTRACE(SRRIP_INC_RRPV)) {
-        fprintf(Trace::out, "%llu %s Inside tag_array::inc_rrpv_for_one_set, "
+        fprintf(Trace::out, "%s Inside tag_array::inc_rrpv_for_one_set, "
           "m_lines[index:%#x] inc_rrpv. rrpv = %u\n",
-          time, m_config.m_cache_name, index, line->get_rrpv()
+          m_config.m_cache_name, index, line->get_rrpv()
         );
       }
     }
@@ -758,7 +880,8 @@ bool tag_array::already_has_max_rrpv_in_one_set(unsigned set_index) {
   return false;
 }
 
-enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
+enum cache_request_status tag_array::access(new_addr_type addr, 
+                                            unsigned long long time,
                                             unsigned &idx, mem_fetch *mf) {
   bool wb = false;
   evicted_block_info evicted;
@@ -767,7 +890,8 @@ enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
   return result;
 }
 
-enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
+enum cache_request_status tag_array::access(new_addr_type addr, 
+                                            unsigned long long time,
                                             unsigned &idx, bool &wb,
                                             evicted_block_info &evicted,
                                             mem_fetch *mf) {
@@ -832,13 +956,13 @@ enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
   return status;
 }
 
-void tag_array::fill(new_addr_type addr, unsigned time, mem_fetch *mf,
+void tag_array::fill(new_addr_type addr, unsigned long long time, mem_fetch *mf,
                      bool is_write) {
   fill(addr, time, mf->get_access_sector_mask(), mf->get_access_byte_mask(),
        is_write);
 }
 
-void tag_array::fill(new_addr_type addr, unsigned time,
+void tag_array::fill(new_addr_type addr, unsigned long long time,
                      mem_access_sector_mask_t mask,
                      mem_access_byte_mask_t byte_mask, bool is_write) {
   // assert( m_config.m_alloc_policy == ON_FILL );
@@ -869,7 +993,7 @@ void tag_array::fill(new_addr_type addr, unsigned time,
   }
 }
 
-void tag_array::fill(unsigned index, unsigned time, mem_fetch *mf) {
+void tag_array::fill(unsigned index, unsigned long long time, mem_fetch *mf) {
   assert(m_config.m_alloc_policy == ON_MISS);
   bool before = m_lines[index]->is_modified_line();
   m_lines[index]->fill(time, mf->get_access_sector_mask(),
@@ -884,6 +1008,11 @@ void tag_array::set_recorded_in_mshr(unsigned index, unsigned long long time) {
   m_lines[index]->m_record_interval_in_mshr = 
     !(m_lines[index]->m_recorded_times_in_mshr) ? time :
     (time - m_lines[index]->m_last_record_time_in_mshr); 
+
+  m_lines[index]->m_avg_record_interval_in_mshr = 
+    !(m_lines[index]->m_recorded_times_in_mshr) ? time :
+    ((m_lines[index]->m_avg_record_interval_in_mshr + 
+      m_lines[index]->m_record_interval_in_mshr) >> 1); 
 
   m_lines[index]->m_last_record_time_in_mshr = 
     !(m_lines[index]->m_recorded_times_in_mshr) ? 0 : time;
@@ -1175,7 +1304,13 @@ void cache_stats::clear() {
   ///
   /// Zero out all current cache statistics
   ///
-  m_stats.clear();
+  m_stats.clear();  
+  
+  m_l1d_miss_served_cycles.clear();  
+  m_l1d_misses.clear();
+  m_l2_sub_miss_served_cycles.clear();
+  m_l2_sub_misses.clear();
+
   m_stats_pw.clear();
   m_fail_stats.clear();
   m_line_alloc_fail.clear();
@@ -1280,6 +1415,44 @@ void cache_stats::inc_l2_mshr_slots_fills(unsigned long long streamID, unsigned 
   m_l2_mshr_slots_fills.at(streamID)[l2_sub]++;
 }
 
+void cache_stats::inc_l1d_miss_served_cycles(
+  unsigned long long streamID, unsigned long long served_cycles) {
+  if (m_l1d_miss_served_cycles.find(streamID) == m_l1d_miss_served_cycles.end()) {
+    unsigned long long new_val;
+    m_l1d_miss_served_cycles.insert(
+      std::pair<unsigned long long, unsigned long long>(streamID, new_val));    
+  }
+  m_l1d_miss_served_cycles.at(streamID) += served_cycles;
+}
+void cache_stats::inc_l1d_misses(unsigned long long streamID) {
+  if (m_l1d_misses.find(streamID) == m_l1d_misses.end()) {
+    unsigned new_val;
+    m_l1d_misses.insert(std::pair<unsigned long long, unsigned>(streamID, new_val));    
+  }
+  m_l1d_misses.at(streamID)++;
+}
+
+void cache_stats::inc_l2_sub_miss_served_cycles(
+  unsigned long long streamID, unsigned l2_sub,
+  unsigned long long served_cycles) {
+  if (m_l2_sub_miss_served_cycles.find(streamID) == m_l2_sub_miss_served_cycles.end()) {
+    std::vector<unsigned long long> new_val;
+    new_val.resize(get_sub_partitions());
+    m_l2_sub_miss_served_cycles.insert(
+      std::pair<unsigned long long, std::vector<unsigned long long>>(streamID, new_val));    
+  }
+  m_l2_sub_miss_served_cycles.at(streamID)[l2_sub] += served_cycles;
+}
+void cache_stats::inc_l2_sub_misses(unsigned long long streamID, unsigned l2_sub) {
+  if (m_l2_sub_misses.find(streamID) == m_l2_sub_misses.end()) {
+    std::vector<unsigned> new_val;
+    new_val.resize(get_sub_partitions());
+    m_l2_sub_misses.insert(
+      std::pair<unsigned long long, std::vector<unsigned>>(streamID, new_val));    
+  }
+  m_l2_sub_misses.at(streamID)[l2_sub]++;
+}
+
 void cache_stats::inc_l2_miss_q_pops() {
   m_l2_miss_q_pops++;
 }
@@ -1309,6 +1482,19 @@ void cache_stats::inc_stats(int access_type, int access_outcome,
         std::vector<std::vector<unsigned long long>>>(streamID, new_val));
   }
   m_stats.at(streamID)[access_type][access_outcome]++;
+}
+
+void cache_stats::update_evict_stats(
+    unsigned long long streamID, 
+    unsigned long long victim_avg_evict_interval) {
+  
+  if (m_evict_stats.find(streamID) == m_evict_stats.end()) {
+    unsigned new_val;
+    m_evict_stats.insert(std::pair<unsigned long long, unsigned>(streamID, new_val));
+  }
+
+  m_evict_stats.at(streamID) = 
+  (m_evict_stats.at(streamID) + victim_avg_evict_interval) >> 1;
 }
 
 void cache_stats::inc_stats_pw(int access_type, int access_outcome,
@@ -1517,6 +1703,42 @@ unsigned cache_stats::operator()(
   if (l2_sub >= it->second.size()) return 0;
   return it->second[l2_sub];
 }
+unsigned long long cache_stats::operator()(
+  unsigned l2_sub, unsigned long long streamID, const char* tgt_name) const {
+  if (!strcmp(tgt_name, "m_l2_sub_miss_served_cycles")) {
+    auto it = m_l2_sub_miss_served_cycles.find(streamID);
+    if (it == m_l2_sub_miss_served_cycles.end()) {
+      return 0;
+    } else {
+      return it->second[l2_sub];
+    }
+  } else if (!strcmp(tgt_name, "m_l2_sub_misses")) {
+    auto it = m_l2_sub_misses.find(streamID);
+    if (it == m_l2_sub_misses.end()) {
+      return 0;
+    } else {
+      return it->second[l2_sub];
+    }
+  } 
+}
+unsigned long long cache_stats::operator()(
+  unsigned long long streamID, const char* tgt_name) const {
+  if (!strcmp(tgt_name, "m_l1d_miss_served_cycles")) {
+    auto it = m_l1d_miss_served_cycles.find(streamID);
+    if (it == m_l1d_miss_served_cycles.end()) {
+      return 0;
+    } else {
+      return it->second;
+    }
+  } else if (!strcmp(tgt_name, "m_l1d_misses")) {
+    auto it = m_l1d_misses.find(streamID);
+    if (it == m_l1d_misses.end()) {
+      return 0;
+    } else {
+      return it->second;
+    }
+  }
+}
 
 cache_stats cache_stats::operator+(const cache_stats &cs) {
   ///
@@ -1572,6 +1794,33 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
       std::pair<unsigned long long,
         std::vector<std::vector<unsigned>>>(streamID, m_mshr_occupancy_stats.at(streamID)));
   }
+  for (auto iter = m_l1d_miss_served_cycles.begin(); 
+    iter != m_l1d_miss_served_cycles.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    ret.m_l1d_miss_served_cycles.insert(
+      std::pair<unsigned long long, unsigned long long>(
+        streamID, m_l1d_miss_served_cycles.at(streamID)));
+  }  
+  for (auto iter = m_l1d_misses.begin(); 
+    iter != m_l1d_misses.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    ret.m_l1d_misses.insert(
+      std::pair<unsigned long long, unsigned>(streamID, m_l1d_misses.at(streamID)));
+  }
+  for (auto iter = m_l2_sub_miss_served_cycles.begin(); 
+    iter != m_l2_sub_miss_served_cycles.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    ret.m_l2_sub_miss_served_cycles.insert(
+      std::pair<unsigned long long, std::vector<unsigned long long>>(
+        streamID, m_l2_sub_miss_served_cycles.at(streamID)));
+  }  
+  for (auto iter = m_l2_sub_misses.begin(); 
+    iter != m_l2_sub_misses.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    ret.m_l2_sub_misses.insert(
+      std::pair<unsigned long long, std::vector<unsigned>>(
+        streamID, m_l2_sub_misses.at(streamID)));
+  }    
   for (auto iter = m_accu_l2_dram_queue_size.begin(); iter != m_accu_l2_dram_queue_size.end(); ++iter) {
     unsigned long long streamID = iter->first;
     ret.m_accu_l2_dram_queue_size.insert(
@@ -1622,10 +1871,6 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
     } else {
       for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
         for (unsigned status = 0; status < NUM_CACHE_RESERVATION_FAIL_STATUS; ++status) {
-          // for debug 11-24
-          printf("ret.m_fail_stats.at(%d)[%d][%d] += cs(%d, %d, true, %d);\n",
-            (int)streamID, type, status, type, status, (int)streamID);
-
           ret.m_fail_stats.at(streamID)[type][status] += cs(type, status, true, streamID);
           ret.m_fail_stats_total.at(streamID)[type] += cs(type, status, true, streamID);          
         }        
@@ -1648,13 +1893,68 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
       }
     }
   }
+  for (auto iter = cs.m_l1d_miss_served_cycles.begin(); 
+    iter != cs.m_l1d_miss_served_cycles.end(); ++iter) {  
+    unsigned long long streamID = iter->first;
+    if (ret.m_l1d_miss_served_cycles.find(streamID) == 
+      ret.m_l1d_miss_served_cycles.end()) {
+      ret.m_l1d_miss_served_cycles.insert(
+        std::pair<unsigned long long, unsigned long long>(
+          streamID, cs.m_l1d_miss_served_cycles.at(streamID)));
+    } else {
+        ret.m_l1d_miss_served_cycles.at(streamID) += cs.m_l1d_miss_served_cycles.at(streamID);      
+    }
+  }
+  for (auto iter = cs.m_l1d_misses.begin(); 
+    iter != cs.m_l1d_misses.end(); ++iter) {  
+    unsigned long long streamID = iter->first;
+    if (ret.m_l1d_misses.find(streamID) == 
+      ret.m_l1d_misses.end()) {
+      ret.m_l1d_misses.insert(
+        std::pair<unsigned long long, unsigned>(streamID, cs.m_l1d_misses.at(streamID)));
+    } else {
+        ret.m_l1d_misses.at(streamID) += cs.m_l1d_misses.at(streamID);      
+    }
+  }
+
+  for (auto iter = cs.m_l2_sub_miss_served_cycles.begin(); 
+    iter != cs.m_l2_sub_miss_served_cycles.end(); ++iter) {  
+    unsigned long long streamID = iter->first;
+    if (ret.m_l2_sub_miss_served_cycles.find(streamID) == 
+      ret.m_l2_sub_miss_served_cycles.end()) {
+      ret.m_l2_sub_miss_served_cycles.insert(
+        std::pair<unsigned long long, std::vector<unsigned long long>>(
+          streamID, cs.m_l2_sub_miss_served_cycles.at(streamID)));
+    } else {
+      for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); l2_sub++) {
+        ret.m_l2_sub_miss_served_cycles.at(streamID)[l2_sub] += 
+        cs.m_l2_sub_miss_served_cycles.at(streamID)[l2_sub];
+      }
+    }
+  }
+  for (auto iter = cs.m_l2_sub_misses.begin(); 
+    iter != cs.m_l2_sub_misses.end(); ++iter) {  
+    unsigned long long streamID = iter->first;
+    if (ret.m_l2_sub_misses.find(streamID) == 
+      ret.m_l2_sub_misses.end()) {
+      ret.m_l2_sub_misses.insert(
+        std::pair<unsigned long long, std::vector<unsigned>>(
+          streamID, cs.m_l2_sub_misses.at(streamID)));
+    } else {
+      for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); l2_sub++) {
+        ret.m_l2_sub_misses.at(streamID)[l2_sub] += 
+        cs.m_l2_sub_misses.at(streamID)[l2_sub];
+      }
+    }
+  }
+
   for (auto iter = cs.m_accu_l2_dram_queue_size.begin(); iter != cs.m_accu_l2_dram_queue_size.end(); ++iter) {  
     unsigned long long streamID = iter->first;
     if (ret.m_accu_l2_dram_queue_size.find(streamID) == ret.m_accu_l2_dram_queue_size.end()) {
       ret.m_accu_l2_dram_queue_size.insert(
         std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_accu_l2_dram_queue_size.at(streamID)));
     } else {
-      for (unsigned l2_sub = 0; l2_sub < 8; l2_sub++) {
+      for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); l2_sub++) {
         ret.m_accu_l2_dram_queue_size.at(streamID)[l2_sub] += cs.m_accu_l2_dram_queue_size.at(streamID)[l2_sub];
       }      
     }
@@ -1665,7 +1965,7 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
       ret.m_accu_l2_icnt_queue_size.insert(
         std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_accu_l2_icnt_queue_size.at(streamID)));
     } else {
-      for (unsigned l2_sub = 0; l2_sub < 8; l2_sub++) {
+      for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); l2_sub++) {
         ret.m_accu_l2_icnt_queue_size.at(streamID)[l2_sub] += cs.m_accu_l2_icnt_queue_size.at(streamID)[l2_sub];
       }
     }
@@ -1676,7 +1976,7 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
       ret.m_l2_dram_q_accesses.insert(
         std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_l2_dram_q_accesses.at(streamID)));
     } else {
-      for (unsigned l2_sub = 0; l2_sub < 8; l2_sub++) {
+      for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); l2_sub++) {
         ret.m_l2_dram_q_accesses.at(streamID)[l2_sub] += cs.m_l2_dram_q_accesses.at(streamID)[l2_sub];
       }
     }
@@ -1687,7 +1987,7 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
       ret.m_l2_icnt_q_accesses.insert(
         std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_l2_icnt_q_accesses.at(streamID)));
     } else {
-      for (unsigned l2_sub = 0; l2_sub < 8; l2_sub++) {
+      for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); l2_sub++) {
         ret.m_l2_icnt_q_accesses.at(streamID)[l2_sub] += cs.m_l2_icnt_q_accesses.at(streamID)[l2_sub];
       }
     }
@@ -1698,7 +1998,7 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
       ret.m_l2_mshr_slots_fills.insert(
         std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_l2_mshr_slots_fills.at(streamID)));
     } else {
-      for (unsigned l2_sub = 0; l2_sub < 8; l2_sub++) {
+      for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); l2_sub++) {
         ret.m_l2_mshr_slots_fills.at(streamID)[l2_sub] += cs.m_l2_mshr_slots_fills.at(streamID)[l2_sub];
       }
     }
@@ -1965,13 +2265,71 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
     }
   } // for (auto iter = cs.m_mshr_occupancy_stats.begin(); iter != cs.m_mshr_occupancy_stats.end(); ++iter) {
 
+  for (auto iter = cs.m_l1d_miss_served_cycles.begin(); 
+    iter != cs.m_l1d_miss_served_cycles.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    if (m_l1d_miss_served_cycles.find(streamID) == m_l1d_miss_served_cycles.end()) {
+      m_l1d_miss_served_cycles.insert(
+        std::pair<unsigned long long, unsigned long long>(
+          streamID, cs.m_l1d_miss_served_cycles.at(streamID)));
+    } else {
+      const char* tgt_item = "m_l1d_miss_served_cycles";
+      m_l1d_miss_served_cycles.at(streamID) += cs(streamID, tgt_item);
+    }
+  }
+  for (auto iter = cs.m_l1d_misses.begin(); 
+    iter != cs.m_l1d_misses.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    if (m_l1d_misses.find(streamID) == m_l1d_misses.end()) {
+      m_l1d_misses.insert(
+        std::pair<unsigned long long, unsigned>(
+          streamID, cs.m_l1d_misses.at(streamID)));
+    } else {
+      const char* tgt_item = "m_l1d_misses";
+      m_l1d_misses.at(streamID) += static_cast<unsigned>(cs(streamID, tgt_item));
+    }
+  }  
+
+  for (auto iter = cs.m_l2_sub_miss_served_cycles.begin(); 
+    iter != cs.m_l2_sub_miss_served_cycles.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    if (m_l2_sub_miss_served_cycles.find(streamID) == m_l2_sub_miss_served_cycles.end()) {
+      m_l2_sub_miss_served_cycles.insert(
+        std::pair<unsigned long long, std::vector<unsigned long long>>(
+          streamID, cs.m_l2_sub_miss_served_cycles.at(streamID)));
+    } else {
+      for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); ++l2_sub) {
+        const char* tgt_item = "m_l2_sub_miss_served_cycles";
+        m_l2_sub_miss_served_cycles.at(streamID)[l2_sub] += cs(l2_sub, streamID, tgt_item);
+        // printf("m_l2_sub_miss_served_cycles[streamID:%llu][sub:%u] += %llu\n",
+        //   streamID, l2_sub, cs(l2_sub, streamID));
+      }      
+    }
+  }
+  for (auto iter = cs.m_l2_sub_misses.begin(); 
+    iter != cs.m_l2_sub_misses.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    if (m_l2_sub_misses.find(streamID) == m_l2_sub_misses.end()) {
+      m_l2_sub_misses.insert(
+        std::pair<unsigned long long, std::vector<unsigned>>(
+          streamID, cs.m_l2_sub_misses.at(streamID)));
+    } else {
+      for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); ++l2_sub) {
+        const char* tgt_item = "m_l2_sub_misses";
+        m_l2_sub_misses.at(streamID)[l2_sub] += static_cast<unsigned>(cs(l2_sub, streamID, tgt_item));
+        // printf("m_l2_sub_misses[streamID:%llu][sub:%u] += %u\n",
+        //   streamID, l2_sub, cs(l2_sub, streamID));        
+      }
+    }
+  }  
+
   for (auto iter = cs.m_accu_l2_dram_queue_size.begin(); iter != cs.m_accu_l2_dram_queue_size.end(); ++iter) {
     unsigned long long streamID = iter->first;
     if (m_accu_l2_dram_queue_size.find(streamID) == m_accu_l2_dram_queue_size.end()) {
       m_accu_l2_dram_queue_size.insert(
         std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_accu_l2_dram_queue_size.at(streamID)));
     } else {
-      for (unsigned l2_sub = 0; l2_sub < 8; ++l2_sub) {
+      for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); ++l2_sub) {
         m_accu_l2_dram_queue_size.at(streamID)[l2_sub] += cs(l2_sub, streamID);
       }      
     }
@@ -1982,7 +2340,7 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
       m_accu_l2_icnt_queue_size.insert(
         std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_accu_l2_icnt_queue_size.at(streamID)));
     } else {
-      for (unsigned l2_sub = 0; l2_sub < 8; ++l2_sub) {
+      for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); ++l2_sub) {
         m_accu_l2_icnt_queue_size.at(streamID)[l2_sub] += cs(l2_sub, streamID);
       }      
     }
@@ -1993,7 +2351,7 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
       m_l2_dram_q_accesses.insert(
         std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_l2_dram_q_accesses.at(streamID)));
     } else {
-      for (unsigned l2_sub = 0; l2_sub < 8; ++l2_sub) {
+      for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); ++l2_sub) {
         m_l2_dram_q_accesses.at(streamID)[l2_sub] += cs(l2_sub, streamID);
       }      
     }
@@ -2004,7 +2362,7 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
       m_l2_icnt_q_accesses.insert(
         std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_l2_icnt_q_accesses.at(streamID)));
     } else {
-      for (unsigned l2_sub = 0; l2_sub < 8; ++l2_sub) {
+      for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); ++l2_sub) {
         m_l2_icnt_q_accesses.at(streamID)[l2_sub] += cs(l2_sub, streamID);
       }      
     }
@@ -2015,7 +2373,7 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
       m_l2_mshr_slots_fills.insert(
         std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_l2_mshr_slots_fills.at(streamID)));
     } else {
-      for (unsigned l2_sub = 0; l2_sub < 8; ++l2_sub) {
+      for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); ++l2_sub) {
         m_l2_mshr_slots_fills.at(streamID)[l2_sub] += cs(l2_sub, streamID);
       }      
     }
@@ -2249,6 +2607,48 @@ void cache_stats::print_l2_icnt_queue_stats(
     }
   }
 }
+
+void cache_stats::print_avg_core_cache_miss_served_cycles(
+  FILE* fout, unsigned long long streamID) const {
+  for (auto iter = m_l1d_miss_served_cycles.begin();
+    iter != m_l1d_miss_served_cycles.end(); ++iter)
+  {
+    if ((streamID != ((unsigned long long) - 1)) && (iter->first != streamID)) {
+      continue;
+    }
+
+    float avg_l1d_miss_served_cycles = 
+    ((float)m_l1d_miss_served_cycles.at(streamID) / m_l1d_misses.at(streamID));
+
+    fprintf(fout, "\tavg_l1d_miss_served_cycles = %f\n", avg_l1d_miss_served_cycles);      
+  }  
+}
+
+void cache_stats::print_avg_l2_miss_served_cycles(
+  FILE* fout, unsigned long long streamID) const {
+  for (auto iter = m_l2_sub_miss_served_cycles.begin();
+    iter != m_l2_sub_miss_served_cycles.end(); ++iter)
+  {
+    if ((streamID != ((unsigned long long) - 1)) && (iter->first != streamID)) {
+      continue;
+    }
+    unsigned long long avg_l2_miss_served_cycles = 0;
+    unsigned m_l2_misses = 0;
+    for (unsigned l2_sub = 0; l2_sub < iter->second.size(); ++l2_sub) {
+      float avg_l2_sub_miss_served_cycles = 
+      ((float)m_l2_sub_miss_served_cycles.at(streamID)[l2_sub] / 
+      m_l2_sub_misses.at(streamID)[l2_sub]);
+
+      avg_l2_miss_served_cycles += m_l2_sub_miss_served_cycles.at(streamID)[l2_sub];
+      m_l2_misses               += m_l2_sub_misses.at(streamID)[l2_sub];
+      fprintf(fout, "\tavg_l2_sub_miss_served_cycles[sub:%u] = %f\n",
+        l2_sub, avg_l2_sub_miss_served_cycles);      
+    }
+    fprintf(fout, "\tavg_l2_miss_served_cycles = %f\n",
+      (float)(avg_l2_miss_served_cycles) / m_l2_misses);   
+  }  
+}
+
 void cache_stats::print_l2_mshr_slots_stats(
   FILE *fout, unsigned l2_mshr_allocated_slots, unsigned long long streamID, const char *info) const {
   for (auto iter = m_l2_mshr_slots_fills.begin(); 
@@ -2257,7 +2657,7 @@ void cache_stats::print_l2_mshr_slots_stats(
       continue;
     }
     const unsigned allocatd_mshr_slots = 4; // Replace this with m_config.xx
-    for (unsigned l2_sub = 0; l2_sub < iter->second.size(); ++l2_sub) {       
+    for (unsigned l2_sub = 0; l2_sub < iter->second.size(); ++l2_sub) {
       float avg_l2_mshr_slots_size = 
         (m_l2_mshr_slots_fills.at(streamID)[l2_sub] / 
         (float)allocatd_mshr_slots);
@@ -2327,6 +2727,7 @@ void cache_stats::get_sub_stats(struct cache_sub_stats &css) const {
         }      
         if (status == MISS) {
           t_css.misses += m_stats.at(streamID)[type][status];
+          t_css.avg_evict_interval += m_evict_stats.at(streamID);
         }
         if (status == SECTOR_MISS) {          
           t_css.sector_misses += m_stats.at(streamID)[type][status];
@@ -2658,11 +3059,32 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
   if (m_config.m_mshr_disable == 'T') {
     has_atomic = mf->isatomic();
     m_lfb.push_back(mf);
+    if (!strcmp(m_config.m_cache_name,"L2")) {
+      m_stats.inc_l2_sub_miss_served_cycles(
+        mf->get_streamID(), mf->get_sub_partition(),
+        time - mf->m_miss_serve_begin_time);
+      m_stats.inc_l2_sub_misses(mf->get_streamID(), mf->get_sub_partition());
+    } else if (!strcmp(m_config.m_cache_name,"L1D")) {
+      m_stats.inc_l1d_miss_served_cycles(
+        mf->get_streamID(), time - mf->m_miss_serve_begin_time);
+      m_stats.inc_l1d_misses(mf->get_streamID());
+    }
   } else {
     m_mshrs.mark_ready(m_is_l2 ? "L2" : m_is_l1d ? "L1D" : "other$", 
       e->second.m_block_addr, has_atomic, time);
     m_tag_array->set_recorded_in_mshr(e->second.m_cache_index, time);
     m_tag_array->m_total_records_in_mshr++;
+
+    if (!strcmp(m_config.m_cache_name,"L2")) {
+      m_stats.inc_l2_sub_miss_served_cycles(
+        mf->get_streamID(), mf->get_sub_partition(),
+        time - mf->m_miss_serve_begin_time);
+      m_stats.inc_l2_sub_misses(mf->get_streamID(), mf->get_sub_partition());
+    } else if (!strcmp(m_config.m_cache_name,"L1D")) {
+      m_stats.inc_l1d_miss_served_cycles(
+        mf->get_streamID(), time - mf->m_miss_serve_begin_time);
+      m_stats.inc_l1d_misses(mf->get_streamID());
+    }
 
     std::string str_cache_name = m_config.get_cache_name();
     if (!strcmp(m_config.get_cache_name(), "L2") && mf) {
@@ -2950,6 +3372,7 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
       }
 
       m_stats.inc_stats(mf->get_access_type(), MSHR_HIT, mf->get_streamID());
+      m_stats.update_evict_stats(mf->get_streamID(), mf->get_victim_avg_evict_interval());
       do_miss = true;
     } else if (!mshr_hit && mshr_avail &&
               (m_miss_queue.size() < m_config.m_miss_queue_size)) {
@@ -3755,6 +4178,8 @@ enum cache_request_status read_only_cache::access(
   m_stats.inc_stats(mf->get_access_type(),
                     m_stats.select_stats_status(status, cache_status),
                     mf->get_streamID());
+  m_stats.update_evict_stats(mf->get_streamID(), mf->get_victim_avg_evict_interval());
+
   m_stats.inc_stats_pw(mf->get_access_type(),
                        m_stats.select_stats_status(status, cache_status),
                        mf->get_streamID());
@@ -3785,6 +4210,9 @@ enum cache_request_status data_cache::process_tag_probe(
       }
 
       access_status = (this->*m_wr_miss)(addr, cache_index, mf, time, events, probe_status);
+      if (access_status == cache_request_status::MISS) {
+        mf->set_miss_serve_begin_time(time);
+      }      
     } else {
       // the only reason for reservation fail here is LINE_ALLOC_FAIL (i.e all
       // lines are reserved)
@@ -3799,6 +4227,9 @@ enum cache_request_status data_cache::process_tag_probe(
         dumpCacheEvent(time, "tag_probe", "m_rd_miss", mf);
       }
       access_status = (this->*m_rd_miss)(addr, cache_index, mf, time, events, probe_status);
+      if (access_status == cache_request_status::MISS) {
+        mf->set_miss_serve_begin_time(time);
+      }
     } else {
       // the only reason for reservation fail here is LINE_ALLOC_FAIL (i.e all
       // lines are reserved)
@@ -3833,6 +4264,8 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
   m_stats.inc_stats(mf->get_access_type(),
                     m_stats.select_stats_status(probe_status, access_status),
                     mf->get_streamID());
+  m_stats.update_evict_stats(mf->get_streamID(), mf->get_victim_avg_evict_interval());
+
   m_stats.inc_stats_pw(mf->get_access_type(),
                        m_stats.select_stats_status(probe_status, access_status),
                        mf->get_streamID());
@@ -3933,6 +4366,8 @@ enum cache_request_status tex_cache::access(new_addr_type addr, mem_fetch *mf,
   m_stats.inc_stats(mf->get_access_type(),
                     m_stats.select_stats_status(status, cache_status),
                     mf->get_streamID());
+  m_stats.update_evict_stats(mf->get_streamID(), mf->get_victim_avg_evict_interval());
+
   m_stats.inc_stats_pw(mf->get_access_type(),
                        m_stats.select_stats_status(status, cache_status),
                        mf->get_streamID());

@@ -56,6 +56,7 @@ class mem_fetch {
   friend class memory_sub_partition;
   friend class gpgpu_sim;
   friend class baseline_cache;
+  friend class tag_array;
  public:
   mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
             unsigned long long streamID, unsigned ctrl_size, unsigned wid,
@@ -112,6 +113,10 @@ class mem_fetch {
   unsigned get_timestamp() const { return m_timestamp; }
   unsigned get_return_timestamp() const { return m_timestamp2; }
   unsigned get_icnt_receive_time() const { return m_icnt_receive_time; }
+  unsigned long long get_miss_serve_begin_time() const { return m_miss_serve_begin_time; }
+  void set_miss_serve_begin_time(unsigned long long miss_serve_begin_time) { 
+    m_miss_serve_begin_time = miss_serve_begin_time;
+  }
   unsigned long long get_status_change_time() const { return m_status_change; }
   unsigned long long get_streamID() const { return m_streamID; }
 
@@ -145,6 +150,9 @@ class mem_fetch {
   unsigned long long getTime() const { return m_time; }
 
   unsigned get_sub_partition() const { return m_sub_partition; }
+  unsigned long long get_victim_avg_evict_interval() const {
+    return m_victim_avg_evict_interval;
+  }
 
  private:
   // Pass-through L2 sub-partition for debugging/tracing
@@ -152,6 +160,11 @@ class mem_fetch {
     m_sub_partition = sub_partition;
   }
   unsigned m_sub_partition;
+
+  void set_victim_avg_evict_interval(unsigned long long interval) {
+    m_victim_avg_evict_interval = interval;
+  }
+  unsigned long long m_victim_avg_evict_interval;
 
   // request source information
   unsigned m_request_uid;
@@ -182,6 +195,8 @@ class mem_fetch {
                           // onto icnt to shader; only used for reads
   unsigned m_icnt_receive_time;  // set to gpu_sim_cycle + interconnect_latency
                                  // when fixed icnt latency mode is enabled
+
+  unsigned long long m_miss_serve_begin_time;
 
   // requesting instruction (put last so mem_fetch prints nicer in gdb)
   warp_inst_t m_inst;

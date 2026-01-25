@@ -264,6 +264,11 @@ void memory_config::reg_options(class OptionParser *opp) {
                          "per-GPC shared L2 cache RRPV config "
                          "<rrpv_bits>:<combined_rrpv_lru>:<RRIP-update-policy>",
                          "2,F,H");
+  option_parser_register(opp, "-gpgpu_cache:l2_rep_enhance", OPT_CSTR,
+                         &m_L2_config.m_rep_enhance_string,
+                         "per-GPC shared L2 replacement enhance config "
+                         "<total_hits_ascend>,<fill_time_ascend>",
+                         "F,F");                         
 
   option_parser_register(
       opp, "-disable_wr_merge", OPT_BOOL,
@@ -367,6 +372,11 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "per-shader L1T cache RRPV config "
                          "<rrpv_bits>:<combined_rrpv_lru>:<RRIP-update-policy>",
                          "2,F,H");
+  option_parser_register(opp, "-gpgpu_cache:l1t_rep_enhance", OPT_CSTR,
+                         &m_L1T_config.m_rep_enhance_string,
+                         "per-shader L1T replacement enhance config "
+                         "<total_hits_ascend>,<fill_time_ascend>",
+                         "F,F");
               
   option_parser_register(
       opp, "-gpgpu_const_cache:l1", OPT_CSTR, &m_L1C_config.m_config_string,
@@ -384,6 +394,11 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "per-shader L1C cache RRPV config "
                          "<rrpv_bits>:<combined_rrpv_lru>:<RRIP-update-policy>",
                          "2,F,H");
+  option_parser_register(opp, "-gpgpu_cache:l1c_rep_enhance", OPT_CSTR,
+                         &m_L1C_config.m_rep_enhance_string,
+                         "per-shader L1C replacement enhance config "
+                         "<total_hits_ascend>,<fill_time_ascend>",
+                         "F,F");                         
       
   option_parser_register(
       opp, "-gpgpu_cache:il1", OPT_CSTR, &m_L1I_config.m_config_string,
@@ -401,6 +416,11 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "per-shader L1I cache RRPV config "
                          "<rrpv_bits>:<combined_rrpv_lru>:<RRIP-update-policy>",
                          "2,F,H");
+  option_parser_register(opp, "-gpgpu_cache:l1i_rep_enhance", OPT_CSTR,
+                         &m_L1I_config.m_rep_enhance_string,
+                         "per-shader L1I replacement enhance config "
+                         "<total_hits_ascend>,<fill_time_ascend>",
+                         "F,F");
 
   option_parser_register(opp, "-gpgpu_cache:dl1", OPT_CSTR,
                          &m_L1D_config.m_config_string,
@@ -419,6 +439,11 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "per-shader L1D cache RRPV config "
                          "<rrpv_bits>:<combined_rrpv_lru>:<RRIP-update-policy>",
                          "2,F,H");
+  option_parser_register(opp, "-gpgpu_cache:l1d_rep_enhance", OPT_CSTR,
+                         &m_L1D_config.m_rep_enhance_string,
+                         "per-shader L1D replacement enhance config "
+                         "<total_hits_ascend>,<fill_time_ascend>",
+                         "F,F");
 
   option_parser_register(opp, "-gpgpu_l1_cache_write_ratio", OPT_UINT32,
                          &m_L1D_config.m_wr_percent, "L1D write ratio", "0");
@@ -1083,14 +1108,14 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
 
   gpu_stall_dramfull = 0;
   gpu_stall_icnt2sh = 0;
-  partiton_reqs_in_parallel = 0;
-  partiton_reqs_in_parallel_total = 0;
-  partiton_reqs_in_parallel_util = 0;
-  partiton_reqs_in_parallel_util_total = 0;
-  gpu_sim_cycle_parition_util = 0;
-  gpu_tot_sim_cycle_parition_util = 0;
-  partiton_replys_in_parallel = 0;
-  partiton_replys_in_parallel_total = 0;
+  partition_reqs_in_parallel = 0;
+  partition_reqs_in_parallel_total = 0;
+  partition_reqs_in_parallel_util = 0;
+  partition_reqs_in_parallel_util_total = 0;
+  gpu_sim_cycle_partition_util = 0;
+  gpu_tot_sim_cycle_partition_util = 0;
+  partition_replys_in_parallel = 0;
+  partition_replys_in_parallel_total = 0;
   last_streamID = -1;
 
   gpu_kernel_time.clear();
@@ -1308,10 +1333,10 @@ void gpgpu_sim::init() {
   last_gpu_sim_insn = 0;
   m_total_cta_launched = 0;
   gpu_completed_cta = 0;
-  partiton_reqs_in_parallel = 0;
-  partiton_replys_in_parallel = 0;
-  partiton_reqs_in_parallel_util = 0;
-  gpu_sim_cycle_parition_util = 0;
+  partition_reqs_in_parallel = 0;
+  partition_replys_in_parallel = 0;
+  partition_reqs_in_parallel_util = 0;
+  gpu_sim_cycle_partition_util = 0;
 
 // McPAT initialization function. Called on first launch of GPU
 #ifdef GPGPUSIM_POWER_MODEL
@@ -1353,17 +1378,17 @@ void gpgpu_sim::update_stats() {
   gpu_tot_sim_cycle += gpu_sim_cycle;
   gpu_tot_sim_insn += gpu_sim_insn;
   gpu_tot_issued_cta += m_total_cta_launched;
-  partiton_reqs_in_parallel_total += partiton_reqs_in_parallel;
-  partiton_replys_in_parallel_total += partiton_replys_in_parallel;
-  partiton_reqs_in_parallel_util_total += partiton_reqs_in_parallel_util;
-  gpu_tot_sim_cycle_parition_util += gpu_sim_cycle_parition_util;
+  partition_reqs_in_parallel_total += partition_reqs_in_parallel;
+  partition_replys_in_parallel_total += partition_replys_in_parallel;
+  partition_reqs_in_parallel_util_total += partition_reqs_in_parallel_util;
+  gpu_tot_sim_cycle_partition_util += gpu_sim_cycle_partition_util;
   gpu_tot_occupancy += gpu_occupancy;
 
   gpu_sim_cycle = 0;
-  partiton_reqs_in_parallel = 0;
-  partiton_replys_in_parallel = 0;
-  partiton_reqs_in_parallel_util = 0;
-  gpu_sim_cycle_parition_util = 0;
+  partition_reqs_in_parallel = 0;
+  partition_replys_in_parallel = 0;
+  partition_reqs_in_parallel_util = 0;
+  gpu_sim_cycle_partition_util = 0;
   gpu_sim_insn = 0;
   m_total_cta_launched = 0;
   gpu_completed_cta = 0;
@@ -1523,6 +1548,7 @@ void gpgpu_sim::change_cache_config(FuncCache cache_config) {
           m_shader_config->m_L1D_config.m_config_string, 
           m_shader_config->m_L1D_config.m_mshr_config_string,
           m_shader_config->m_L1D_config.m_rrpv_config_string,
+          m_shader_config->m_L1D_config.m_rep_enhance_string,
           FuncCachePreferNone);
       m_shader_config->gpgpu_shmem_size =
           m_shader_config->gpgpu_shmem_sizeDefault;
@@ -1535,6 +1561,7 @@ void gpgpu_sim::change_cache_config(FuncCache cache_config) {
             m_shader_config->m_L1D_config.m_config_string, 
             m_shader_config->m_L1D_config.m_mshr_config_string,
             m_shader_config->m_L1D_config.m_rrpv_config_string,
+            m_shader_config->m_L1D_config.m_rep_enhance_string,
             FuncCachePreferNone);
         m_shader_config->gpgpu_shmem_size =
             m_shader_config->gpgpu_shmem_sizeDefault;
@@ -1544,6 +1571,7 @@ void gpgpu_sim::change_cache_config(FuncCache cache_config) {
             m_shader_config->m_L1D_config.m_config_stringPrefL1,
             m_shader_config->m_L1D_config.m_mshr_config_string,
             m_shader_config->m_L1D_config.m_rrpv_config_string,
+            m_shader_config->m_L1D_config.m_rep_enhance_string,
             FuncCachePreferL1);
         m_shader_config->gpgpu_shmem_size =
             m_shader_config->gpgpu_shmem_sizePrefL1;
@@ -1557,6 +1585,7 @@ void gpgpu_sim::change_cache_config(FuncCache cache_config) {
             m_shader_config->m_L1D_config.m_config_string, 
             m_shader_config->m_L1D_config.m_mshr_config_string,
             m_shader_config->m_L1D_config.m_rrpv_config_string,
+            m_shader_config->m_L1D_config.m_rep_enhance_string,
             FuncCachePreferNone);
         m_shader_config->gpgpu_shmem_size =
             m_shader_config->gpgpu_shmem_sizeDefault;
@@ -1564,6 +1593,7 @@ void gpgpu_sim::change_cache_config(FuncCache cache_config) {
         m_shader_config->m_L1D_config.init(
             m_shader_config->m_L1D_config.m_mshr_config_string,
             m_shader_config->m_L1D_config.m_rrpv_config_string,
+            m_shader_config->m_L1D_config.m_rep_enhance_string,
             m_shader_config->m_L1D_config.m_config_stringPrefShared,
             FuncCachePreferShared);
         m_shader_config->gpgpu_shmem_size =
@@ -1608,17 +1638,17 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
   printf("gpu_stall_dramfull = %d\n", gpu_stall_dramfull);
   printf("gpu_stall_icnt2sh    = %d\n", gpu_stall_icnt2sh);
 
-  printf("partiton_level_parallism = %12.4f\n",
-         (float)partiton_reqs_in_parallel / gpu_sim_cycle);
-  printf("partiton_level_parallism_total  = %12.4f\n",
-         (float)(partiton_reqs_in_parallel + partiton_reqs_in_parallel_total) /
+  printf("partition_level_parallelism = %12.4f\n",
+         (float)partition_reqs_in_parallel / gpu_sim_cycle);
+  printf("partition_level_parallelism_total  = %12.4f\n",
+         (float)(partition_reqs_in_parallel + partition_reqs_in_parallel_total) /
              (gpu_tot_sim_cycle + gpu_sim_cycle));
-  printf("partiton_level_parallism_util = %12.4f\n",
-         (float)partiton_reqs_in_parallel_util / gpu_sim_cycle_parition_util);
-  printf("partiton_level_parallism_util_total  = %12.4f\n",
-         (float)(partiton_reqs_in_parallel_util +
-                 partiton_reqs_in_parallel_util_total) /
-             (gpu_sim_cycle_parition_util + gpu_tot_sim_cycle_parition_util));
+  printf("partition_level_parallelism_util = %12.4f\n",
+         (float)partition_reqs_in_parallel_util / gpu_sim_cycle_partition_util);
+  printf("partition_level_parallelism_util_total  = %12.4f\n",
+         (float)(partition_reqs_in_parallel_util +
+                 partition_reqs_in_parallel_util_total) /
+             (gpu_sim_cycle_partition_util + gpu_tot_sim_cycle_partition_util));
 
   // printf("-------------------------- Insts Lat --------------------------\n");
   // for (size_t i = 0; i < gpu_sim_tot_uarch_op_lat.size(); i++)
@@ -1642,12 +1672,12 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
   printf("l1d_rd_hit_rate = %12.4f\n", l1d_rd_hit_rate);
 
   printf("L2_BW  = %12.4f GB/Sec\n",
-         ((float)(partiton_replys_in_parallel * 32) /
+         ((float)(partition_replys_in_parallel * 32) /
           (gpu_sim_cycle * m_config.core_period)) /
              1000000000);
   printf("L2_BW_total  = %12.4f GB/Sec\n",
-         ((float)((partiton_replys_in_parallel +
-                   partiton_replys_in_parallel_total) *
+         ((float)((partition_replys_in_parallel +
+                   partition_replys_in_parallel_total) *
                   32) /
           ((gpu_tot_sim_cycle + gpu_sim_cycle) * m_config.core_period)) /
              1000000000);
@@ -1667,8 +1697,10 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
     m_cluster[i]->get_cache_stats(core_cache_stats);
   }
   printf("\nTotal_core_cache_stats:\n");
-  
   core_cache_stats.print_stats(stdout, streamID, "Total_core_cache_stats_breakdown");
+
+  printf("Gather average core_cache_miss_served_cycles:\n");
+  core_cache_stats.print_avg_core_cache_miss_served_cycles(stdout, streamID);  
 
   printf("\nTotal_core_cache_fail_stats:\n");
   core_cache_stats.print_fail_stats(stdout, streamID, "Total_core_cache_fail_stats_breakdown");
@@ -1744,12 +1776,20 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
     if (!m_memory_config->m_L2_config.disabled() &&
         m_memory_config->m_L2_config.get_num_lines()) {
       // L2c_print_cache_stat();
+      printf("L2_avg_evict_interval = %llu\n", total_l2_css.avg_evict_interval);
       printf("L2_accesses = %llu\n", total_l2_css.accesses);
       printf("L2_misses = %llu\n", total_l2_css.misses);
       printf("L2_sector_misses = %llu\n", total_l2_css.sector_misses);
       if (total_l2_css.accesses > 0) {
-        printf("L2_miss_rate = %.4lf\n",
-          (double)total_l2_css.misses / (double)total_l2_css.accesses);
+        if (m_memory_config->m_L2_config.get_mshr_disable() == 'T') {
+          printf("L2_miss_rate = %.4lf\n",
+            (double)(total_l2_css.misses + total_l2_css.sector_misses) 
+            / (double)total_l2_css.accesses);
+        } else {
+          printf("L2_miss_rate = %.4lf\n",
+            (double)total_l2_css.misses / (double)total_l2_css.accesses);
+        }
+
         printf("L2_sector_miss_rate = %.4lf\n",
           (double)total_l2_css.sector_misses / (double)total_l2_css.accesses);          
       }
@@ -1766,6 +1806,9 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
         stdout, l2_dram_q_capacity, streamID, "L2_dram_queue_occupancy");
       l2_stats.print_l2_icnt_queue_stats(
         stdout, l2_icnt_q_capacity, streamID, "L2_icnt_queue_occupancy");
+
+      printf("Gather average l2_miss_served_cycles:\n");
+      l2_stats.print_avg_l2_miss_served_cycles(stdout, streamID);
 
       const unsigned l2_mshr_per_entry_slots = m_memory_config->m_L2_config.get_mshr_max_merge();
       const unsigned l2_mshr_entries = m_memory_config->m_L2_config.get_mshr_entries();
@@ -2182,7 +2225,7 @@ void gpgpu_sim::cycle() {
       }
     }
   }
-  partiton_replys_in_parallel += partiton_replys_in_parallel_per_cycle;
+  partition_replys_in_parallel += partiton_replys_in_parallel_per_cycle;
 
   if (clock_mask & DRAM) {
     for (unsigned i = 0; i < m_memory_config->m_n_mem; i++) {
@@ -2262,10 +2305,10 @@ void gpgpu_sim::cycle() {
       }
     } // for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) 
   }
-  partiton_reqs_in_parallel += partiton_reqs_in_parallel_per_cycle;
+  partition_reqs_in_parallel += partiton_reqs_in_parallel_per_cycle;
   if (partiton_reqs_in_parallel_per_cycle > 0) {
-    partiton_reqs_in_parallel_util += partiton_reqs_in_parallel_per_cycle;
-    gpu_sim_cycle_parition_util++;
+    partition_reqs_in_parallel_util += partiton_reqs_in_parallel_per_cycle;
+    gpu_sim_cycle_partition_util++;
   }
 
   if (clock_mask & ICNT) {
