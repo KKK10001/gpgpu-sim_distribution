@@ -458,6 +458,9 @@ void tag_array::gather_rep_candidates(
   LINE_RECENCY recency(
     line->get_last_access_time(), 
     line->get_last_fill_time(),
+    line->get_rrpv(),
+    line->get_max_rrpv(),
+    line->get_recorded_times_in_mshr(),
     line->get_total_hits(),
     line->get_total_evictions(), 
     line->get_total_accesses(),
@@ -536,13 +539,11 @@ void tag_array::pick_modified_by_timestamp_ascend(
     }
     assert(hybrid_rep_candidates_in_use.size());
     std::sort(hybrid_rep_candidates_in_use.begin(), hybrid_rep_candidates_in_use.end(), cmpForSmallerTimestamp);
+    // 1/26 15:30
+    // std::sort(hybrid_rep_candidates_in_use.begin(), hybrid_rep_candidates_in_use.end(), cmpForSmallerRecordsInMSHR);
     valid_line                    = hybrid_rep_candidates_in_use[0].first; // update valid_line 
     lru_picked_total_hits         = hybrid_rep_candidates_in_use[0].second.total_hits;
     lru_picked_avg_evict_interval = hybrid_rep_candidates_in_use[0].second.avg_evict_interval;
-  } else {
-    valid_line                    = hybrid_rep_candidates[0].first;
-    lru_picked_total_hits         = hybrid_rep_candidates[0].second.total_hits;
-    lru_picked_avg_evict_interval = hybrid_rep_candidates[0].second.avg_evict_interval;
   }
 }
 
@@ -590,6 +591,30 @@ void tag_array::pick_modified_by_fill_time_ascend(
   } else {
     std::sort(hybrid_rep_candidates.begin(), hybrid_rep_candidates.end(), cmpForSmallerFillTime);
     valid_line = hybrid_rep_candidates[0].first;
+  }
+}
+
+void tag_array::modify_srrip_pick_with_mshr_aware(
+  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
+  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
+  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
+  unsigned& valid_line) {
+  
+  unsigned modified_srrip_pick = (unsigned) - 1;
+  if (m_config.m_mshr_corr_repl == 'T') {
+    std::vector<std::pair<unsigned, LINE_RECENCY>> hybrid_rep_candidates_in_use;
+    if (hybrid_rep_candidates_no_record_in_mshr.size()) {
+      hybrid_rep_candidates_in_use = hybrid_rep_candidates_no_record_in_mshr;
+    } else {
+      hybrid_rep_candidates_in_use = hybrid_rep_candidates_recorded_in_mshr;
+    } 
+    for (size_t i = 0; i < hybrid_rep_candidates_in_use.size(); i++)
+    {      
+      if (hybrid_rep_candidates_in_use[i].second.rrpv == hybrid_rep_candidates_in_use[i].second.max_rrpv) {
+        valid_line = hybrid_rep_candidates_in_use[i].first;
+        break;
+      }
+    }    
   }
 }
 
@@ -720,8 +745,8 @@ enum cache_request_status tag_array::probe(const std::string& caller,
           if (m_config.m_replacement_policy == SRRIP) {
             if (!srrip_has_picked) {
               if (line->get_rrpv() == line->get_max_rrpv()) {
-                valid_line        = index;
-                srrip_has_picked  = true;
+                valid_line       = index;
+                srrip_has_picked = true;
               } else {
                 if (line->get_rrpv() < line->get_max_rrpv()) {
                   line->inc_rrpv();
@@ -787,6 +812,12 @@ enum cache_request_status tag_array::probe(const std::string& caller,
       }
     } else if (m_config.m_replacement_policy == SRRIP) {
       assert(srrip_has_picked);
+      modify_srrip_pick_with_mshr_aware(
+        hybrid_rep_candidates,
+        hybrid_rep_candidates_no_record_in_mshr,
+        hybrid_rep_candidates_recorded_in_mshr,
+        valid_line        
+      );
       if (m_config.m_total_hits_ascend == 'T') {
         pick_modified_by_total_hits_ascend(
           hybrid_rep_candidates,
@@ -821,6 +852,7 @@ enum cache_request_status tag_array::probe(const std::string& caller,
         hybrid_rep_candidates_no_record_in_mshr,
         hybrid_rep_candidates_recorded_in_mshr,
         lru_picked_line, lru_picked_total_hits, lru_picked_avg_evict_interval);
+      idx = lru_picked_line;
       if (m_config.m_total_hits_ascend == 'T') {
         pick_modified_by_total_hits_ascend(
           hybrid_rep_candidates, 
@@ -828,6 +860,7 @@ enum cache_request_status tag_array::probe(const std::string& caller,
           hybrid_rep_candidates_recorded_in_mshr,
           lru_picked_line, lru_picked_total_hits
         );
+        idx = lru_picked_line;
       } else if (m_config.m_fill_time_ascend == 'T') {
         pick_modified_by_fill_time_ascend(
           hybrid_rep_candidates,
@@ -835,14 +868,14 @@ enum cache_request_status tag_array::probe(const std::string& caller,
           hybrid_rep_candidates_recorded_in_mshr,
           fill_time_picked_line
         );
+        idx = fill_time_picked_line;
       }
-      idx = lru_picked_line;
       if (DTRACE(LRU_SAVED_SRRIP_PICKING)) {
         fprintf(Trace::out, "%llu %s LRU saved SRRIP picking idx:%x\n",
           time, m_config.m_cache_name, idx);
       }      
     }
-  }
+  } // else if (valid_line == (unsigned) - 1)
 
   return MISS;
 }

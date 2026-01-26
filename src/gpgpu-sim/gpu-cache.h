@@ -1407,6 +1407,9 @@ enum LINE_RECENCY_ITEMS {
 struct LINE_RECENCY {
   unsigned long long last_access_time;
   unsigned long long last_fill_time;
+  unsigned rrpv;
+  unsigned max_rrpv;
+  unsigned recorded_times_in_mshr;
   unsigned total_hits;
   unsigned total_evictions;
   unsigned total_accesses;
@@ -1415,6 +1418,9 @@ struct LINE_RECENCY {
   LINE_RECENCY(
     unsigned long long last_access_time_,
     unsigned long long last_fill_time_,
+    unsigned rrpv_,    
+    unsigned max_rrpv_,
+    unsigned recorded_times_in_mshr_,
     unsigned total_hits_,
     unsigned total_evictions_,
     unsigned total_accesses_,
@@ -1423,6 +1429,9 @@ struct LINE_RECENCY {
   ) : 
   last_access_time(last_access_time_),
   last_fill_time(last_fill_time_),
+  rrpv(rrpv_),
+  max_rrpv(max_rrpv_),
+  recorded_times_in_mshr(recorded_times_in_mshr_),
   total_hits(total_hits_),
   total_evictions(total_evictions_),
   total_accesses(total_accesses_),
@@ -1442,6 +1451,11 @@ class tag_array {
     const std::pair<unsigned, LINE_RECENCY>& b) {
     return a.second.last_access_time < b.second.last_access_time;
   }
+  static bool cmpForSmallerRecordsInMSHR(
+    const std::pair<unsigned, LINE_RECENCY>& a, 
+    const std::pair<unsigned, LINE_RECENCY>& b) {
+    return a.second.recorded_times_in_mshr < b.second.recorded_times_in_mshr;
+  }  
   static bool cmpForSmallerTotalHits(
     const std::pair<unsigned, LINE_RECENCY>& a, 
     const std::pair<unsigned, LINE_RECENCY>& b) {
@@ -1485,7 +1499,13 @@ class tag_array {
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
     unsigned& valid_line
-  );    
+  );
+  void modify_srrip_pick_with_mshr_aware(
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
+    unsigned& valid_line
+  );  
 
   // addr is block_addr
   enum cache_request_status probe(const std::string& caller,
