@@ -618,36 +618,15 @@ void tag_array::fill_time_awared_modification_for_lru(
     } else {
       hybrid_rep_candidates_in_use = hybrid_rep_candidates_recorded_in_mshr;
     }    
-    std::sort(hybrid_rep_candidates_in_use.begin(), hybrid_rep_candidates_in_use.end(), cmpForSmallerTimestamp);
+    std::sort(hybrid_rep_candidates_in_use.begin(), hybrid_rep_candidates_in_use.end(), cmpForSmallerFillTime);
     if (hybrid_rep_candidates_in_use[0].second.last_access_time <= smallest_last_access_time) {
       valid_line = hybrid_rep_candidates_in_use[0].first;
     }
   } else {
-    std::sort(hybrid_rep_candidates.begin(), hybrid_rep_candidates.end(), cmpForSmallerTimestamp);
+    std::sort(hybrid_rep_candidates.begin(), hybrid_rep_candidates.end(), cmpForSmallerFillTime);
     if (hybrid_rep_candidates[0].second.last_access_time <= smallest_last_access_time) {
       valid_line = hybrid_rep_candidates[0].first;
     }
-  }
-}
-
-void tag_array::pick_modified_by_fill_time_ascend(
-  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
-  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
-  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
-  unsigned& valid_line) {
-
-  if (m_config.m_mshr_corr_repl == 'T') {
-    std::vector<std::pair<unsigned, LINE_RECENCY>> hybrid_rep_candidates_in_use;
-    if (hybrid_rep_candidates_no_record_in_mshr.size()) {
-      hybrid_rep_candidates_in_use = hybrid_rep_candidates_no_record_in_mshr;
-    } else {
-      hybrid_rep_candidates_in_use = hybrid_rep_candidates_recorded_in_mshr;
-    }    
-    std::sort(hybrid_rep_candidates_in_use.begin(), hybrid_rep_candidates_in_use.end(), cmpForSmallerFillTime);
-    valid_line = hybrid_rep_candidates_in_use[0].first;
-  } else {
-    std::sort(hybrid_rep_candidates.begin(), hybrid_rep_candidates.end(), cmpForSmallerFillTime);
-    valid_line = hybrid_rep_candidates[0].first;
   }
 }
 

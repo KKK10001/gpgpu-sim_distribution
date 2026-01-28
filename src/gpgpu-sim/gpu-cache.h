@@ -1494,12 +1494,6 @@ class tag_array {
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
     unsigned& valid_line, const unsigned& lru_picked_total_hits
-  );  
-  void pick_modified_by_fill_time_ascend(
-    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
-    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
-    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
-    unsigned& valid_line
   );
   void fill_time_awared_modification_for_lru(
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
