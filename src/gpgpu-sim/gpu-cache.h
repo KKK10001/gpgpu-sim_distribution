@@ -1480,11 +1480,12 @@ class tag_array {
     cache_block_t* line, unsigned long long& valid_timestamp, 
     unsigned& valid_line, const unsigned& index);
 
-  void pick_modified_by_timestamp_ascend(
+  void pick_with_lru(
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
     unsigned& valid_line,
+    unsigned long long& smallest_access_time,
     unsigned& lru_picked_total_hits,
     unsigned long long& lru_picked_avg_evict_interval
   );
@@ -1500,7 +1501,20 @@ class tag_array {
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
     unsigned& valid_line
   );
-  void modify_srrip_pick_with_mshr_aware(
+  void fill_time_awared_modification_for_lru(
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
+    unsigned& valid_line,
+    const unsigned long long& smallest_last_access_time);
+
+  void fill_time_awared_modification_for_srrip(
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
+    unsigned& valid_line);
+
+  void mshr_awared_modification_for_srrip(
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,

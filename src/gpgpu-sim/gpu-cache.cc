@@ -495,40 +495,14 @@ void tag_array::fill_time_pick(
   }
 }
 
-void tag_array::pick_modified_by_timestamp_ascend(
+void tag_array::pick_with_lru(
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
   unsigned& valid_line,
+  unsigned long long& smallest_access_time,
   unsigned& lru_picked_total_hits,
   unsigned long long& lru_picked_avg_evict_interval) {
-
-  std::sort(hybrid_rep_candidates.begin(), hybrid_rep_candidates.end(), cmpForSmallerTimestamp);
-  if (DTRACE(CHECK_LRU_ARRAY)) {
-    if (valid_line != hybrid_rep_candidates[0].first) {
-      fprintf(Trace::out, "valid_line:%u != hybrid_rep_candidates[0].first:%u\n",
-        valid_line, hybrid_rep_candidates[0].first);
-      for (size_t i = 0; i < hybrid_rep_candidates.size(); i++)
-      {
-        fprintf(Trace::out, "hybrid_rep_candidates[%u] = {idx:%u timestamp:%llu}\n", 
-          i, hybrid_rep_candidates[i].first, hybrid_rep_candidates[i].second.last_access_time);
-      }      
-    }
-  }
-  // srad_v2 with mshr_en_but_no_aware_all_lru.config would appear below:
-  // valid_line:309 != hybrid_rep_candidates[0].first:321
-  // hybrid_rep_candidates[0] = {idx:321 timestamp:15367}
-  // hybrid_rep_candidates[1] = {idx:309 timestamp:15367}  
-  // lru_pick() gen valid_line:309
-  assert(hybrid_rep_candidates.size());
-  if (hybrid_rep_candidates.size() > 1) {
-    if (hybrid_rep_candidates[0].second.last_access_time != 
-        hybrid_rep_candidates[1].second.last_access_time) {
-      assert(valid_line == hybrid_rep_candidates[0].first);
-    }
-  } else if (hybrid_rep_candidates.size() == 1) {
-    assert(valid_line == hybrid_rep_candidates[0].first);
-  }
 
   if (m_config.m_mshr_corr_repl == 'T') {
     std::vector<std::pair<unsigned, LINE_RECENCY>> hybrid_rep_candidates_in_use;
@@ -539,11 +513,43 @@ void tag_array::pick_modified_by_timestamp_ascend(
     }
     assert(hybrid_rep_candidates_in_use.size());
     std::sort(hybrid_rep_candidates_in_use.begin(), hybrid_rep_candidates_in_use.end(), cmpForSmallerTimestamp);
-    // 1/26 15:30
-    // std::sort(hybrid_rep_candidates_in_use.begin(), hybrid_rep_candidates_in_use.end(), cmpForSmallerRecordsInMSHR);
     valid_line                    = hybrid_rep_candidates_in_use[0].first; // update valid_line 
+    smallest_access_time          = hybrid_rep_candidates_in_use[0].second.last_access_time;
     lru_picked_total_hits         = hybrid_rep_candidates_in_use[0].second.total_hits;
     lru_picked_avg_evict_interval = hybrid_rep_candidates_in_use[0].second.avg_evict_interval;
+  } else {
+    assert(hybrid_rep_candidates.size());
+    std::sort(hybrid_rep_candidates.begin(), hybrid_rep_candidates.end(), cmpForSmallerTimestamp);
+    valid_line                    = hybrid_rep_candidates[0].first; // update valid_line 
+    smallest_access_time          = hybrid_rep_candidates[0].second.last_access_time;
+    lru_picked_total_hits         = hybrid_rep_candidates[0].second.total_hits;
+    lru_picked_avg_evict_interval = hybrid_rep_candidates[0].second.avg_evict_interval;
+
+    if (DTRACE(CHECK_LRU_ARRAY)) {
+      if (valid_line != hybrid_rep_candidates[0].first) {
+        fprintf(Trace::out, "valid_line:%u != hybrid_rep_candidates[0].first:%u\n",
+          valid_line, hybrid_rep_candidates[0].first);
+        for (size_t i = 0; i < hybrid_rep_candidates.size(); i++)
+        {
+          fprintf(Trace::out, "hybrid_rep_candidates[%u] = {idx:%u timestamp:%llu}\n", 
+            i, hybrid_rep_candidates[i].first, hybrid_rep_candidates[i].second.last_access_time);
+        }      
+      }
+    }    
+    // srad_v2 with mshr_en_but_no_aware_all_lru.config would appear below:
+    // valid_line:309 != hybrid_rep_candidates[0].first:321
+    // hybrid_rep_candidates[0] = {idx:321 timestamp:15367}
+    // hybrid_rep_candidates[1] = {idx:309 timestamp:15367}  
+    // lru_pick() gen valid_line:309
+    assert(hybrid_rep_candidates.size());
+    if (hybrid_rep_candidates.size() > 1) {
+      if (hybrid_rep_candidates[0].second.last_access_time != 
+          hybrid_rep_candidates[1].second.last_access_time) {
+        assert(valid_line == hybrid_rep_candidates[0].first);
+      }
+    } else if (hybrid_rep_candidates.size() == 1) {
+      assert(valid_line == hybrid_rep_candidates[0].first);
+    }
   }
 }
 
@@ -573,6 +579,57 @@ void tag_array::pick_modified_by_total_hits_ascend(
   }
 }
 
+void tag_array::fill_time_awared_modification_for_srrip(
+  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
+  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
+  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
+  unsigned& valid_line) {
+
+  if (m_config.m_mshr_corr_repl == 'T') {
+    std::vector<std::pair<unsigned, LINE_RECENCY>> hybrid_rep_candidates_in_use;
+    if (hybrid_rep_candidates_no_record_in_mshr.size()) {
+      hybrid_rep_candidates_in_use = hybrid_rep_candidates_no_record_in_mshr;
+    } else {
+      hybrid_rep_candidates_in_use = hybrid_rep_candidates_recorded_in_mshr;
+    }    
+    std::sort(hybrid_rep_candidates_in_use.begin(), hybrid_rep_candidates_in_use.end(), cmpForSmallerFillTime);
+    if (hybrid_rep_candidates_in_use[0].second.rrpv == hybrid_rep_candidates_in_use[0].second.max_rrpv) {
+      valid_line = hybrid_rep_candidates_in_use[0].first;
+    }
+  } else {
+    std::sort(hybrid_rep_candidates.begin(), hybrid_rep_candidates.end(), cmpForSmallerFillTime);
+    if (hybrid_rep_candidates[0].second.rrpv == hybrid_rep_candidates[0].second.max_rrpv) {
+      valid_line = hybrid_rep_candidates[0].first;
+    }
+  }
+}
+
+void tag_array::fill_time_awared_modification_for_lru(
+  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
+  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
+  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
+  unsigned& valid_line,
+  const unsigned long long& smallest_last_access_time) {
+
+  if (m_config.m_mshr_corr_repl == 'T') {
+    std::vector<std::pair<unsigned, LINE_RECENCY>> hybrid_rep_candidates_in_use;
+    if (hybrid_rep_candidates_no_record_in_mshr.size()) {
+      hybrid_rep_candidates_in_use = hybrid_rep_candidates_no_record_in_mshr;
+    } else {
+      hybrid_rep_candidates_in_use = hybrid_rep_candidates_recorded_in_mshr;
+    }    
+    std::sort(hybrid_rep_candidates_in_use.begin(), hybrid_rep_candidates_in_use.end(), cmpForSmallerTimestamp);
+    if (hybrid_rep_candidates_in_use[0].second.last_access_time <= smallest_last_access_time) {
+      valid_line = hybrid_rep_candidates_in_use[0].first;
+    }
+  } else {
+    std::sort(hybrid_rep_candidates.begin(), hybrid_rep_candidates.end(), cmpForSmallerTimestamp);
+    if (hybrid_rep_candidates[0].second.last_access_time <= smallest_last_access_time) {
+      valid_line = hybrid_rep_candidates[0].first;
+    }
+  }
+}
+
 void tag_array::pick_modified_by_fill_time_ascend(
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
@@ -594,13 +651,12 @@ void tag_array::pick_modified_by_fill_time_ascend(
   }
 }
 
-void tag_array::modify_srrip_pick_with_mshr_aware(
+void tag_array::mshr_awared_modification_for_srrip(
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
   unsigned& valid_line) {
   
-  unsigned modified_srrip_pick = (unsigned) - 1;
   if (m_config.m_mshr_corr_repl == 'T') {
     std::vector<std::pair<unsigned, LINE_RECENCY>> hybrid_rep_candidates_in_use;
     if (hybrid_rep_candidates_no_record_in_mshr.size()) {
@@ -654,7 +710,6 @@ enum cache_request_status tag_array::probe(const std::string& caller,
   unsigned invalid_line = (unsigned) - 1;
   unsigned valid_line = (unsigned) - 1;
   unsigned long long valid_timestamp = (unsigned) - 1;
-  unsigned long long valid_fill_time = (unsigned) - 1;
   bool srrip_has_picked = false;
 
   bool all_reserved = true;
@@ -665,8 +720,6 @@ enum cache_request_status tag_array::probe(const std::string& caller,
   unsigned lru_picked_line       = (unsigned) - 1;
   unsigned lru_picked_total_hits = (unsigned) - 1;
   unsigned long long lru_picked_avg_evict_interval = (unsigned long long) - 1;
-
-  unsigned fill_time_picked_line = (unsigned) - 1;
 
   std::vector<std::pair<unsigned /* unfolded index */, LINE_RECENCY>> hybrid_rep_candidates;
   std::vector<std::pair<unsigned /* unfolded index */, LINE_RECENCY>> hybrid_rep_candidates_no_record_in_mshr;
@@ -753,9 +806,6 @@ enum cache_request_status tag_array::probe(const std::string& caller,
                 }
               }
             }
-            // Always do LRU in parallel in case no valid idx being picked by SRRIP
-            lru_pick(line, valid_timestamp, lru_picked_line, lru_has_picked, index);
-            fill_time_pick(line, valid_fill_time, fill_time_picked_line, index);
           } else if (m_config.m_replacement_policy == LRU) {
             lru_pick(line, valid_timestamp, valid_line, lru_has_picked, index);
           } else if (m_config.m_replacement_policy == FIFO) {
@@ -788,11 +838,13 @@ enum cache_request_status tag_array::probe(const std::string& caller,
       assert(lru_has_picked);
       assert(hybrid_rep_candidates.size());
 
-      pick_modified_by_timestamp_ascend(
+      // Possible re-pick from "hybrid_rep_candidates_in_use"
+      pick_with_lru(
         hybrid_rep_candidates,
         hybrid_rep_candidates_no_record_in_mshr,
         hybrid_rep_candidates_recorded_in_mshr,
-        valid_line, lru_picked_total_hits, lru_picked_avg_evict_interval);
+        valid_line, valid_timestamp,
+        lru_picked_total_hits, lru_picked_avg_evict_interval);
 
       if (m_config.m_total_hits_ascend == 'T') {
         pick_modified_by_total_hits_ascend(
@@ -803,16 +855,17 @@ enum cache_request_status tag_array::probe(const std::string& caller,
           lru_picked_total_hits
         );
       } else if (m_config.m_fill_time_ascend == 'T') { // 1-25 flush lru results
-        pick_modified_by_fill_time_ascend(
+        fill_time_awared_modification_for_lru(
           hybrid_rep_candidates,
           hybrid_rep_candidates_no_record_in_mshr,
           hybrid_rep_candidates_recorded_in_mshr,
-          valid_line
+          valid_line,
+          valid_timestamp
         );
       }
     } else if (m_config.m_replacement_policy == SRRIP) {
       assert(srrip_has_picked);
-      modify_srrip_pick_with_mshr_aware(
+      mshr_awared_modification_for_srrip(
         hybrid_rep_candidates,
         hybrid_rep_candidates_no_record_in_mshr,
         hybrid_rep_candidates_recorded_in_mshr,
@@ -827,7 +880,7 @@ enum cache_request_status tag_array::probe(const std::string& caller,
           lru_picked_total_hits
         );
       } else if (m_config.m_fill_time_ascend == 'T') {
-        pick_modified_by_fill_time_ascend(
+        fill_time_awared_modification_for_srrip(
           hybrid_rep_candidates,
           hybrid_rep_candidates_no_record_in_mshr,
           hybrid_rep_candidates_recorded_in_mshr,
@@ -836,23 +889,22 @@ enum cache_request_status tag_array::probe(const std::string& caller,
       }
     }    
     m_lines[valid_line]->update_recency_info(time);
-    mf->set_victim_avg_evict_interval(m_lines[valid_line]->get_avg_evict_interval());
-    idx = valid_line;
-    
+    if (mf) {
+      mf->set_victim_avg_evict_interval(m_lines[valid_line]->get_avg_evict_interval());
+    }
+    idx = valid_line;    
   } else if (valid_line == (unsigned) - 1) {
     if (m_config.m_replacement_policy == LRU) {
       assert(0);
     } else if (m_config.m_replacement_policy == SRRIP) {
       assert(!srrip_has_picked);
-      assert(lru_has_picked);
-      assert(lru_picked_line != ((unsigned) - 1));
 
-      pick_modified_by_timestamp_ascend(
+      pick_with_lru(
         hybrid_rep_candidates,
         hybrid_rep_candidates_no_record_in_mshr,
         hybrid_rep_candidates_recorded_in_mshr,
-        lru_picked_line, lru_picked_total_hits, lru_picked_avg_evict_interval);
-      idx = lru_picked_line;
+        idx, valid_timestamp,
+        lru_picked_total_hits, lru_picked_avg_evict_interval);
       if (m_config.m_total_hits_ascend == 'T') {
         pick_modified_by_total_hits_ascend(
           hybrid_rep_candidates, 
@@ -862,13 +914,13 @@ enum cache_request_status tag_array::probe(const std::string& caller,
         );
         idx = lru_picked_line;
       } else if (m_config.m_fill_time_ascend == 'T') {
-        pick_modified_by_fill_time_ascend(
+        fill_time_awared_modification_for_lru(
           hybrid_rep_candidates,
           hybrid_rep_candidates_no_record_in_mshr,
           hybrid_rep_candidates_recorded_in_mshr,
-          fill_time_picked_line
+          idx,
+          valid_timestamp
         );
-        idx = fill_time_picked_line;
       }
       if (DTRACE(LRU_SAVED_SRRIP_PICKING)) {
         fprintf(Trace::out, "%llu %s LRU saved SRRIP picking idx:%x\n",
