@@ -93,8 +93,8 @@ void power_stat_t::clear() {
       pwr_core_stat->m_num_sp_committed[i][j] = 0;
       pwr_core_stat->m_num_sfu_committed[i][j] = 0;
       pwr_core_stat->m_num_mem_committed[i][j] = 0;
-      pwr_core_stat->m_read_regfile_acesses[i][j] = 0;
-      pwr_core_stat->m_write_regfile_acesses[i][j] = 0;
+      pwr_core_stat->m_read_regfile_accesses[i][j] = 0;
+      pwr_core_stat->m_write_regfile_accesses[i][j] = 0;
       pwr_core_stat->m_non_rf_operands[i][j] = 0;
       pwr_core_stat->m_active_sp_lanes[i][j] = 0;
       pwr_core_stat->m_active_sfu_lanes[i][j] = 0;
@@ -267,9 +267,9 @@ void power_core_stat_t::print(FILE *fout) {
     fprintf(fout, "\tTotal MEM Commissions=%u\n",
             m_num_mem_committed[CURRENT_STAT_IDX][i]);
     fprintf(fout, "\tTotal REG Reads=%u\n",
-            m_read_regfile_acesses[CURRENT_STAT_IDX][i]);
+            m_read_regfile_accesses[CURRENT_STAT_IDX][i]);
     fprintf(fout, "\tTotal REG Writes=%u\n",
-            m_write_regfile_acesses[CURRENT_STAT_IDX][i]);
+            m_write_regfile_accesses[CURRENT_STAT_IDX][i]);
     fprintf(fout, "\tTotal NON REG=%u\n",
             m_non_rf_operands[CURRENT_STAT_IDX][i]);
   }
@@ -307,10 +307,10 @@ void power_core_stat_t::init() {
   m_num_sp_committed[CURRENT_STAT_IDX] = m_core_stats->m_num_sp_committed;
   m_num_sfu_committed[CURRENT_STAT_IDX] = m_core_stats->m_num_sfu_committed;
   m_num_mem_committed[CURRENT_STAT_IDX] = m_core_stats->m_num_mem_committed;
-  m_read_regfile_acesses[CURRENT_STAT_IDX] =
-      m_core_stats->m_read_regfile_acesses;
-  m_write_regfile_acesses[CURRENT_STAT_IDX] =
-      m_core_stats->m_write_regfile_acesses;
+  m_read_regfile_accesses[CURRENT_STAT_IDX] =
+      m_core_stats->m_read_regfile_accesses;
+  m_write_regfile_accesses[CURRENT_STAT_IDX] =
+      m_core_stats->m_write_regfile_accesses;
   m_non_rf_operands[CURRENT_STAT_IDX] = m_core_stats->m_non_rf_operands;
   m_active_sp_lanes[CURRENT_STAT_IDX] = m_core_stats->m_active_sp_lanes;
   m_active_sfu_lanes[CURRENT_STAT_IDX] = m_core_stats->m_active_sfu_lanes;
@@ -381,9 +381,9 @@ void power_core_stat_t::init() {
       (unsigned *)calloc(m_config->num_shader(), sizeof(unsigned));
   m_num_mem_committed[PREV_STAT_IDX] =
       (unsigned *)calloc(m_config->num_shader(), sizeof(unsigned));
-  m_read_regfile_acesses[PREV_STAT_IDX] =
+  m_read_regfile_accesses[PREV_STAT_IDX] =
       (unsigned *)calloc(m_config->num_shader(), sizeof(unsigned));
-  m_write_regfile_acesses[PREV_STAT_IDX] =
+  m_write_regfile_accesses[PREV_STAT_IDX] =
       (unsigned *)calloc(m_config->num_shader(), sizeof(unsigned));
   m_non_rf_operands[PREV_STAT_IDX] =
       (unsigned *)calloc(m_config->num_shader(), sizeof(unsigned));
@@ -457,10 +457,10 @@ void power_core_stat_t::save_stats() {
         m_num_sfu_committed[CURRENT_STAT_IDX][i];
     m_num_mem_committed[PREV_STAT_IDX][i] =
         m_num_mem_committed[CURRENT_STAT_IDX][i];
-    m_read_regfile_acesses[PREV_STAT_IDX][i] =
-        m_read_regfile_acesses[CURRENT_STAT_IDX][i];
-    m_write_regfile_acesses[PREV_STAT_IDX][i] =
-        m_write_regfile_acesses[CURRENT_STAT_IDX][i];
+    m_read_regfile_accesses[PREV_STAT_IDX][i] =
+        m_read_regfile_accesses[CURRENT_STAT_IDX][i];
+    m_write_regfile_accesses[PREV_STAT_IDX][i] =
+        m_write_regfile_accesses[CURRENT_STAT_IDX][i];
     m_non_rf_operands[PREV_STAT_IDX][i] =
         m_non_rf_operands[CURRENT_STAT_IDX][i];
     m_active_sp_lanes[PREV_STAT_IDX][i] =

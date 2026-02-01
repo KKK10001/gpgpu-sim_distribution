@@ -574,6 +574,21 @@ std::string cuda_sim::ptx_get_insn_str(address_type pc) {
   return finfo->get_insn_str(pc);
 }
 
+std::string cuda_sim::ptx_get_valid_insn_str(address_type pc, bool& valid_inst) {
+  std::map<unsigned, function_info *>::iterator f = g_pc_to_finfo.find(pc);
+  if (f == g_pc_to_finfo.end()) {
+#define STR_SIZE 255
+    char buff[STR_SIZE];
+    buff[STR_SIZE - 1] = '\0';
+    snprintf(buff, STR_SIZE, "<no instruction at address 0x%llx>", pc);
+    return std::string(buff);
+  }
+  function_info *finfo = f->second;
+  assert(finfo);
+  valid_inst = true;
+  return finfo->get_insn_str(pc);
+}
+
 void ptx_instruction::set_fp_or_int_archop() {
   oprnd_type = UN_OP;
   if ((m_opcode == MEMBAR_OP) || (m_opcode == SSY_OP) || (m_opcode == BRA_OP) ||

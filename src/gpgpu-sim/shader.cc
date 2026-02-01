@@ -549,6 +549,9 @@ void shader_core_ctx::init_warps(unsigned cta_id, unsigned start_thread,
     unsigned warp_per_cta = cta_size / m_config->warp_size;
     unsigned end_warp = end_thread / m_config->warp_size +
                         ((end_thread % m_config->warp_size) ? 1 : 0);
+    if (DTRACE(INIT_WARP)) {
+      fprintf(Trace::out, "::init_warps start_warp:%u end_warp:%u\n", start_warp, end_warp);
+    }
     for (unsigned i = start_warp; i < end_warp; ++i) {
       unsigned n_active = 0;
       simt_mask_t active_threads;
@@ -634,6 +637,26 @@ void shader_core_stats::print(FILE *fout) const {
   }
   fprintf(fout, "gpgpu_n_tot_thrd_icount = %lld\n", thread_icount_uarch);
   fprintf(fout, "gpgpu_n_tot_w_icount = %lld\n", warp_icount_uarch);
+
+  for (size_t bank = 0; bank < m_config->gpgpu_num_reg_banks; bank++)
+  {
+    float raw_conflicts_rate = m_raw_conflicts[bank] / (float)m_rd_reg_reqs[bank];
+    fprintf(fout, "raw_conflicts_rate[bank:%u] = %f (conflicts:%u / rd_reg_reqs:%u)\n", 
+      bank, raw_conflicts_rate, m_raw_conflicts[bank], m_rd_reg_reqs[bank]);
+  }
+  for (size_t bank = 0; bank < m_config->gpgpu_num_reg_banks; bank++)
+  {
+    float wr_reg_bank_conflicts_rate = 
+      (float)m_wr_reg_bank_conflicts[bank] / m_wr_reg_bank_allocates[bank];
+    fprintf(fout, "wr_reg_bank_conflicts_rate[bank:%u] = %f (conflicts:%u / allocates:%u)\n", 
+      bank, wr_reg_bank_conflicts_rate, 
+      m_wr_reg_bank_conflicts[bank], m_wr_reg_bank_allocates[bank]);
+  }  
+  // for (size_t bank = 0; bank < m_config->gpgpu_num_reg_banks; bank++)
+  // {
+  //   fprintf(fout, "m_rd_reg_bank_conflicts[bank:%u] = %u\n", 
+  //     bank, m_rd_reg_bank_conflicts[bank]);
+  // }  
 
   fprintf(fout, "gpgpu_n_stall_shd_mem = %d\n", gpgpu_n_stall_shd_mem);
   fprintf(fout, "gpgpu_n_mem_read_local = %d\n", gpgpu_n_mem_read_local);
@@ -905,11 +928,23 @@ void shader_core_ctx::decode() {
       m_warp[m_inst_fetch_buffer.m_warp_id]->ibuffer_fill(0, pI1);
       m_warp[m_inst_fetch_buffer.m_warp_id]->inc_inst_in_pipeline();
 
+      bool valid_pi1 = false;
+      if (DTRACE(IBUF_INSERT)) {
+        std::string inst_str = m_gpu->gpgpu_ctx->func_sim->ptx_get_valid_insn_str(pc, valid_pi1);
+        if (valid_pi1) {
+          fprintf(Trace::out, "%llu WARP[%u] inserted inst %s into IBUF[0]\n",
+            m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, 
+            m_inst_fetch_buffer.m_warp_id, inst_str.c_str()
+          );
+        }
+      }
       if (DTRACE(DECODE)) {
-        std::string inst_str = m_gpu->gpgpu_ctx->func_sim->ptx_get_insn_str(pc);
-        fprintf(Trace::out, "%llu: decoded inst for warp %u%s\n",
-                m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
-                m_inst_fetch_buffer.m_warp_id, inst_str.c_str());
+        std::string inst_str = m_gpu->gpgpu_ctx->func_sim->ptx_get_valid_insn_str(pc, valid_pi1);
+        if (valid_pi1) {
+          fprintf(Trace::out, "%llu: decoded inst for warp %u%s\n",
+                  m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
+                  m_inst_fetch_buffer.m_warp_id, inst_str.c_str());
+        }
       }  
 
       m_stats->m_num_decoded_insn[m_sid]++;
@@ -920,18 +955,29 @@ void shader_core_ctx::decode() {
       } else if (pI1->oprnd_type == FP_OP) {
         m_stats->m_num_FPdecoded_insn[m_sid]++;
       }
-      const warp_inst_t *pI2 =
-          get_next_inst(m_inst_fetch_buffer.m_warp_id, pc + pI1->isize);
+      const warp_inst_t *pI2 = get_next_inst(m_inst_fetch_buffer.m_warp_id, pc + pI1->isize);
       if (pI2) {
         m_warp[m_inst_fetch_buffer.m_warp_id]->ibuffer_fill(1, pI2);
         m_warp[m_inst_fetch_buffer.m_warp_id]->inc_inst_in_pipeline();
 
-      if (DTRACE(DECODE)) {
-        std::string inst_str = m_gpu->gpgpu_ctx->func_sim->ptx_get_insn_str(pc);
-        fprintf(Trace::out, "%llu: decoded inst for warp %u%s\n",
-                m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
-                m_inst_fetch_buffer.m_warp_id, inst_str.c_str());
-      }  
+        bool valid_pi2 = false;
+        if (DTRACE(IBUF_INSERT)) {
+          std::string inst_str = m_gpu->gpgpu_ctx->func_sim->ptx_get_valid_insn_str(pc, valid_pi2);
+          if (valid_pi2) {
+            fprintf(Trace::out, "%llu WARP[%u] inserted inst %s into IBUF[1]\n",
+              m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, 
+              m_inst_fetch_buffer.m_warp_id, inst_str.c_str()
+            );  
+          }      
+        }
+        if (DTRACE(DECODE)) {
+          std::string inst_str = m_gpu->gpgpu_ctx->func_sim->ptx_get_valid_insn_str(pc, valid_pi2);
+          if (valid_pi2) {
+            fprintf(Trace::out, "%llu: decoded inst for warp %u%s\n",
+                    m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
+                    m_inst_fetch_buffer.m_warp_id, inst_str.c_str());            
+          }
+        }  
 
         m_stats->m_num_decoded_insn[m_sid]++;
         if ((pI1->oprnd_type == INT_OP) ||
@@ -944,13 +990,6 @@ void shader_core_ctx::decode() {
       }
     }
     m_inst_fetch_buffer.m_valid = false;
-
-    // if (DTRACE(DECODE)) {
-    //   std::string inst_str = m_gpu->gpgpu_ctx->func_sim->ptx_get_insn_str(pc);
-    //   fprintf(Trace::out, "%llu: decoded inst for warp %u%s\n",
-    //           m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
-    //           m_inst_fetch_buffer.m_warp_id, inst_str.c_str());
-    // }    
   }
 }
 
@@ -1010,8 +1049,16 @@ void shader_core_ctx::fetch() {
         if (!m_warp[warp_id]->functional_done() &&
             !m_warp[warp_id]->imiss_pending() &&
             m_warp[warp_id]->ibuffer_empty()) {
+
           address_type pc;
           pc = m_warp[warp_id]->get_pc();
+
+          if (DTRACE(IBUF)) {
+            fprintf(Trace::out, "%llu WARP[%u] IBUF is empty on pc:%#llx\n",
+              m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, warp_id, pc          
+            );
+          }          
+
           address_type ppc = pc + PROGRAM_MEM_START;
           unsigned nbytes = 16;
           unsigned offset_in_block =
@@ -1045,11 +1092,18 @@ void shader_core_ctx::fetch() {
           }
 
           if (status == MISS) {
+            if (m_config->perfect_inst_const_cache) {
+              assert(0);
+            }
             m_last_warp_fetched = warp_id;
             m_warp[warp_id]->set_imiss_pending();
             m_warp[warp_id]->set_last_fetch(m_gpu->gpu_sim_cycle);
           } else if (status == HIT) {
             m_last_warp_fetched = warp_id;
+            if (DTRACE(IBUF)) {
+              fprintf(Trace::out, "%llu Insert warp_id:%u into IBUF\n", 
+                m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, warp_id);
+            }
             m_inst_fetch_buffer = ifetch_buffer_t(pc, nbytes, warp_id);
             m_warp[warp_id]->set_last_fetch(m_gpu->gpu_sim_cycle);
             delete mf;
@@ -1129,9 +1183,8 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
   } else if (next_inst->m_is_depbar) {  // Add for DEPBAR
     // Set to true immediately when a DEPBAR instruction is met
     m_warp[warp_id]->m_waiting_ldgsts = true;
-    m_warp[warp_id]->m_depbar_group =
-        next_inst->m_depbar_group_no;  // set in trace_driven.cc
-
+    // set in trace_driven.cc
+    m_warp[warp_id]->m_depbar_group = next_inst->m_depbar_group_no;
     // Record the last group that's possbily being monitored by this DEPBAR
     // instr
     m_warp[warp_id]->m_depbar_start_id = m_warp[warp_id]->m_ldgdepbar_id - 1;
@@ -1466,8 +1519,7 @@ void scheduler_unit::cycle() {
 
     if (warp(warp_id).waiting())
       SCHED_DPRINTF(
-          "Warp (warp_id %u, dynamic_warp_id %u) fails as waiting for "
-          "barrier\n",
+          "Warp (warp_id %u, dynamic_warp_id %u) fails as waiting for barrier\n",
           (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
 
     while (!warp(warp_id).waiting() && !warp(warp_id).ibuffer_empty() &&
@@ -4242,16 +4294,19 @@ void shader_core_ctx::cache_flush() { m_ldst_unit->flush(); }
 void shader_core_ctx::cache_invalidate() { m_ldst_unit->invalidate(); }
 
 // modifiers
-std::list<opndcoll_rfu_t::op_t> opndcoll_rfu_t::arbiter_t::allocate_reads() {
-  std::list<op_t>
-      result;  // a list of registers that (a) are in different register banks,
-               // (b) do not go to the same operand collector
+std::list<opndcoll_rfu_t::op_t> 
+  opndcoll_rfu_t::arbiter_t::allocate_reads(
+    std::vector<unsigned>& raw_conflicts, std::vector<unsigned>& rd_reg_reqs) {
+  // A list of registers that 
+  // (a) are in different register banks,
+  // (b) do not go to the same operand collector
+  std::list<op_t> result;
 
   int input;
   int output;
-  int _inputs = m_num_banks;
+  int _inputs  = m_num_banks;
   int _outputs = m_num_collectors;
-  int _square = (_inputs > _outputs) ? _inputs : _outputs;
+  int _square  = (_inputs > _outputs) ? _inputs : _outputs;
   assert(_square > 0);
   int _pri = (int)m_last_cu;
 
@@ -4271,10 +4326,14 @@ std::list<opndcoll_rfu_t::op_t> opndcoll_rfu_t::arbiter_t::allocate_reads() {
       assert(i < (unsigned)_inputs);
       assert(oc_id < _outputs);
       _request[i][oc_id] = 1;
+      rd_reg_reqs[i]++;
     }
     if (m_allocated_bank[i].is_write()) {
-      assert(i < (unsigned)_inputs);
+      assert(i < (unsigned)_inputs);      
       _inmatch[i] = 0;  // write gets priority
+    }
+    if (!m_queue[i].empty() && m_allocated_bank[i].is_write()) {
+      raw_conflicts[i]++;
     }
   }
 
@@ -4776,8 +4835,21 @@ unsigned register_bank(int regnum, int wid, unsigned num_banks,
   int bank = regnum;
   bank += wid;
   if (sub_core_model) {
-    unsigned bank_num = (bank % banks_per_sched) + (sched_id * banks_per_sched);
+    unsigned bank_offset    = (bank % banks_per_sched);
+    unsigned warp_sched_loc = (sched_id * banks_per_sched); 
+    unsigned bank_num = bank_offset + warp_sched_loc;
+
     assert(bank_num < num_banks);
+    if (DTRACE(REG_BANK)) {
+      fprintf(Trace::out, "orig bank:%u = regnum:%u + wid:%u. bank_num:%u = "
+        "bank_offset:%u (bank:%u mod banks_per_sched:%u) + "
+        "warp_sched_loc:%u (sched_id:%u * banks_per_sched:%u)\n", 
+        bank, regnum, wid,
+        bank_num, 
+        bank_offset, bank, banks_per_sched,
+        warp_sched_loc, sched_id, banks_per_sched
+      );
+    }
     return bank_num;
   } else
     return bank % num_banks;
@@ -4788,21 +4860,27 @@ bool opndcoll_rfu_t::writeback(warp_inst_t &inst) {
 
   std::list<unsigned> regs = m_shader->get_regs_written(inst);
   for (unsigned op = 0; op < MAX_REG_OPERANDS; op++) {
-    int reg_num = inst.arch_reg.dst[op];  // this math needs to match that used
-                                          // in function_info::ptx_decode_inst
-    if (reg_num >= 0) {                   // valid register
-      unsigned bank =
-          register_bank(reg_num, inst.warp_id(), m_num_banks, sub_core_model,
+    // this math needs to match that used
+    // in function_info::ptx_decode_inst valid register
+    int reg_num = inst.arch_reg.dst[op];
+    if (reg_num >= 0) {
+      unsigned bank = register_bank(
+                        reg_num, inst.warp_id(), m_num_banks, sub_core_model,
                         m_num_banks_per_sched, inst.get_schd_id());
+
+      assert(m_arbiter.bank_alloc_state(bank) != alloc_t::READ_ALLOC);
+
       if (m_arbiter.bank_idle(bank)) {
         m_arbiter.allocate_bank_for_write(
             bank, op_t(&inst, reg_num, m_num_banks, sub_core_model,
                        m_num_banks_per_sched, inst.get_schd_id()));
         inst.arch_reg.dst[op] = -1;
+        m_shader->inc_wr_reg_bank_allocates(bank);
       } else {
+        m_shader->inc_wr_reg_bank_conflicts(bank);
         return false;
       }
-    }
+    } // if (reg_num >= 0) {
   }
   for (unsigned i = 0; i < (unsigned)regs.size(); i++) {
     if (m_shader->get_config()->gpgpu_clock_gated_reg_file) {
@@ -4819,8 +4897,8 @@ bool opndcoll_rfu_t::writeback(warp_inst_t &inst) {
       }
       m_shader->incregfile_writes(active_count);
     } else {
-      m_shader->incregfile_writes(
-          m_shader->get_config()->warp_size);  // inst.active_count());
+      // inst.active_count());
+      m_shader->incregfile_writes(m_shader->get_config()->warp_size);      
     }
   }
   return true;
@@ -4897,11 +4975,15 @@ void opndcoll_rfu_t::allocate_cu(unsigned port_num) {
 }
 
 void opndcoll_rfu_t::allocate_reads() {
+  std::vector<unsigned> raw_conflicts  = std::vector<unsigned>(m_num_banks, 0);
+  std::vector<unsigned> rd_reg_reqs = std::vector<unsigned>(m_num_banks, 0);
   // process read requests that do not have conflicts
-  std::list<op_t> allocated = m_arbiter.allocate_reads();
+  std::list<op_t> allocated = m_arbiter.allocate_reads(raw_conflicts, rd_reg_reqs);
+
+  m_shader->gather_raw_conflicts(raw_conflicts, rd_reg_reqs);
+
   std::map<unsigned, op_t> read_ops;
-  for (std::list<op_t>::iterator r = allocated.begin(); r != allocated.end();
-       r++) {
+  for (std::list<op_t>::iterator r = allocated.begin(); r != allocated.end(); r++) {
     const op_t &rr = *r;
     unsigned reg = rr.get_reg();
     unsigned wid = rr.get_wid();
@@ -4930,15 +5012,22 @@ void opndcoll_rfu_t::allocate_reads() {
       }
       m_shader->incregfile_reads(active_count);
     } else {
-      m_shader->incregfile_reads(
-          m_shader->get_config()->warp_size);  // op.get_active_count());
+      // op.get_active_count());
+      m_shader->incregfile_reads(m_shader->get_config()->warp_size);     
     }
   }
 }
 
 bool opndcoll_rfu_t::collector_unit_t::ready() const {
-  return (!m_free) && m_not_ready.none() &&
-         (*m_output_register).has_free(m_sub_core_model, m_reg_id);
+  // bool op_all_ready   = m_not_ready.none();
+  // bool has_free_reg   = (*m_output_register).has_free(m_sub_core_model, m_reg_id);
+  // bool op_collect_rdy = !m_free && op_all_ready && has_free_reg;
+  // // if (DTRACE(OPC_CHECK)) {
+  // //   fprintf(Trace::out, "op_collect_rdy = %u for reg:%u\n", m_reg_id);
+  // // }
+  // return op_collect_rdy;
+
+  return (!m_free) && m_not_ready.none() && (*m_output_register).has_free(m_sub_core_model, m_reg_id);
 }
 
 void opndcoll_rfu_t::collector_unit_t::dump(
@@ -4983,19 +5072,19 @@ bool opndcoll_rfu_t::collector_unit_t::allocate(register_set *pipeline_reg_set,
     m_warp_id = (*pipeline_reg)->warp_id();
     std::vector<int> prev_regs;  // remove duplicate regs within same instr
     for (unsigned op = 0; op < MAX_REG_OPERANDS; op++) {
-      int reg_num =
-          (*pipeline_reg)
-              ->arch_reg.src[op];  // this math needs to match that used in
-                                   // function_info::ptx_decode_inst
+      // this math needs to match that used in function_info::ptx_decode_inst
+      int reg_num  = (*pipeline_reg)->arch_reg.src[op];
       bool new_reg = true;
       for (auto r : prev_regs) {
-        if (r == reg_num) new_reg = false;
+        if (r == reg_num) {
+          new_reg = false;
+        }
       }
       if (reg_num >= 0 && new_reg) {  // valid register
         prev_regs.push_back(reg_num);
-        m_src_op[op] =
-            op_t(this, op, reg_num, m_num_banks, m_sub_core_model,
-                 m_num_banks_per_sched, (*pipeline_reg)->get_schd_id());
+        m_src_op[op] = op_t(
+          this, op, reg_num, m_num_banks, m_sub_core_model,
+          m_num_banks_per_sched, (*pipeline_reg)->get_schd_id());
         m_not_ready.set(op);
       } else
         m_src_op[op] = op_t();

@@ -147,6 +147,13 @@ class shd_warp_t {
     m_streamID = streamID;
     m_cta_id = cta_id;
     m_warp_id = wid;
+    if (DTRACE(SIMT_STACK)) {
+      // fprintf(Trace::out, "%llu WARP[%u]->init m_warp_id = wid = %u\n", 
+      //   m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle,
+      //   wid, m_warp_id);
+      fprintf(Trace::out, "WARP[%u]->init m_warp_id = wid = %u\n", 
+        wid, m_warp_id);      
+    }
     m_dynamic_warp_id = dynamic_warp_id;
     m_next_pc = start_pc;
     assert(n_completed >= active.count());
@@ -221,10 +228,14 @@ class shd_warp_t {
     m_next = 0;
   }
   bool ibuffer_empty() const {
-    for (unsigned i = 0; i < IBUFFER_SIZE; i++)
-      if (m_ibuffer[i].m_valid) return false;
+    for (unsigned i = 0; i < IBUFFER_SIZE; ++i) {
+      if (m_ibuffer[i].m_valid) {
+        return false;
+      }
+    }
     return true;
   }
+
   void ibuffer_flush() {
     for (unsigned i = 0; i < IBUFFER_SIZE; i++) {
       if (m_ibuffer[i].m_valid) dec_inst_in_pipeline();
@@ -696,7 +707,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       m_cu = cu;
       m_operand = op;
       m_register = reg;
-      m_shced_id = sched_id;
+      m_sched_id = sched_id;
       m_bank = register_bank(reg, cu->get_warp_id(), num_banks, sub_core_model,
                              banks_per_sched, sched_id);
     }
@@ -707,7 +718,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       m_register = reg;
       m_cu = NULL;
       m_operand = -1;
-      m_shced_id = sched_id;
+      m_sched_id = sched_id;
       m_bank = register_bank(reg, warp->warp_id(), num_banks, sub_core_model,
                              banks_per_sched, sched_id);
     }
@@ -726,7 +737,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       else
         abort();
     }
-    unsigned get_sid() const { return m_shced_id; }
+    unsigned get_sid() const { return m_sched_id; }
     unsigned get_active_count() const {
       if (m_warp)
         return m_warp->active_count();
@@ -778,7 +789,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
                          // r2 is oprd 0, r3 is 1 (r1 is dst)
     unsigned m_register;
     unsigned m_bank;
-    unsigned m_shced_id;  // scheduler id that has issued this inst
+    unsigned m_sched_id;  // scheduler id that has issued this inst
   };
 
   enum alloc_t {
@@ -789,7 +800,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
 
   class allocation_t {
    public:
-    allocation_t() { m_allocation = NO_ALLOC; }
+    allocation_t() { m_allocation = NO_ALLOC; }    
     bool is_read() const { return m_allocation == READ_ALLOC; }
     bool is_write() const { return m_allocation == WRITE_ALLOC; }
     bool is_free() const { return m_allocation == NO_ALLOC; }
@@ -816,6 +827,27 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       m_op = op;
     }
     void reset() { m_allocation = NO_ALLOC; }
+
+    enum alloc_t alloc_state() { return m_allocation; }
+    std::string alloc_state_str() {
+      std::string alloc_state_str;
+      switch (m_allocation)
+      {
+      case NO_ALLOC:
+        alloc_state_str = "NO_ALLOC";
+        break;
+      case WRITE_ALLOC:
+        alloc_state_str = "WRITE_ALLOC";
+        break;
+      case READ_ALLOC:
+        alloc_state_str = "READ_ALLOC";
+        break;
+      default:
+        return "xxx";
+        break;
+      }
+      return alloc_state_str;
+    }
 
    private:
     enum alloc_t m_allocation;
@@ -874,7 +906,9 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     }
 
     // modifiers
-    std::list<op_t> allocate_reads();
+    std::list<op_t> allocate_reads(
+      std::vector<unsigned>& raw_conflicts,
+      std::vector<unsigned>& rd_reg_reqs);
 
     void add_read_requests(collector_unit_t *cu) {
       const op_t *src = cu->get_operands();
@@ -900,6 +934,12 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     void reset_alloction() {
       for (unsigned b = 0; b < m_num_banks; b++) m_allocated_bank[b].reset();
     }
+    enum alloc_t bank_alloc_state(unsigned bank) const {
+      return m_allocated_bank[bank].alloc_state();
+    } 
+    std::string bank_alloc_state_str(unsigned bank) const {
+      return m_allocated_bank[bank].alloc_state_str();
+    } 
 
    private:
     unsigned m_num_banks;
@@ -912,8 +952,8 @@ class opndcoll_rfu_t {  // operand collector based register file unit
         m_allocator_rr_head;  // cu # -> next bank to check for request (rr-arb)
     unsigned m_last_cu;       // first cu to check while arb-ing banks (rr)
 
-    int *_inmatch;
     int *_outmatch;
+    int *_inmatch;
     int **_request;
   };
 
@@ -973,8 +1013,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     unsigned m_cuid;  // collector unit hw id
     unsigned m_warp_id;
     warp_inst_t *m_warp;
-    register_set
-        *m_output_register;  // pipeline register to issue to when ready
+    register_set *m_output_register;  // pipeline register to issue to when ready
     op_t *m_src_op;
     std::bitset<MAX_REG_OPERANDS * 2> m_not_ready;
     unsigned m_num_banks;
@@ -1753,14 +1792,20 @@ struct shader_core_stats_pod {
       shader_core_stats_pod_start[0];  // DO NOT MOVE FROM THE TOP - spaceless
                                        // pointer to the start of this structure
   unsigned long long *shader_cycles;
+  unsigned *m_raw_conflicts;
+  unsigned *m_rd_reg_reqs;
+  unsigned *m_wr_reg_bank_conflicts;
+  unsigned *m_rd_reg_bank_conflicts;
+  unsigned *m_wr_reg_bank_allocates;
+  unsigned *m_rd_reg_bank_allocates;
+
   unsigned *m_num_sim_insn;   // number of scalar thread instructions committed
                               // by this shader core
   unsigned *m_num_sim_winsn;  // number of warp instructions committed by this
                               // shader core
   unsigned *m_last_num_sim_insn;
   unsigned *m_last_num_sim_winsn;
-  unsigned *
-      m_num_decoded_insn;  // number of instructions decoded by this shader core
+  unsigned *m_num_decoded_insn;  // number of instructions decoded by this shader core
   float *m_pipeline_duty_cycle;
   unsigned *m_num_FPdecoded_insn;
   unsigned *m_num_INTdecoded_insn;
@@ -1792,8 +1837,8 @@ struct shader_core_stats_pod {
   unsigned *m_num_sfu_committed;
   unsigned *m_num_tensor_core_committed;
   unsigned *m_num_mem_committed;
-  unsigned *m_read_regfile_acesses;
-  unsigned *m_write_regfile_acesses;
+  unsigned *m_read_regfile_accesses;
+  unsigned *m_write_regfile_accesses;
   unsigned *m_non_rf_operands;
   double *m_num_imul24_acesses;
   double *m_num_imul32_acesses;
@@ -1857,6 +1902,19 @@ class shader_core_stats : public shader_core_stats_pod {
     memset(pod, 0, sizeof(shader_core_stats_pod));
     shader_cycles = (unsigned long long *)calloc(config->num_shader(),
                                                  sizeof(unsigned long long));
+
+    m_raw_conflicts  = (unsigned *)calloc(m_config->gpgpu_num_reg_banks, sizeof(unsigned));
+    m_rd_reg_reqs = (unsigned *)calloc(m_config->gpgpu_num_reg_banks, sizeof(unsigned));
+    m_wr_reg_bank_conflicts = 
+      (unsigned *)calloc(m_config->gpgpu_num_reg_banks, sizeof(unsigned));
+    m_wr_reg_bank_allocates = 
+      (unsigned *)calloc(m_config->gpgpu_num_reg_banks, sizeof(unsigned));
+
+    m_rd_reg_bank_conflicts = 
+      (unsigned *)calloc(m_config->gpgpu_num_reg_banks, sizeof(unsigned));
+    m_rd_reg_bank_allocates = 
+      (unsigned *)calloc(m_config->gpgpu_num_reg_banks, sizeof(unsigned));
+
     m_num_sim_insn = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
     m_num_sim_winsn =
         (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
@@ -1930,9 +1988,9 @@ class shader_core_stats : public shader_core_stats_pod {
         (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
     m_num_mem_committed =
         (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
-    m_read_regfile_acesses =
+    m_read_regfile_accesses =
         (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
-    m_write_regfile_acesses =
+    m_write_regfile_accesses =
         (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
     m_non_rf_operands =
         (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
@@ -1995,8 +2053,8 @@ class shader_core_stats : public shader_core_stats_pod {
     free(m_num_sfu_committed);
     free(m_num_tensor_core_committed);
     free(m_num_mem_committed);
-    free(m_read_regfile_acesses);
-    free(m_write_regfile_acesses);
+    free(m_read_regfile_accesses);
+    free(m_write_regfile_accesses);
     free(m_non_rf_operands);
     free(m_num_imul24_acesses);
     free(m_num_imul32_acesses);
@@ -2417,13 +2475,42 @@ class shader_core_ctx : public core_t {
   }
   void incexecstat(warp_inst_t *&inst);
 
+  unsigned get_rd_crf_size() {
+    return m_stats->m_read_regfile_accesses[m_sid];
+  }
+  unsigned get_wr_crf_size() {
+    return m_stats->m_write_regfile_accesses[m_sid];
+  }
+  void gather_raw_conflicts(
+    const std::vector<unsigned>& raw_conflicts,
+    const std::vector<unsigned>& rd_reg_reqs) {
+    assert(raw_conflicts.size() == rd_reg_reqs.size());
+    for (size_t bank = 0; bank < raw_conflicts.size(); bank++)
+    {
+      m_stats->m_raw_conflicts[bank] += raw_conflicts[bank];
+      m_stats->m_rd_reg_reqs[bank]   += rd_reg_reqs[bank];
+    }
+  }
+  void inc_wr_reg_bank_conflicts(unsigned bank) {
+    m_stats->m_wr_reg_bank_conflicts[bank]++;
+  }
+  void inc_wr_reg_bank_allocates(unsigned bank) {
+    m_stats->m_wr_reg_bank_allocates[bank]++;
+  }  
+  void inc_rd_reg_bank_conflicts(unsigned bank) {
+    m_stats->m_rd_reg_bank_conflicts[bank]++;
+  }
+  void inc_rd_reg_bank_allocates(unsigned bank) {
+    m_stats->m_rd_reg_bank_allocates[bank]++;
+  }    
+
   void incregfile_reads(unsigned active_count) {
-    m_stats->m_read_regfile_acesses[m_sid] =
-        m_stats->m_read_regfile_acesses[m_sid] + active_count;
+    m_stats->m_read_regfile_accesses[m_sid] =
+        m_stats->m_read_regfile_accesses[m_sid] + active_count;
   }
   void incregfile_writes(unsigned active_count) {
-    m_stats->m_write_regfile_acesses[m_sid] =
-        m_stats->m_write_regfile_acesses[m_sid] + active_count;
+    m_stats->m_write_regfile_accesses[m_sid] =
+        m_stats->m_write_regfile_accesses[m_sid] + active_count;
   }
   void incnon_rf_operands(unsigned active_count) {
     m_stats->m_non_rf_operands[m_sid] =

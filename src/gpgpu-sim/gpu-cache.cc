@@ -2923,14 +2923,13 @@ void baseline_cache::dump_cache_access_info(
   new_addr_type block_addr = m_config.block_addr(addr);
 
   // std::pair<std::bitset<128>, std::bitset<128>> u128_pair = to_u128_pair(mf->get_access_byte_mask());  
-
   std::pair<uint64_t,uint64_t> byte_mask_hi_lo = to_u64_pair(mf->get_access_byte_mask());
   fprintf(Trace::out,
       "%llu %s%s%s %s %s addr: %#llx block_addr: %#llx "
       "byte_mask: 0x%016lx%016lx\n",
       (unsigned long long)time,
       caller,
-      dump_inst_str ? m_gpu->gpgpu_ctx->func_sim->ptx_get_insn_str(mf->get_inst().pc).c_str() : "",      
+      dump_inst_str ? m_gpu->gpgpu_ctx->func_sim->ptx_get_insn_str(mf->get_inst().pc).c_str() : "",
       m_is_l1d ? "L1D" : m_is_l2 ? "L2C" : "xx$",
       mf_request_type_str(mf->get_type()),
       cache_request_status_str(status), 

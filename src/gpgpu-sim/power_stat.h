@@ -85,8 +85,8 @@ struct shader_core_power_stats_pod {
   unsigned *m_active_sfu_lanes[NUM_STAT_IDX];
   double *m_active_exu_threads[NUM_STAT_IDX];
   double *m_active_exu_warps[NUM_STAT_IDX];
-  unsigned *m_read_regfile_acesses[NUM_STAT_IDX];
-  unsigned *m_write_regfile_acesses[NUM_STAT_IDX];
+  unsigned *m_read_regfile_accesses[NUM_STAT_IDX];
+  unsigned *m_write_regfile_accesses[NUM_STAT_IDX];
   unsigned *m_non_rf_operands[NUM_STAT_IDX];
 };
 
@@ -306,11 +306,11 @@ class power_stat_t {
     for (unsigned i = 0; i < m_config->num_shader(); i++) {
       if (aggregate_stat)
         total_inst +=
-            (pwr_core_stat->m_read_regfile_acesses[CURRENT_STAT_IDX][i]);
+            (pwr_core_stat->m_read_regfile_accesses[CURRENT_STAT_IDX][i]);
       else
         total_inst +=
-            (pwr_core_stat->m_read_regfile_acesses[CURRENT_STAT_IDX][i]) -
-            (pwr_core_stat->m_read_regfile_acesses[PREV_STAT_IDX][i]);
+            (pwr_core_stat->m_read_regfile_accesses[CURRENT_STAT_IDX][i]) -
+            (pwr_core_stat->m_read_regfile_accesses[PREV_STAT_IDX][i]);
     }
     return total_inst;
   }
@@ -319,11 +319,11 @@ class power_stat_t {
     for (unsigned i = 0; i < m_config->num_shader(); i++) {
       if (aggregate_stat)
         total_inst +=
-            (pwr_core_stat->m_write_regfile_acesses[CURRENT_STAT_IDX][i]);
+            (pwr_core_stat->m_write_regfile_accesses[CURRENT_STAT_IDX][i]);
       else
         total_inst +=
-            (pwr_core_stat->m_write_regfile_acesses[CURRENT_STAT_IDX][i]) -
-            (pwr_core_stat->m_write_regfile_acesses[PREV_STAT_IDX][i]);
+            (pwr_core_stat->m_write_regfile_accesses[CURRENT_STAT_IDX][i]) -
+            (pwr_core_stat->m_write_regfile_accesses[PREV_STAT_IDX][i]);
     }
     return total_inst;
   }

@@ -1160,8 +1160,9 @@ class warp_inst_t : public inst_t {
       m_per_scalar_thread_valid = true;
     }
     assert(num_addrs <= MAX_ACCESSES_PER_INSN_PER_THREAD);
-    for (unsigned i = 0; i < num_addrs; i++)
+    for (unsigned i = 0; i < num_addrs; i++) {
       m_per_scalar_thread[n].memreqaddr[i] = addr[i];
+    }      
   }
   void print_m_accessq() {
     if (accessq_empty())
@@ -1432,7 +1433,9 @@ class register_set {
   bool has_free(bool sub_core_model, unsigned reg_id) {
     // in subcore model, each sched has a one specific reg to use (based on
     // sched id)
-    if (!sub_core_model) return has_free();
+    if (!sub_core_model) {
+      return has_free();
+    }
 
     assert(reg_id < regs.size());
     return regs[reg_id]->empty();
@@ -1524,7 +1527,9 @@ class register_set {
     warp_inst_t **ready;
     ready = NULL;
     assert(reg_id < regs.size());
-    if (not regs[reg_id]->empty()) ready = &regs[reg_id];
+    if (not regs[reg_id]->empty()) {
+      ready = &regs[reg_id];
+    }
     return ready;
   }
 

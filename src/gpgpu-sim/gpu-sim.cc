@@ -1631,6 +1631,20 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
   printf("gpu_tot_occupancy = %.4f%% \n",
          (gpu_occupancy + gpu_tot_occupancy).get_occ_fraction() * 100);
 
+
+  // shader_print_cache_stats(stdout);
+  for (unsigned cluster_id = 0; cluster_id < m_shader_config->n_simt_clusters; cluster_id++) {
+    for (unsigned cid = 0; cid < m_shader_config->n_simt_cores_per_cluster; cid++) {
+      unsigned sid = m_shader_config->cid_to_sid(cid, cluster_id);
+      if (DTRACE(REG_FILE_ACCESS)) {
+        fprintf(Trace::out, "m_read_regfile_accesses[sid:%u] = %d\n",
+          sid, m_shader_stats->m_read_regfile_accesses[sid]);
+        fprintf(Trace::out, "m_write_regfile_accesses[sid:%u] = %d\n",
+          sid, m_shader_stats->m_write_regfile_accesses[sid]);          
+      }
+    }
+  }  
+
   fprintf(statfout, "max_total_param_size = %llu\n",
           gpgpu_ctx->device_runtime->g_max_total_param_size);
 

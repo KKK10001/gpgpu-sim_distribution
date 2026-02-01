@@ -64,6 +64,10 @@ void warp_inst_t::issue(const active_mask_t &mask, unsigned warp_id,
   m_cache_hit = false;
   m_empty = false;
   m_scheduler_id = sch_id;
+
+  if (DTRACE(WARP_ISSUE) || DTRACE(WARP_SCHEDULER)) {
+    fprintf(Trace::out, "WARP[%u] issued, then m_empty = false\n", dynamic_warp_id);
+  }
 }
 
 checkpoint::checkpoint() {
@@ -1033,6 +1037,9 @@ void kernel_info_t::destroy_cta_streams() {
 
 simt_stack::simt_stack(unsigned wid, unsigned warpSize, class gpgpu_sim *gpu) {
   m_warp_id = wid;
+  if (DTRACE(SIMT_STACK)) {
+    fprintf(Trace::out, "simt_stack::simt_stack init wid = %u\n", wid);
+  }
   m_warp_size = warpSize;
   m_gpu = gpu;
   reset();

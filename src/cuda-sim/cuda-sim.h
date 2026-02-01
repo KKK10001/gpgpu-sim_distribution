@@ -201,6 +201,7 @@ class cuda_sim {
                                    gpgpu_t *gpu);
   void ptx_print_insn(address_type pc, FILE *fp);
   std::string ptx_get_insn_str(address_type pc);
+  std::string ptx_get_valid_insn_str(address_type pc, bool& valid_inst);
   template <int activate_level>
   bool ptx_debug_exec_dump_cond(int thd_uid, addr_t pc);
 };
