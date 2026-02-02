@@ -1633,22 +1633,19 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
 
 
   // shader_print_cache_stats(stdout);
-  unsigned total_issued_warp_insts = 0;
-  unsigned long long total_shader_cycles = 0;
+  float issued_warp_insts_per_cycle = 0.0f;
   for (unsigned cluster_id = 0; cluster_id < m_shader_config->n_simt_clusters; cluster_id++) {
     for (unsigned cid = 0; cid < m_shader_config->n_simt_cores_per_cluster; cid++) {
       unsigned sid = m_shader_config->cid_to_sid(cid, cluster_id);
       for (unsigned warp_sched_id = 0; warp_sched_id < m_shader_config->gpgpu_num_sched_per_core; warp_sched_id++)
-      {        
+      {
         // total shader_cores = -gpgpu_n_clusters (1) * -gpgpu_n_cores_per_cluster (4) = 4
-        // -gpgpu_max_insn_issue_per_warp (1)
         // warp_schedulers per shader_core = -gpgpu_num_sched_per_core = 4
-        // Theoretically, max avg_issued_warp_insts = 16 per cycle
-        total_issued_warp_insts += m_shader_stats->issued_warp_insts[warp_sched_id];
-        total_shader_cycles += m_shader_stats->shader_cycles[warp_sched_id];
-
+        // -gpgpu_max_insn_issue_per_warp (1)
+        // Theoretically, per-cycle max issued_warp_insts  = 1 * 4 * 4 * 1 = 16
         float avg_issued_warp_inst_per_scheduler = 
           m_shader_stats->issued_warp_insts[warp_sched_id] / (float)m_shader_stats->shader_cycles[warp_sched_id];
+        issued_warp_insts_per_cycle += avg_issued_warp_inst_per_scheduler;
         printf("avg_issued_warp_inst_per_scheduler[cluster:%u][shader_core:%u][scheduler_%u] = "
           "%f (%u / %llu)\n", 
           cluster_id, cid, warp_sched_id, 
@@ -1658,10 +1655,16 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
       }
     }
   }
-  printf("avg_issued_warp_insts = %f (%u / %llu)\n", 
-    total_issued_warp_insts / (float)total_shader_cycles,
-    total_issued_warp_insts,
-    total_shader_cycles);
+  printf("issued_warp_insts_per_cycle = %f\n", issued_warp_insts_per_cycle);
+  const unsigned clusters            = m_shader_config->n_simt_clusters;
+  const unsigned cores_per_cluster   = m_shader_config->n_simt_cores_per_cluster;
+  const unsigned schedulers_per_core = m_shader_config->gpgpu_num_sched_per_core;
+  const unsigned issue_width         = m_shader_config->gpgpu_max_insn_issue_per_warp;
+  const unsigned issue_bandwidth     = clusters * cores_per_cluster * schedulers_per_core * issue_width;
+  float issue_bw_utilization         = issued_warp_insts_per_cycle / (float)issue_bandwidth;
+
+  printf("issue_bw_utilization = %f (%f / %u)\n", 
+    issue_bw_utilization, issued_warp_insts_per_cycle, issue_bandwidth);
 
   fprintf(statfout, "max_total_param_size = %llu\n",
           gpgpu_ctx->device_runtime->g_max_total_param_size);
