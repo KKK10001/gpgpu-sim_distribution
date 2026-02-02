@@ -770,6 +770,13 @@ void shader_core_stats::print(FILE *fout) const {
   fprintf(fout, "dual_issue_nums: ");
   for (unsigned i = 0; i < m_config->gpgpu_num_sched_per_core; i++)
     fprintf(fout, "WS%d:%d\t", i, dual_issue_nums[i]);
+  // for (unsigned i = 0; i < m_config->gpgpu_num_sched_per_core; i++)
+  // {
+  //   float f = issued_warp_insts[i] / (float)shader_cycles[i];
+  //   fprintf(fout, "avg_issued_warp_insts[scheduler_%u] = %f (%u / %u)\n", 
+  //     i, avg_issued_warp_insts, issued_warp_insts[i], shader_cycles[i]);
+  // }
+  
   fprintf(fout, "\n");
 
   m_outgoing_traffic_stats->print(fout);
@@ -1507,7 +1514,7 @@ void scheduler_unit::cycle() {
     unsigned max_issue = m_shader->m_config->gpgpu_max_insn_issue_per_warp;
     bool diff_exec_units =
         m_shader->m_config
-            ->gpgpu_dual_issue_diff_exec_units;  // In tis mode, we only allow
+            ->gpgpu_dual_issue_diff_exec_units;  // In this mode, we only allow
                                                  // dual issue to diff execution
                                                  // units (as in Maxwell and
                                                  // Pascal)
@@ -1803,12 +1810,18 @@ void scheduler_unit::cycle() {
         }
       }
       m_num_issued_last_cycle = issued;
-      if (issued == 1)
+      if (issued) {
+        m_stats->issued_warp_insts[m_id] += issued;
+      }
+      if (issued == 1) {
         m_stats->single_issue_nums[m_id]++;
-      else if (issued > 1)
+      }        
+      else if (issued > 1) {
         m_stats->dual_issue_nums[m_id]++;
-      else
+      }
+      else {
         abort();  // issued should be > 0
+      }
 
       break;
     }

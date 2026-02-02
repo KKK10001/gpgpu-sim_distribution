@@ -1633,17 +1633,35 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
 
 
   // shader_print_cache_stats(stdout);
+  unsigned total_issued_warp_insts = 0;
+  unsigned long long total_shader_cycles = 0;
   for (unsigned cluster_id = 0; cluster_id < m_shader_config->n_simt_clusters; cluster_id++) {
     for (unsigned cid = 0; cid < m_shader_config->n_simt_cores_per_cluster; cid++) {
       unsigned sid = m_shader_config->cid_to_sid(cid, cluster_id);
-      if (DTRACE(REG_FILE_ACCESS)) {
-        fprintf(Trace::out, "m_read_regfile_accesses[sid:%u] = %d\n",
-          sid, m_shader_stats->m_read_regfile_accesses[sid]);
-        fprintf(Trace::out, "m_write_regfile_accesses[sid:%u] = %d\n",
-          sid, m_shader_stats->m_write_regfile_accesses[sid]);          
+      for (unsigned warp_sched_id = 0; warp_sched_id < m_shader_config->gpgpu_num_sched_per_core; warp_sched_id++)
+      {        
+        // total shader_cores = -gpgpu_n_clusters (1) * -gpgpu_n_cores_per_cluster (4) = 4
+        // -gpgpu_max_insn_issue_per_warp (1)
+        // warp_schedulers per shader_core = -gpgpu_num_sched_per_core = 4
+        // Theoretically, max avg_issued_warp_insts = 16 per cycle
+        total_issued_warp_insts += m_shader_stats->issued_warp_insts[warp_sched_id];
+        total_shader_cycles += m_shader_stats->shader_cycles[warp_sched_id];
+
+        float avg_issued_warp_inst_per_scheduler = 
+          m_shader_stats->issued_warp_insts[warp_sched_id] / (float)m_shader_stats->shader_cycles[warp_sched_id];
+        printf("avg_issued_warp_inst_per_scheduler[cluster:%u][shader_core:%u][scheduler_%u] = "
+          "%f (%u / %llu)\n", 
+          cluster_id, cid, warp_sched_id, 
+          avg_issued_warp_inst_per_scheduler, 
+          m_shader_stats->issued_warp_insts[warp_sched_id], 
+          m_shader_stats->shader_cycles[warp_sched_id]);
       }
     }
-  }  
+  }
+  printf("avg_issued_warp_insts = %f (%u / %llu)\n", 
+    total_issued_warp_insts / (float)total_shader_cycles,
+    total_issued_warp_insts,
+    total_shader_cycles);
 
   fprintf(statfout, "max_total_param_size = %llu\n",
           gpgpu_ctx->device_runtime->g_max_total_param_size);

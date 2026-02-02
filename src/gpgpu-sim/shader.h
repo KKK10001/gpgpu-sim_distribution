@@ -1678,7 +1678,7 @@ class shader_core_config : public core_config {
     return sid % n_simt_cores_per_cluster;
   }
   unsigned cid_to_sid(unsigned cid, unsigned cluster_id) const {
-    return cluster_id * n_simt_cores_per_cluster + cid;
+    return cluster_id * n_simt_cores_per_cluster + cid; // cid: core_id per cluster
   }
   void set_pipeline_latency();
 
@@ -1870,6 +1870,7 @@ struct shader_core_stats_pod {
   unsigned gpgpu_n_stall_shd_mem;
   unsigned *single_issue_nums;
   unsigned *dual_issue_nums;
+  unsigned *issued_warp_insts;
 
   unsigned ctas_completed;
   // memory access classification
@@ -2002,6 +2003,8 @@ class shader_core_stats : public shader_core_stats_pod {
     single_issue_nums =
         (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
     dual_issue_nums =
+        (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+    issued_warp_insts =
         (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
 
     ctas_completed = 0;
