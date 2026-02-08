@@ -111,6 +111,10 @@ void shader_core_ctx::create_front_pipeline() {
   for (int j = 0; j < N_PIPELINE_STAGES; j++) {
     m_pipeline_reg.push_back(
         register_set(m_config->pipe_widths[j], pipeline_stage_name_decode[j]));
+    if (DTRACE(REGS_ALLOC)) {
+      fprintf(Trace::out, "%s pushed %u regs. regs.size = %u\n", 
+        pipeline_stage_name_decode[j], m_config->pipe_widths[j], m_pipeline_reg.size());
+    }        
   }
   for (unsigned j = 0; j < m_config->m_specialized_unit.size(); j++) {
     m_pipeline_reg.push_back(
@@ -770,12 +774,6 @@ void shader_core_stats::print(FILE *fout) const {
   fprintf(fout, "dual_issue_nums: ");
   for (unsigned i = 0; i < m_config->gpgpu_num_sched_per_core; i++)
     fprintf(fout, "WS%d:%d\t", i, dual_issue_nums[i]);
-  // for (unsigned i = 0; i < m_config->gpgpu_num_sched_per_core; i++)
-  // {
-  //   float f = issued_warp_insts[i] / (float)shader_cycles[i];
-  //   fprintf(fout, "avg_issued_warp_insts[scheduler_%u] = %f (%u / %u)\n", 
-  //     i, avg_issued_warp_insts, issued_warp_insts[i], shader_cycles[i]);
-  // }
   
   fprintf(fout, "\n");
 
@@ -1489,17 +1487,25 @@ void scheduler_unit::order_by_priority(
 }
 
 void scheduler_unit::cycle() {
+
+  unsigned long long this_cycle = m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle;
+
   SCHED_DPRINTF("scheduler_unit::cycle()\n");
-  bool valid_inst =
-      false;  // there was one warp with a valid instruction to issue (didn't
-              // require flush due to control hazard)
-  bool ready_inst = false;   // of the valid instructions, there was one not
-                             // waiting for pending register writes
+
+  bool has_issued_this_cycle = false;
+
+  // there was one warp with a valid instruction to issue (didn't
+  // require flush due to control hazard)
+  bool valid_inst = false;
+
+  // of the valid instructions, there was one not
+  // waiting for pending register writes
+  bool ready_inst = false;
+                          
   bool issued_inst = false;  // of these we issued one
 
   order_warps();
-  for (std::vector<shd_warp_t *>::const_iterator iter =
-           m_next_cycle_prioritized_warps.begin();
+  for (std::vector<shd_warp_t *>::const_iterator iter = m_next_cycle_prioritized_warps.begin();
        iter != m_next_cycle_prioritized_warps.end(); iter++) {
     // Don't consider warps that are not yet valid
     if ((*iter) == NULL || (*iter)->done_exit()) {
@@ -1510,14 +1516,12 @@ void scheduler_unit::cycle() {
     unsigned warp_id = (*iter)->get_warp_id();
     unsigned checked = 0;
     unsigned issued = 0;
+    bool has_valid_pi = false;
     exec_unit_type_t previous_issued_inst_exec_type = exec_unit_type_t::NONE;
     unsigned max_issue = m_shader->m_config->gpgpu_max_insn_issue_per_warp;
-    bool diff_exec_units =
-        m_shader->m_config
-            ->gpgpu_dual_issue_diff_exec_units;  // In this mode, we only allow
-                                                 // dual issue to diff execution
-                                                 // units (as in Maxwell and
-                                                 // Pascal)
+    // In this mode, we only allow dual issue to 
+    // diff execution units (as in Maxwell and Pascal)
+    bool diff_exec_units = m_shader->m_config->gpgpu_dual_issue_diff_exec_units;  
 
     if (warp(warp_id).ibuffer_empty())
       SCHED_DPRINTF(
@@ -1529,10 +1533,13 @@ void scheduler_unit::cycle() {
           "Warp (warp_id %u, dynamic_warp_id %u) fails as waiting for barrier\n",
           (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
 
-    while (!warp(warp_id).waiting() && !warp(warp_id).ibuffer_empty() &&
-           (checked < max_issue) && (checked <= issued) &&
+    while (!warp(warp_id).waiting() && 
+           !warp(warp_id).ibuffer_empty() &&
+           (checked < max_issue) && 
+           (checked <= issued) && 
            (issued < max_issue)) {
       const warp_inst_t *pI = warp(warp_id).ibuffer_next_inst();
+      m_stats->ibuf_insts[(*iter)->get_warp_id()]++;
       // Jin: handle cdp latency;
       if (pI && pI->m_is_cdp && warp(warp_id).m_cdp_latency > 0) {
         assert(warp(warp_id).m_cdp_dummy);
@@ -1551,6 +1558,11 @@ void scheduler_unit::cycle() {
               .c_str());
       if (pI) {
         assert(valid);
+        has_valid_pi = true;
+        // (*iter)->get_warp_id() might be larger than m_shader->m_config->warp_size
+        assert((*iter)->get_warp_id() < m_shader->m_config->max_warps_per_shader);
+        m_stats->ibuf_valid_insts[(*iter)->get_warp_id()]++;
+
         if (pc != pI->pc) {
           SCHED_DPRINTF(
               "Warp (warp_id %u, dynamic_warp_id %u) control hazard "
@@ -1561,14 +1573,13 @@ void scheduler_unit::cycle() {
           warp(warp_id).ibuffer_flush();
         } else {
           valid_inst = true;
-          if (!m_scoreboard->checkCollision(warp_id, pI)) {
+          if (!m_scoreboard->checkCollision(warp_id, pI)) { // no WAW/RAW collision
             SCHED_DPRINTF(
                 "Warp (warp_id %u, dynamic_warp_id %u) passes scoreboard\n",
                 (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
             ready_inst = true;
 
-            const active_mask_t &active_mask =
-                m_shader->get_active_mask(warp_id, pI);
+            const active_mask_t &active_mask = m_shader->get_active_mask(warp_id, pI);
 
             assert(warp(warp_id).inst_in_pipeline());
 
@@ -1576,16 +1587,22 @@ void scheduler_unit::cycle() {
                 (pI->op == MEMORY_BARRIER_OP) ||
                 (pI->op == TENSOR_CORE_LOAD_OP) ||
                 (pI->op == TENSOR_CORE_STORE_OP)) {
-              if (m_mem_out->has_free(m_shader->m_config->sub_core_model,
-                                      m_id) &&
-                  (!diff_exec_units ||
-                   previous_issued_inst_exec_type != exec_unit_type_t::MEM)) {
-                m_shader->issue_warp(*m_mem_out, pI, active_mask, warp_id,
-                                     m_id);
+              if (m_mem_out->has_free(m_shader->m_config->sub_core_model, m_id) &&
+                  (!diff_exec_units || 
+                    previous_issued_inst_exec_type != exec_unit_type_t::MEM)) {
+                m_shader->issue_warp(*m_mem_out, pI, active_mask, warp_id, m_id);
                 issued++;
                 issued_inst = true;
                 warp_inst_issued = true;
                 previous_issued_inst_exec_type = exec_unit_type_t::MEM;
+                if (DTRACE(ISSUED_INSTS)) {
+                  fprintf(Trace::out, 
+                    "%llu pI->op == {LOAD, STORE, MEM_BARRIER, TENSOR} issued++ = %u\n", 
+                    m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle,
+                    issued);
+                }                   
+              } else {
+                m_stats->issue_fails_due_to_mem_resource[m_id]++;
               }
             } else {
               // This code need to be refactored
@@ -1596,12 +1613,19 @@ void scheduler_unit::cycle() {
 
                 bool sp_pipe_avail =
                     (m_shader->m_config->gpgpu_num_sp_units > 0) &&
-                    m_sp_out->has_free(m_shader->m_config->sub_core_model,
-                                       m_id);
+                    m_sp_out->has_free(m_shader->m_config->sub_core_model, m_id);
                 bool int_pipe_avail =
                     (m_shader->m_config->gpgpu_num_int_units > 0) &&
-                    m_int_out->has_free(m_shader->m_config->sub_core_model,
-                                        m_id);
+                    m_int_out->has_free(m_shader->m_config->sub_core_model, m_id);
+
+                if ((m_shader->m_config->gpgpu_num_sp_units > 0) && 
+                    (!m_sp_out->has_free(m_shader->m_config->sub_core_model, m_id))) {
+                  m_stats->issue_fails_due_to_sp_pipe_inavailable[m_id]++;
+                }
+                if ((m_shader->m_config->gpgpu_num_int_units > 0) && 
+                    (!m_int_out->has_free(m_shader->m_config->sub_core_model, m_id))) {
+                  m_stats->issue_fails_due_to_int_pipe_inavailable[m_id]++;
+                }
 
                 // if INT unit pipline exist, then execute ALU and INT
                 // operations on INT unit and SP-FPU on SP unit (like in Volta)
@@ -1609,33 +1633,32 @@ void scheduler_unit::cycle() {
                 // and SP operations on SP unit (as in Fermi, Pascal GPUs)
                 if (m_shader->m_config->gpgpu_num_int_units > 0 &&
                     int_pipe_avail && pI->op != SP_OP &&
-                    !(diff_exec_units &&
-                      previous_issued_inst_exec_type == exec_unit_type_t::INT))
+                    !(diff_exec_units && previous_issued_inst_exec_type == exec_unit_type_t::INT)) {
                   execute_on_INT = true;
-                else if (sp_pipe_avail &&
+                } else if (sp_pipe_avail &&
                          (m_shader->m_config->gpgpu_num_int_units == 0 ||
                           (m_shader->m_config->gpgpu_num_int_units > 0 &&
                            pI->op == SP_OP)) &&
-                         !(diff_exec_units && previous_issued_inst_exec_type ==
-                                                  exec_unit_type_t::SP))
+                         !(diff_exec_units && previous_issued_inst_exec_type == exec_unit_type_t::SP)) {
                   execute_on_SP = true;
-
+                }
+                  
                 if (execute_on_INT || execute_on_SP) {
                   // Jin: special for CDP api
                   if (pI->m_is_cdp && !warp(warp_id).m_cdp_dummy) {
                     assert(warp(warp_id).m_cdp_latency == 0);
 
-                    if (pI->m_is_cdp == 1)
+                    if (pI->m_is_cdp == 1) {
+                      warp(warp_id).m_cdp_latency = 
+                        m_shader->m_config->gpgpu_ctx->func_sim->cdp_latency[pI->m_is_cdp - 1];
+                    }     
+                    // cudaLaunchDeviceV2 and cudaGetParameterBufferV2                 
+                    else {
                       warp(warp_id).m_cdp_latency =
-                          m_shader->m_config->gpgpu_ctx->func_sim
-                              ->cdp_latency[pI->m_is_cdp - 1];
-                    else  // cudaLaunchDeviceV2 and cudaGetParameterBufferV2
-                      warp(warp_id).m_cdp_latency =
-                          m_shader->m_config->gpgpu_ctx->func_sim
-                              ->cdp_latency[pI->m_is_cdp - 1] +
-                          m_shader->m_config->gpgpu_ctx->func_sim
-                                  ->cdp_latency[pI->m_is_cdp] *
-                              active_mask.count();
+                          m_shader->m_config->gpgpu_ctx->func_sim->cdp_latency[pI->m_is_cdp - 1] +
+                          m_shader->m_config->gpgpu_ctx->func_sim->cdp_latency[pI->m_is_cdp] * 
+                          active_mask.count();
+                    }
                     warp(warp_id).m_cdp_dummy = true;
                     break;
                   } else if (pI->m_is_cdp && warp(warp_id).m_cdp_dummy) {
@@ -1645,12 +1668,17 @@ void scheduler_unit::cycle() {
                 }
 
                 if (execute_on_SP) {
-                  m_shader->issue_warp(*m_sp_out, pI, active_mask, warp_id,
-                                       m_id);
+                  m_shader->issue_warp(*m_sp_out, pI, active_mask, warp_id, m_id);
                   issued++;
                   issued_inst = true;
                   warp_inst_issued = true;
                   previous_issued_inst_exec_type = exec_unit_type_t::SP;
+                  if (DTRACE(ISSUED_INSTS)) {
+                    fprintf(Trace::out, 
+                      "%llu execute_on_SP issued++ = %u\n", 
+                      m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle,
+                      issued);
+                  }
                 } else if (execute_on_INT) {
                   m_shader->issue_warp(*m_int_out, pI, active_mask, warp_id,
                                        m_id);
@@ -1658,23 +1686,34 @@ void scheduler_unit::cycle() {
                   issued_inst = true;
                   warp_inst_issued = true;
                   previous_issued_inst_exec_type = exec_unit_type_t::INT;
+                  if (DTRACE(ISSUED_INSTS)) {
+                    fprintf(Trace::out, 
+                      "%llu execute_on_INT issued++ = %u\n", 
+                      m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle,
+                      issued);
+                  }                             
                 }
               } else if ((m_shader->m_config->gpgpu_num_dp_units > 0) &&
                          (pI->op == DP_OP) &&
-                         !(diff_exec_units && previous_issued_inst_exec_type ==
-                                                  exec_unit_type_t::DP)) {
+                         !(diff_exec_units && previous_issued_inst_exec_type == exec_unit_type_t::DP)) {
                 bool dp_pipe_avail =
                     (m_shader->m_config->gpgpu_num_dp_units > 0) &&
-                    m_dp_out->has_free(m_shader->m_config->sub_core_model,
-                                       m_id);
+                    m_dp_out->has_free(m_shader->m_config->sub_core_model, m_id);
 
                 if (dp_pipe_avail) {
-                  m_shader->issue_warp(*m_dp_out, pI, active_mask, warp_id,
-                                       m_id);
+                  m_shader->issue_warp(*m_dp_out, pI, active_mask, warp_id, m_id);
                   issued++;
                   issued_inst = true;
                   warp_inst_issued = true;
-                  previous_issued_inst_exec_type = exec_unit_type_t::DP;
+                  previous_issued_inst_exec_type = exec_unit_type_t::DP;  
+                  if (DTRACE(ISSUED_INSTS)) {
+                    fprintf(Trace::out, 
+                      "%llu dp_pipe_avail issued++ = %u\n", 
+                      m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle,
+                      issued);
+                  }
+                } else {
+                  m_stats->issue_fails_due_to_dp_pipe_inavailable[m_id]++;
                 }
               }  // If the DP units = 0 (like in Fermi archi), then execute DP
                  // inst on SFU unit
@@ -1685,24 +1724,29 @@ void scheduler_unit::cycle() {
                                                 exec_unit_type_t::SFU)) {
                 bool sfu_pipe_avail =
                     (m_shader->m_config->gpgpu_num_sfu_units > 0) &&
-                    m_sfu_out->has_free(m_shader->m_config->sub_core_model,
-                                        m_id);
+                    m_sfu_out->has_free(m_shader->m_config->sub_core_model, m_id);
 
                 if (sfu_pipe_avail) {
-                  m_shader->issue_warp(*m_sfu_out, pI, active_mask, warp_id,
-                                       m_id);
+                  m_shader->issue_warp(*m_sfu_out, pI, active_mask, warp_id, m_id);
                   issued++;
                   issued_inst = true;
                   warp_inst_issued = true;
                   previous_issued_inst_exec_type = exec_unit_type_t::SFU;
+                  if (DTRACE(ISSUED_INSTS)) {
+                    fprintf(Trace::out, 
+                      "%llu sfu_pipe_avail issued++ = %u\n", 
+                      m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle,
+                      issued);
+                  }                  
+                } else {
+                  m_stats->issue_fails_due_to_sfu_pipe_inavailable[m_id]++;
                 }
               } else if ((pI->op == TENSOR_CORE_OP) &&
                          !(diff_exec_units && previous_issued_inst_exec_type ==
                                                   exec_unit_type_t::TENSOR)) {
                 bool tensor_core_pipe_avail =
                     (m_shader->m_config->gpgpu_num_tensor_core_units > 0) &&
-                    m_tensor_core_out->has_free(
-                        m_shader->m_config->sub_core_model, m_id);
+                    m_tensor_core_out->has_free(m_shader->m_config->sub_core_model, m_id);
 
                 if (tensor_core_pipe_avail) {
                   m_shader->issue_warp(*m_tensor_core_out, pI, active_mask,
@@ -1710,7 +1754,15 @@ void scheduler_unit::cycle() {
                   issued++;
                   issued_inst = true;
                   warp_inst_issued = true;
-                  previous_issued_inst_exec_type = exec_unit_type_t::TENSOR;
+                  previous_issued_inst_exec_type = exec_unit_type_t::TENSOR;       
+                  if (DTRACE(ISSUED_INSTS)) {
+                    fprintf(Trace::out, 
+                      "%llu tensor_core_pipe_avail issued++ = %u\n", 
+                      m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle,
+                      issued);
+                  }
+                } else {
+                  m_stats->issue_fails_due_to_tensorcore_pipe_inavailable[m_id]++;
                 }
               } else if ((pI->op >= SPEC_UNIT_START_ID) &&
                          !(diff_exec_units &&
@@ -1722,17 +1774,22 @@ void scheduler_unit::cycle() {
                 bool spec_pipe_avail =
                     (m_shader->m_config->m_specialized_unit[spec_id].num_units >
                      0) &&
-                    spec_reg_set->has_free(m_shader->m_config->sub_core_model,
-                                           m_id);
+                    spec_reg_set->has_free(m_shader->m_config->sub_core_model, m_id);
 
                 if (spec_pipe_avail) {
-                  m_shader->issue_warp(*spec_reg_set, pI, active_mask, warp_id,
-                                       m_id);
+                  m_shader->issue_warp(*spec_reg_set, pI, active_mask, warp_id, m_id);
                   issued++;
                   issued_inst = true;
                   warp_inst_issued = true;
-                  previous_issued_inst_exec_type =
-                      exec_unit_type_t::SPECIALIZED;
+                  previous_issued_inst_exec_type = exec_unit_type_t::SPECIALIZED;
+                  if (DTRACE(ISSUED_INSTS)) {
+                    fprintf(Trace::out, 
+                      "%llu spec_pipe_avail issued++ = %u\n", 
+                      m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle,
+                      issued);
+                  }                  
+                } else {
+                  m_stats->issue_fails_due_to_spec_pipe_inavailable[m_id]++;
                 }
               }
 
@@ -1776,7 +1833,7 @@ void scheduler_unit::cycle() {
                   (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
             }
           }
-        }
+        } // pc == pI->pc (no control hazard)
       } else if (valid) {
         // this case can happen after a return instruction in diverged warp
         SCHED_DPRINTF(
@@ -1795,6 +1852,7 @@ void scheduler_unit::cycle() {
       checked++;
     }
     if (issued) {
+      assert(has_valid_pi);
       // This might be a bit inefficient, but we need to maintain
       // two ordered list for proper scheduler execution.
       // We could remove the need for this loop by associating a
@@ -1810,9 +1868,22 @@ void scheduler_unit::cycle() {
         }
       }
       m_num_issued_last_cycle = issued;
-      if (issued) {
-        m_stats->issued_warp_insts[m_id] += issued;
+
+      // gpgpu_num_sched_per_core: Number of warp schedulers per core 
+      assert(static_cast<unsigned>(m_id) < m_shader->m_config->gpgpu_num_sched_per_core);
+      unsigned prev_issued_warp_insts = m_stats->issued_warp_insts[m_shader->get_sid()][m_id];
+      // Here m_id indicates every warp_scheduler in every shader_cores
+      // So m_stats->issued_warp_insts[0] = sum(issued_warp_insts[sid:0~3][m_id:0])
+      m_stats->issued_warp_insts[m_shader->get_sid()][m_id] += issued;
+      if (DTRACE(ISSUED_INSTS)) {
+        fprintf(Trace::out, "%llu m_stats->issued_warp_insts[sid:%u][sched_id:%u] "
+          "+= issued:%u (%u->%u)\n",
+          m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle, 
+          m_shader->get_sid(), m_id, 
+          issued, prev_issued_warp_insts, 
+          m_stats->issued_warp_insts[m_shader->get_sid()][m_id]);
       }
+
       if (issued == 1) {
         m_stats->single_issue_nums[m_id]++;
       }        
@@ -1824,17 +1895,42 @@ void scheduler_unit::cycle() {
       }
 
       break;
+    } else {
+      if (DTRACE(ISSUE_FAIL)) {
+        fprintf(Trace::out, "%llu failed issuing for sched_id:%u\n",
+          m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle, m_id);
+      }
+      if (DTRACE(EXIT_ISSUE)) {
+        if (checked >= max_issue) {
+          fprintf(Trace::out, "%llu checked:%u >= max_issue:%u ---> exit issuing\n", 
+            m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle,
+            checked, max_issue
+          );
+        }
+        if (checked > issued) {
+          fprintf(Trace::out, "%llu checked:%u > issued:%u ---> exit issuing\n", 
+            m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle,
+            checked, issued
+          );
+        }
+        if (issued >= max_issue) {
+          fprintf(Trace::out, "%llu issued:%u >= max_issue:%u ---> exit issuing\n", 
+            m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle,
+            issued, max_issue
+          );
+        }
+      }
     }
   }
 
   // issue stall statistics:
-  if (!valid_inst)
+  if (!valid_inst) {
     m_stats->shader_cycle_distro[0]++;  // idle or control hazard
-  else if (!ready_inst)
-    m_stats->shader_cycle_distro[1]++;  // waiting for RAW hazards (possibly due
-                                        // to memory)
-  else if (!issued_inst)
+  } else if (!ready_inst) {
+    m_stats->shader_cycle_distro[1]++;  // waiting for RAW hazards (possibly due to memory)
+  } else if (!issued_inst) {
     m_stats->shader_cycle_distro[2]++;  // pipeline stalled
+  }    
 }
 
 void scheduler_unit::do_on_warp_issued(
@@ -4290,6 +4386,12 @@ void shader_core_ctx::cycle() {
   }
 
   m_stats->shader_cycles[m_sid]++;
+  if (DTRACE(SHADER_CYCLES)) {
+    // m_sid <= m_shader_config->n_simt_cores_per_cluster (4)
+    fprintf(Trace::out, "m_stats->shader_cycles[sid:%u] = %llu\n", 
+      m_sid, m_stats->shader_cycles[m_sid]);
+  }
+
   writeback();
   execute();
   read_operands();
@@ -5143,9 +5245,14 @@ simt_core_cluster::simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
 }
 
 void simt_core_cluster::core_cycle() {
+  unsigned cnt_called = 0;
   for (std::list<unsigned>::iterator it = m_core_sim_order.begin();
-       it != m_core_sim_order.end(); ++it) {
+       it != m_core_sim_order.end(); ++it) { // size == n_simt_cores_per_cluster
+    if (DTRACE(CORE_CYCLE_WRAPPER)) {
+      fprintf(Trace::out, "The %ith time core_cycle()\n", cnt_called);
+    }
     m_core[*it]->cycle();
+    cnt_called++;
   }
 
   if (m_config->simt_core_sim_order == 1) {

@@ -1730,6 +1730,9 @@ unsigned long long cache_stats::operator()(
     return m_miss_q_full.at(streamID)[access_type][fail_driver];     
   } else if (static_cast<cache_reservation_fail_reason>(access_outcome) == MSHR_MERGE_ENTRY_FAIL) {
     return m_mshr_merge_entry_fail.at(streamID)[access_type][fail_driver];
+  } else {
+    assert(0);
+    return (unsigned long long) - 1;
   }
 }
 

@@ -146,7 +146,7 @@ class shd_warp_t {
             unsigned long long streamID) {
     m_streamID = streamID;
     m_cta_id = cta_id;
-    m_warp_id = wid;
+    m_warp_id = wid; // start_warp <= m_warp_id < end_warp (m_warp_id may be larger than warp_size)
     if (DTRACE(SIMT_STACK)) {
       // fprintf(Trace::out, "%llu WARP[%u]->init m_warp_id = wid = %u\n", 
       //   m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle,
@@ -1870,7 +1870,16 @@ struct shader_core_stats_pod {
   unsigned gpgpu_n_stall_shd_mem;
   unsigned *single_issue_nums;
   unsigned *dual_issue_nums;
-  unsigned *issued_warp_insts;
+  unsigned **issued_warp_insts;
+  unsigned *issue_fails_due_to_mem_resource;
+  unsigned *issue_fails_due_to_int_pipe_inavailable;
+  unsigned *issue_fails_due_to_sp_pipe_inavailable;
+  unsigned *issue_fails_due_to_dp_pipe_inavailable;
+  unsigned *issue_fails_due_to_sfu_pipe_inavailable;
+  unsigned *issue_fails_due_to_tensorcore_pipe_inavailable;
+  unsigned *issue_fails_due_to_spec_pipe_inavailable;
+  unsigned *ibuf_insts;
+  unsigned *ibuf_valid_insts;
 
   unsigned ctas_completed;
   // memory access classification
@@ -2004,8 +2013,24 @@ class shader_core_stats : public shader_core_stats_pod {
         (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
     dual_issue_nums =
         (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
-    issued_warp_insts =
-        (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+
+    issued_warp_insts = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
+    for (unsigned i = 0; i < config->n_simt_cores_per_cluster; i++) {
+      issued_warp_insts[i] = (unsigned *)calloc(
+        config->gpgpu_num_sched_per_core, sizeof(unsigned)
+      );
+    }
+
+    issue_fails_due_to_mem_resource          = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+    issue_fails_due_to_int_pipe_inavailable  = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+    issue_fails_due_to_sp_pipe_inavailable   = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+    issue_fails_due_to_dp_pipe_inavailable   = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+    issue_fails_due_to_sfu_pipe_inavailable  = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+    issue_fails_due_to_tensorcore_pipe_inavailable = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+    issue_fails_due_to_spec_pipe_inavailable = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+
+    ibuf_insts        = (unsigned *)calloc(config->max_warps_per_shader, sizeof(unsigned));
+    ibuf_valid_insts  = (unsigned *)calloc(config->max_warps_per_shader, sizeof(unsigned));
 
     ctas_completed = 0;
     n_simt_to_mem = (long *)calloc(config->num_shader(), sizeof(long));

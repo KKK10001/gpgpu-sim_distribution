@@ -750,8 +750,7 @@ void shader_core_config::reg_options(class OptionParser *opp) {
     option_parser_register(opp, ss.str().c_str(), OPT_CSTR,
                            &specialized_unit_string[j],
                            "specialized unit config"
-                           " {<enabled>,<num_units>:<latency>:<initiation>,<ID_"
-                           "OC_SPEC>:<OC_EX_SPEC>,<NAME>}",
+                           " {<enabled>,<num_units>:<latency>:<initiation>,<ID_OC_SPEC>:<OC_EX_SPEC>,<NAME>}",
                            "0,4,4,4,4,BRA");
   }
 }
@@ -1631,40 +1630,172 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
   printf("gpu_tot_occupancy = %.4f%% \n",
          (gpu_occupancy + gpu_tot_occupancy).get_occ_fraction() * 100);
 
-
   // shader_print_cache_stats(stdout);
-  float issued_warp_insts_per_cycle = 0.0f;
-  for (unsigned cluster_id = 0; cluster_id < m_shader_config->n_simt_clusters; cluster_id++) {
+  unsigned total_issue_fails_due_to_mem_resource                = 0;
+  unsigned total_issue_fails_due_to_int_pipe_inavailable        = 0;
+  unsigned total_issue_fails_due_to_sp_pipe_inavailable         = 0;
+  unsigned total_issue_fails_due_to_dp_pipe_inavailable         = 0;
+  unsigned total_issue_fails_due_to_sfu_pipe_inavailable        = 0;
+  unsigned total_issue_fails_due_to_tensorcore_pipe_inavailable = 0;
+  unsigned total_issue_fails_due_to_spec_pipe_inavailable       = 0;
+  unsigned total_issue_fails = 0;
+
+  // Gather stats
+  unsigned per_core_issued_warp_insts[m_shader_config->n_simt_cores_per_cluster];
+  float cores_issue_rate[m_shader_config->n_simt_cores_per_cluster];
+  float avg_per_core_issue_rate = 0.0f;
+  float total_issue_rate = 0.0f;
+  unsigned total_issued_warp_insts       = 0;
+  unsigned long long total_shader_cycles = 0;
+  for (unsigned cluster_id = 0; cluster_id < m_shader_config->n_simt_clusters; cluster_id++) { // -gpgpu_n_clusters = 1
     for (unsigned cid = 0; cid < m_shader_config->n_simt_cores_per_cluster; cid++) {
-      unsigned sid = m_shader_config->cid_to_sid(cid, cluster_id);
-      for (unsigned warp_sched_id = 0; warp_sched_id < m_shader_config->gpgpu_num_sched_per_core; warp_sched_id++)
-      {
-        // total shader_cores = -gpgpu_n_clusters (1) * -gpgpu_n_cores_per_cluster (4) = 4
-        // warp_schedulers per shader_core = -gpgpu_num_sched_per_core = 4
-        // -gpgpu_max_insn_issue_per_warp (1)
-        // Theoretically, per-cycle max issued_warp_insts  = 1 * 4 * 4 * 1 = 16
-        float avg_issued_warp_inst_per_scheduler = 
-          m_shader_stats->issued_warp_insts[warp_sched_id] / (float)m_shader_stats->shader_cycles[warp_sched_id];
-        issued_warp_insts_per_cycle += avg_issued_warp_inst_per_scheduler;
-        printf("avg_issued_warp_inst_per_scheduler[cluster:%u][shader_core:%u][scheduler_%u] = "
-          "%f (%u / %llu)\n", 
-          cluster_id, cid, warp_sched_id, 
-          avg_issued_warp_inst_per_scheduler, 
-          m_shader_stats->issued_warp_insts[warp_sched_id], 
-          m_shader_stats->shader_cycles[warp_sched_id]);
+      unsigned sid = m_shader_config->cid_to_sid(cid, cluster_id); // sid indicate unique shader_core_id crossing clusters
+      if (m_shader_config->n_simt_clusters == 1) {
+        assert(sid == cid);
       }
+      per_core_issued_warp_insts[sid] = 0;
+      cores_issue_rate[sid] = 0.0f;
     }
-  }
-  printf("issued_warp_insts_per_cycle = %f\n", issued_warp_insts_per_cycle);
+  }  
+  // -gpgpu_n_clusters = 1
+  // -gpgpu_n_cores_per_cluster = 4 ---> n_simt_cores_per_cluster = 4
+  for (unsigned cluster_id = 0; cluster_id < m_shader_config->n_simt_clusters; cluster_id++) {
+    // cluster_id      |0      |1      |2        |3          |
+    // core_id (cid)   |0 1 2 3|0 1 2 3|0 1 2   3|0   1  2  3|
+    // shader_id (sid) |0 1 2 3|4 5 6 7|8 9 10 11|12 13 14 15|
+
+    // When m_shader_config->n_simt_clusters = 1, then 
+    // cluster_id      |0      |
+    // core_id (cid)   |0 1 2 3|
+    // shader_id (sid) |0 1 2 3|
+    
+    for (unsigned cid = 0; cid < m_shader_config->n_simt_cores_per_cluster; cid++) {
+      // sid indicate unique shader_core_id crossing clusters
+      unsigned sid = m_shader_config->cid_to_sid(cid, cluster_id); 
+
+      for (unsigned scheduler_id = 0; scheduler_id < m_shader_config->gpgpu_num_sched_per_core; scheduler_id++) {
+        // Theoretically, per-cycle max issued_warp_insts = 
+        // =  -gpgpu_n_clusters (1) 
+        //  * -gpgpu_n_cores_per_cluster (4) 
+        //  * -gpgpu_num_sched_per_core (4)
+        //  * -gpgpu_max_insn_issue_per_warp (1)
+        // = 16      
+
+        // When -gpgpu_num_sched_per_core 4
+        // cluster_id      |0                              |
+        // shader_id (sid) |0      |1      |2      |3      |
+        // warp_sched_id   |0 1 2 3|0 1 2 3|0 1 2 3|0 1 2 3|
+
+        // When -gpgpu_num_sched_per_core 8
+        // cluster_id      |0
+        // shader_id (sid) |0              |1              |2              |3              |
+        // warp_sched_id   |0 1 2 3 4 5 6 7|0 1 2 3 4 5 6 7|0 1 2 3 4 5 6 7|0 1 2 3 4 5 6 7|      
+        
+        total_shader_cycles += m_shader_stats->shader_cycles[sid];
+        float per_scheduler_issue_rate = 
+          m_shader_stats->issued_warp_insts[sid][scheduler_id] / 
+          (float)m_shader_stats->shader_cycles[sid];
+
+        printf("per_scheduler_issue_rate[sid:%u][sched_id:%u] = %f (%u / %llu)\n",
+          sid, scheduler_id,
+          per_scheduler_issue_rate,
+          m_shader_stats->issued_warp_insts[sid][scheduler_id],
+          m_shader_stats->shader_cycles[sid]
+        );
+
+        total_issue_fails_due_to_mem_resource                += m_shader_stats->issue_fails_due_to_mem_resource[scheduler_id];
+        total_issue_fails_due_to_int_pipe_inavailable        += m_shader_stats->issue_fails_due_to_int_pipe_inavailable[scheduler_id];
+        total_issue_fails_due_to_sp_pipe_inavailable         += m_shader_stats->issue_fails_due_to_sp_pipe_inavailable[scheduler_id];
+        total_issue_fails_due_to_dp_pipe_inavailable         += m_shader_stats->issue_fails_due_to_dp_pipe_inavailable[scheduler_id];
+        total_issue_fails_due_to_sfu_pipe_inavailable        += m_shader_stats->issue_fails_due_to_sfu_pipe_inavailable[scheduler_id];
+        total_issue_fails_due_to_tensorcore_pipe_inavailable += m_shader_stats->issue_fails_due_to_tensorcore_pipe_inavailable[scheduler_id];
+        total_issue_fails_due_to_spec_pipe_inavailable       += m_shader_stats->issue_fails_due_to_spec_pipe_inavailable[scheduler_id];
+        
+        total_issue_fails += m_shader_stats->issue_fails_due_to_mem_resource[scheduler_id];
+        total_issue_fails += m_shader_stats->issue_fails_due_to_int_pipe_inavailable[scheduler_id];
+        total_issue_fails += m_shader_stats->issue_fails_due_to_sp_pipe_inavailable[scheduler_id];
+        total_issue_fails += m_shader_stats->issue_fails_due_to_dp_pipe_inavailable[scheduler_id];
+        total_issue_fails += m_shader_stats->issue_fails_due_to_sfu_pipe_inavailable[scheduler_id];
+        total_issue_fails += m_shader_stats->issue_fails_due_to_tensorcore_pipe_inavailable[scheduler_id];
+        total_issue_fails += m_shader_stats->issue_fails_due_to_spec_pipe_inavailable[scheduler_id];        
+
+        per_core_issued_warp_insts[sid] += m_shader_stats->issued_warp_insts[sid][scheduler_id];
+        total_issued_warp_insts         += m_shader_stats->issued_warp_insts[sid][scheduler_id];        
+      } // for (unsigned scheduler_id = 0; scheduler_id < m_shader_core->gpgpu_num_sched_per_core; scheduler_id++) {
+      cores_issue_rate[sid] = per_core_issued_warp_insts[sid] / (float)m_shader_stats->shader_cycles[sid];
+      if (!sid) {
+        avg_per_core_issue_rate = cores_issue_rate[sid];
+      } else {
+        avg_per_core_issue_rate = (avg_per_core_issue_rate + cores_issue_rate[sid]) / 2;
+      }
+      printf("cores_issue_rate[sid:%u] = %f (%u / %llu)\n", 
+        sid, 
+        cores_issue_rate[sid], 
+        per_core_issued_warp_insts[sid], m_shader_stats->shader_cycles[sid]);
+    } // cid
+  } // for (unsigned cluster_id = 0; cluster_id < m_shader_config->n_simt_clusters; cluster_id++)
   const unsigned clusters            = m_shader_config->n_simt_clusters;
   const unsigned cores_per_cluster   = m_shader_config->n_simt_cores_per_cluster;
   const unsigned schedulers_per_core = m_shader_config->gpgpu_num_sched_per_core;
   const unsigned issue_width         = m_shader_config->gpgpu_max_insn_issue_per_warp;
   const unsigned issue_bandwidth     = clusters * cores_per_cluster * schedulers_per_core * issue_width;
-  float issue_bw_utilization         = issued_warp_insts_per_cycle / (float)issue_bandwidth;
+  total_issue_rate                   = avg_per_core_issue_rate * clusters * cores_per_cluster;
+  float issue_bw_utilization         = total_issue_rate / (float)issue_bandwidth;
 
-  printf("issue_bw_utilization = %f (%f / %u)\n", 
-    issue_bw_utilization, issued_warp_insts_per_cycle, issue_bandwidth);
+  printf("issue_bandwidth:%u = clusters:%u * cores_per_cluster:%u * schedulers_per_core:%u * issue_width:%u\n", 
+    issue_bandwidth, clusters, cores_per_cluster, schedulers_per_core, issue_width);
+  printf("total_issued_warp_insts = %u\n", total_issued_warp_insts);
+  printf("total_shader_cycles     = %llu\n", total_shader_cycles);
+  printf("avg_per_core_issue_rate = %f\n", avg_per_core_issue_rate);
+  printf("total_issue_rate        = %f\n", total_issue_rate);
+  printf("issue_bw_utilization    = %f (%f / %u)\n", issue_bw_utilization, total_issue_rate, issue_bandwidth);
+
+  printf("total_issue_fails = %u\n", total_issue_fails);
+  printf("total_issue_fails_due_to_mem_resource                = %u\n", total_issue_fails_due_to_mem_resource               );
+  printf("total_issue_fails_due_to_int_pipe_inavailable        = %u\n", total_issue_fails_due_to_int_pipe_inavailable       );
+  printf("total_issue_fails_due_to_sp_pipe_inavailable         = %u\n", total_issue_fails_due_to_sp_pipe_inavailable        );
+  printf("total_issue_fails_due_to_dp_pipe_inavailable         = %u\n", total_issue_fails_due_to_dp_pipe_inavailable        );
+  printf("total_issue_fails_due_to_sfu_pipe_inavailable        = %u\n", total_issue_fails_due_to_sfu_pipe_inavailable       );
+  printf("total_issue_fails_due_to_tensorcore_pipe_inavailable = %u\n", total_issue_fails_due_to_tensorcore_pipe_inavailable);
+  printf("total_issue_fails_due_to_spec_pipe_inavailable       = %u\n", total_issue_fails_due_to_spec_pipe_inavailable      );
+  printf("issue_fails[mem_resource] = %f\n", total_issue_fails_due_to_mem_resource / (float)total_issue_fails);
+  printf("issue_fails[int_pipe]     = %f\n", total_issue_fails_due_to_int_pipe_inavailable / (float)total_issue_fails);
+  printf("issue_fails[sp_pipe]      = %f\n", total_issue_fails_due_to_sp_pipe_inavailable / (float)total_issue_fails);
+  printf("issue_fails[dp_pipe]      = %f\n", total_issue_fails_due_to_dp_pipe_inavailable / (float)total_issue_fails);
+  printf("issue_fails[sfu_pipe]     = %f\n", total_issue_fails_due_to_sfu_pipe_inavailable / (float)total_issue_fails);
+  printf("issue_fails[tc_pipe]      = %f\n", total_issue_fails_due_to_tensorcore_pipe_inavailable / (float)total_issue_fails);
+  printf("issue_fails[spec_pipe]    = %f\n", total_issue_fails_due_to_spec_pipe_inavailable / (float)total_issue_fails);
+
+  unsigned total_insts_in_ibuf       = 0;
+  unsigned total_valid_insts_in_ibuf = 0;  
+  unsigned max_ibuf_inst_idx = 0;
+  // -gpgpu_shader_core_pipeline <nthread>:<warpsize> 2048:32
+  // max_warps_per_shader = n_thread_per_shader / warp_size = 2048 / 32 = 64;
+  for (unsigned warp = 0; warp < m_shader_config->max_warps_per_shader; warp++)
+  {
+    if (m_shader_stats->ibuf_valid_insts[warp]) {
+      max_ibuf_inst_idx = (warp > max_ibuf_inst_idx) ? warp : max_ibuf_inst_idx;
+    }
+    total_valid_insts_in_ibuf += m_shader_stats->ibuf_valid_insts[warp];
+    total_insts_in_ibuf       += m_shader_stats->ibuf_insts[warp];
+  }
+  printf("total_valid_insts_in_ibuf = %u\n", total_valid_insts_in_ibuf);
+  printf("total_insts_in_ibuf       = %u\n", total_insts_in_ibuf);
+  printf("max_ibuf_inst_idx         = %u\n", max_ibuf_inst_idx);
+
+  unsigned total_stalled_insts = 0;
+  for (unsigned i = 0; i < (m_shader_config->warp_size + 3); i++)
+  {
+    total_stalled_insts += m_shader_stats->shader_cycle_distro[i];
+  }
+  printf("total_stalled_insts = %u\n", total_stalled_insts);  
+
+  unsigned total_decoded_insts = 0;
+  for (unsigned shader = 0; shader < m_shader_config->num_shader(); shader++)
+  {
+    total_decoded_insts += m_shader_stats->m_num_decoded_insn[shader];
+  }
+  printf("total_decoded_insts = %u\n", total_decoded_insts);
 
   fprintf(statfout, "max_total_param_size = %llu\n",
           gpgpu_ctx->device_runtime->g_max_total_param_size);

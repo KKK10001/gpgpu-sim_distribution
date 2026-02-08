@@ -1421,6 +1421,7 @@ class register_set {
     }
     m_name = name;
   }
+  unsigned regs_size() { return regs.size(); }
   const char *get_name() { return m_name; }
   bool has_free() {
     for (unsigned i = 0; i < regs.size(); i++) {
@@ -1435,6 +1436,10 @@ class register_set {
     // sched id)
     if (!sub_core_model) {
       return has_free();
+    }
+    if (reg_id >= regs.size()) {
+      printf("%s has only %u regs, but reg_id:%u is queried\n", 
+        m_name, (unsigned)regs.size(), reg_id);
     }
 
     assert(reg_id < regs.size());
@@ -1526,6 +1531,11 @@ class register_set {
     if (!sub_core_model) return get_ready();
     warp_inst_t **ready;
     ready = NULL;
+    if (reg_id >= regs.size()) {
+      printf("%s requires reg_id:%u, which is however, exceeds total %u reserved\n", 
+        m_name, reg_id, (unsigned)regs.size()); // 2/4
+    }
+
     assert(reg_id < regs.size());
     if (not regs[reg_id]->empty()) {
       ready = &regs[reg_id];
