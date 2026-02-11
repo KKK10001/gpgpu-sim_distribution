@@ -1034,8 +1034,16 @@ class inst_t {
 
   unsigned get_num_operands() const { return num_operands; }
   unsigned get_num_regs() const { return num_regs; }
+
+  // never used member functions
+  // 1. {num_regs, num_operands} are both set inside 
+  // trace_warp_inst_t::parse_from_trace_struct(...)
+  // 2. And "num_operands = num_regs", and hence 
+  // loop upper-bound of "i < (cu->get_num_operands() - cu->get_num_regs())" 
+  // is never met in opndcoll_rfu_t::dispatch_ready_cu()
   void set_num_regs(unsigned num) { num_regs = num; }
   void set_num_operands(unsigned num) { num_operands = num; }
+
   void set_bar_id(unsigned id) { bar_id = id; }
   void set_bar_count(unsigned count) { bar_count = count; }
 

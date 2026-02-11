@@ -34,6 +34,8 @@ TS_TUP_BEGIN( trace_streams_type )
     TS_TUP( IBUF ),
     TS_TUP( IBUF_INSERT ),
     TS_TUP( OPC_CHECK ), // Op collector check
+    TS_TUP( OPC_ALLOC),
+    TS_TUP( DISP_OPC), // dispatch operand collect unit (cu)    
     TS_TUP( WARP_SCHEDULER ),
     TS_TUP( WARP_ISSUE ),
     TS_TUP( ISSUED_INSTS ),

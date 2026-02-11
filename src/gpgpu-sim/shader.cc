@@ -112,9 +112,10 @@ void shader_core_ctx::create_front_pipeline() {
     m_pipeline_reg.push_back(
         register_set(m_config->pipe_widths[j], pipeline_stage_name_decode[j]));
     if (DTRACE(REGS_ALLOC)) {
-      fprintf(Trace::out, "%s pushed %u regs. regs.size = %u\n", 
-        pipeline_stage_name_decode[j], m_config->pipe_widths[j], m_pipeline_reg.size());
-    }        
+      fprintf(Trace::out, "%s pushed %u regs, and has total %u regs now\n", 
+        pipeline_stage_name_decode[j], 
+        m_config->pipe_widths[j], m_pipeline_reg[j].regs_size());
+    }
   }
   for (unsigned j = 0; j < m_config->m_specialized_unit.size(); j++) {
     m_pipeline_reg.push_back(
@@ -134,25 +135,34 @@ void shader_core_ctx::create_front_pipeline() {
   if (m_config->sub_core_model) {
     // in subcore model, each scheduler should has its own issue register, so
     // ensure num scheduler = reg width
-    assert(m_config->gpgpu_num_sched_per_core ==
-           m_pipeline_reg[ID_OC_SP].get_size());
-    assert(m_config->gpgpu_num_sched_per_core ==
-           m_pipeline_reg[ID_OC_SFU].get_size());
-    assert(m_config->gpgpu_num_sched_per_core ==
-           m_pipeline_reg[ID_OC_MEM].get_size());
-    if (m_config->gpgpu_tensor_core_avail)
-      assert(m_config->gpgpu_num_sched_per_core ==
-             m_pipeline_reg[ID_OC_TENSOR_CORE].get_size());
-    if (m_config->gpgpu_num_dp_units > 0)
-      assert(m_config->gpgpu_num_sched_per_core ==
-             m_pipeline_reg[ID_OC_DP].get_size());
-    if (m_config->gpgpu_num_int_units > 0)
-      assert(m_config->gpgpu_num_sched_per_core ==
-             m_pipeline_reg[ID_OC_INT].get_size());
+    assert(m_config->gpgpu_num_sched_per_core == m_pipeline_reg[ID_OC_SP].get_size());
+    assert(m_config->gpgpu_num_sched_per_core == m_pipeline_reg[ID_OC_SFU].get_size());
+    assert(m_config->gpgpu_num_sched_per_core == m_pipeline_reg[ID_OC_MEM].get_size());
+    if (m_config->gpgpu_tensor_core_avail) {
+      assert(m_config->gpgpu_num_sched_per_core == m_pipeline_reg[ID_OC_TENSOR_CORE].get_size());
+    }      
+    if (m_config->gpgpu_num_dp_units > 0) {
+      assert(m_config->gpgpu_num_sched_per_core == m_pipeline_reg[ID_OC_DP].get_size());
+    }      
+    if (m_config->gpgpu_num_int_units > 0) {
+      if (m_config->gpgpu_num_sched_per_core != m_pipeline_reg[ID_OC_INT].get_size()) {
+        printf("assert failed! gpgpu_num_sched_per_core:%u != "
+          "m_pipeline_reg[ID_OC_INT].get_size:%u\n", 
+          m_config->gpgpu_num_sched_per_core, m_pipeline_reg[ID_OC_INT].get_size());
+      }
+      assert(m_config->gpgpu_num_sched_per_core == m_pipeline_reg[ID_OC_INT].get_size());
+    }
     for (unsigned j = 0; j < m_config->m_specialized_unit.size(); j++) {
-      if (m_config->m_specialized_unit[j].num_units > 0)
-        assert(m_config->gpgpu_num_sched_per_core ==
-               m_config->m_specialized_unit[j].id_oc_spec_reg_width);
+      if (m_config->m_specialized_unit[j].num_units > 0) {
+        if (m_config->gpgpu_num_sched_per_core != m_config->m_specialized_unit[j].id_oc_spec_reg_width) {
+          printf("%s m_config->gpgpu_num_sched_per_core:%u != "
+            "m_config->m_specialized_unit[%u].id_oc_spec_reg_width:%u \n",
+            m_config->m_specialized_unit[j].name,
+            m_config->gpgpu_num_sched_per_core, j, m_config->m_specialized_unit[j].id_oc_spec_reg_width
+          );
+        }
+        assert(m_config->gpgpu_num_sched_per_core == m_config->m_specialized_unit[j].id_oc_spec_reg_width);
+      }        
     }
   }
 
@@ -642,13 +652,13 @@ void shader_core_stats::print(FILE *fout) const {
   fprintf(fout, "gpgpu_n_tot_thrd_icount = %lld\n", thread_icount_uarch);
   fprintf(fout, "gpgpu_n_tot_w_icount = %lld\n", warp_icount_uarch);
 
-  for (size_t bank = 0; bank < m_config->gpgpu_num_reg_banks; bank++)
+  for (unsigned bank = 0; bank < m_config->gpgpu_num_reg_banks; bank++)
   {
     float raw_conflicts_rate = m_raw_conflicts[bank] / (float)m_rd_reg_reqs[bank];
     fprintf(fout, "raw_conflicts_rate[bank:%u] = %f (conflicts:%u / rd_reg_reqs:%u)\n", 
       bank, raw_conflicts_rate, m_raw_conflicts[bank], m_rd_reg_reqs[bank]);
   }
-  for (size_t bank = 0; bank < m_config->gpgpu_num_reg_banks; bank++)
+  for (unsigned bank = 0; bank < m_config->gpgpu_num_reg_banks; bank++)
   {
     float wr_reg_bank_conflicts_rate = 
       (float)m_wr_reg_bank_conflicts[bank] / m_wr_reg_bank_allocates[bank];
@@ -656,7 +666,7 @@ void shader_core_stats::print(FILE *fout) const {
       bank, wr_reg_bank_conflicts_rate, 
       m_wr_reg_bank_conflicts[bank], m_wr_reg_bank_allocates[bank]);
   }  
-  // for (size_t bank = 0; bank < m_config->gpgpu_num_reg_banks; bank++)
+  // for (unsigned bank = 0; bank < m_config->gpgpu_num_reg_banks; bank++)
   // {
   //   fprintf(fout, "m_rd_reg_bank_conflicts[bank:%u] = %u\n", 
   //     bank, m_rd_reg_bank_conflicts[bank]);
@@ -1488,8 +1498,6 @@ void scheduler_unit::order_by_priority(
 
 void scheduler_unit::cycle() {
 
-  unsigned long long this_cycle = m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle;
-
   SCHED_DPRINTF("scheduler_unit::cycle()\n");
 
   bool has_issued_this_cycle = false;
@@ -1602,7 +1610,7 @@ void scheduler_unit::cycle() {
                     issued);
                 }                   
               } else {
-                m_stats->issue_fails_due_to_mem_resource[m_id]++;
+                m_stats->issue_fails_due_to_mem_resource[m_shader->get_sid()][m_id]++;
               }
             } else {
               // This code need to be refactored
@@ -1620,11 +1628,11 @@ void scheduler_unit::cycle() {
 
                 if ((m_shader->m_config->gpgpu_num_sp_units > 0) && 
                     (!m_sp_out->has_free(m_shader->m_config->sub_core_model, m_id))) {
-                  m_stats->issue_fails_due_to_sp_pipe_inavailable[m_id]++;
+                  m_stats->issue_fails_due_to_sp_pipe_inavailable[m_shader->get_sid()][m_id]++;
                 }
                 if ((m_shader->m_config->gpgpu_num_int_units > 0) && 
                     (!m_int_out->has_free(m_shader->m_config->sub_core_model, m_id))) {
-                  m_stats->issue_fails_due_to_int_pipe_inavailable[m_id]++;
+                  m_stats->issue_fails_due_to_int_pipe_inavailable[m_shader->get_sid()][m_id]++;
                 }
 
                 // if INT unit pipline exist, then execute ALU and INT
@@ -1713,7 +1721,7 @@ void scheduler_unit::cycle() {
                       issued);
                   }
                 } else {
-                  m_stats->issue_fails_due_to_dp_pipe_inavailable[m_id]++;
+                  m_stats->issue_fails_due_to_dp_pipe_inavailable[m_shader->get_sid()][m_id]++;
                 }
               }  // If the DP units = 0 (like in Fermi archi), then execute DP
                  // inst on SFU unit
@@ -1739,7 +1747,7 @@ void scheduler_unit::cycle() {
                       issued);
                   }                  
                 } else {
-                  m_stats->issue_fails_due_to_sfu_pipe_inavailable[m_id]++;
+                  m_stats->issue_fails_due_to_sfu_pipe_inavailable[m_shader->get_sid()][m_id]++;
                 }
               } else if ((pI->op == TENSOR_CORE_OP) &&
                          !(diff_exec_units && previous_issued_inst_exec_type ==
@@ -1762,7 +1770,7 @@ void scheduler_unit::cycle() {
                       issued);
                   }
                 } else {
-                  m_stats->issue_fails_due_to_tensorcore_pipe_inavailable[m_id]++;
+                  m_stats->issue_fails_due_to_tensorcore_pipe_inavailable[m_shader->get_sid()][m_id]++;
                 }
               } else if ((pI->op >= SPEC_UNIT_START_ID) &&
                          !(diff_exec_units &&
@@ -1789,7 +1797,7 @@ void scheduler_unit::cycle() {
                       issued);
                   }                  
                 } else {
-                  m_stats->issue_fails_due_to_spec_pipe_inavailable[m_id]++;
+                  m_stats->issue_fails_due_to_spec_pipe_inavailable[m_shader->get_sid()][m_id]++;
                 }
               }
 
@@ -4923,9 +4931,23 @@ void opndcoll_rfu_t::init(unsigned num_banks, shader_core_ctx *shader) {
   m_num_warp_scheds = shader->get_config()->gpgpu_num_sched_per_core;
   unsigned reg_id = 0;
   if (sub_core_model) {
+    if (num_banks % shader->get_config()->gpgpu_num_sched_per_core) {
+      printf("assert failed! (num_banks:%u mod gpgpu_num_sched_per_core:%u) = %u != 0\n", 
+        num_banks, shader->get_config()->gpgpu_num_sched_per_core,
+        (num_banks % shader->get_config()->gpgpu_num_sched_per_core)
+      );
+    }
     assert(num_banks % shader->get_config()->gpgpu_num_sched_per_core == 0);
-    assert(m_num_warp_scheds <= m_cu.size() &&
-           m_cu.size() % m_num_warp_scheds == 0);
+
+    if (m_num_warp_scheds > m_cu.size()) {
+      printf("assert failed! m_num_warp_scheds:%u > m_cu.size:%lu\n", 
+        m_num_warp_scheds, m_cu.size());
+    }
+    if (m_cu.size() % m_num_warp_scheds) {
+      printf("(m_cu.size:%lu mod m_num_warp_scheds:%u) = %lu > 0\n",
+        m_cu.size(), m_num_warp_scheds, m_cu.size() % m_num_warp_scheds);
+    }
+    assert((m_num_warp_scheds <= m_cu.size()) && (m_cu.size() % m_num_warp_scheds == 0));
   }
   m_num_banks_per_sched =
       num_banks / shader->get_config()->gpgpu_num_sched_per_core;
@@ -4937,6 +4959,14 @@ void opndcoll_rfu_t::init(unsigned num_banks, shader_core_ctx *shader) {
     }
     m_cu[j]->init(j, num_banks, shader->get_config(), this, sub_core_model,
                   reg_id, m_num_banks_per_sched);
+
+    if (DTRACE(OPC_CHECK)) {
+      fprintf(Trace::out, "cu[%u] init OPC. reg_id:%u "
+        "banks_per_sched:%u (banks:%u / gpgpu_num_sched_per_core:%u)\n", 
+        j, reg_id, m_num_banks_per_sched,
+        num_banks, shader->get_config()->gpgpu_num_sched_per_core
+      );
+    }                  
   }
   for (unsigned j = 0; j < m_dispatch_units.size(); j++) {
     m_dispatch_units[j].init(sub_core_model, m_num_warp_scheds);
@@ -5024,8 +5054,12 @@ void opndcoll_rfu_t::dispatch_ready_cu() {
     dispatch_unit_t &du = m_dispatch_units[p];
     collector_unit_t *cu = du.find_ready();
     if (cu) {
-      for (unsigned i = 0; i < (cu->get_num_operands() - cu->get_num_regs());
-           i++) {
+      for (unsigned i = 0; i < (cu->get_num_operands() - cu->get_num_regs()); i++) {
+        // 2/11. "num_operands = num_regs" is set inside 
+        // trace_warp_inst_t::parse_from_trace_struct
+        // Hence, "cu->get_num_operands() - cu->get_num_regs() = 0"
+        assert(0);
+
         if (m_shader->get_config()->gpgpu_clock_gated_reg_file) {
           unsigned active_count = 0;
           for (unsigned i = 0; i < m_shader->get_config()->warp_size;
@@ -5200,9 +5234,17 @@ bool opndcoll_rfu_t::collector_unit_t::allocate(register_set *pipeline_reg_set,
         m_src_op[op] = op_t(
           this, op, reg_num, m_num_banks, m_sub_core_model,
           m_num_banks_per_sched, (*pipeline_reg)->get_schd_id());
+
+        if (DTRACE(OPC_ALLOC)) {
+          fprintf(Trace::out, "Allocated src_reg:%u for op:%u on "
+            "warp_sched:%u reg_bank:%u\n",
+            reg_num, op, (*pipeline_reg)->get_schd_id(), m_src_op[op].get_bank());
+        }
+
         m_not_ready.set(op);
-      } else
+      } else {
         m_src_op[op] = op_t();
+      }
     }
     // move_warp(m_warp,*pipeline_reg);
     pipeline_reg_set->move_out_to(m_warp);
@@ -5216,7 +5258,9 @@ void opndcoll_rfu_t::collector_unit_t::dispatch() {
   m_output_register->move_in(m_sub_core_model, m_reg_id, m_warp);
   m_free = true;
   m_output_register = NULL;
-  for (unsigned i = 0; i < MAX_REG_OPERANDS * 2; i++) m_src_op[i].reset();
+  for (unsigned i = 0; i < MAX_REG_OPERANDS * 2; i++) {
+    m_src_op[i].reset();
+  }
 }
 
 void exec_simt_core_cluster::create_shader_core_ctx() {

@@ -583,6 +583,20 @@ class watchpoint_event {
   const ptx_instruction *m_inst;
 };
 
+struct ISSUE_FAIL_INFO {
+  unsigned shader_core_id;
+  unsigned warp_scheduler_id;
+  std::string fail_type;
+  ISSUE_FAIL_INFO(
+    unsigned shader_core_id_,
+    unsigned warp_scheduler_id_,
+    std::string fail_type_
+  ) : 
+  shader_core_id(shader_core_id_),
+  warp_scheduler_id(warp_scheduler_id_),
+  fail_type(fail_type_) {}
+};
+
 class gpgpu_sim : public gpgpu_t {
  public:
   gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx);
@@ -679,6 +693,12 @@ class gpgpu_sim : public gpgpu_t {
 
   // backward pointer
   class gpgpu_context *gpgpu_ctx;
+
+  static bool cmpForMoreFails(
+    const std::pair<float, ISSUE_FAIL_INFO>& a, 
+    const std::pair<float, ISSUE_FAIL_INFO>& b) {
+    return a.first > b.first;
+  }
 
  protected:
   // clocks

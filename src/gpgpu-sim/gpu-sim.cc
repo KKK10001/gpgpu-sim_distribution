@@ -1644,7 +1644,7 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
   unsigned per_core_issued_warp_insts[m_shader_config->n_simt_cores_per_cluster];
   float cores_issue_rate[m_shader_config->n_simt_cores_per_cluster];
   float avg_per_core_issue_rate = 0.0f;
-  float total_issue_rate = 0.0f;
+  float total_issue_ratio = 0.0f;
   unsigned total_issued_warp_insts       = 0;
   unsigned long long total_shader_cycles = 0;
   for (unsigned cluster_id = 0; cluster_id < m_shader_config->n_simt_clusters; cluster_id++) { // -gpgpu_n_clusters = 1
@@ -1703,21 +1703,21 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
           m_shader_stats->shader_cycles[sid]
         );
 
-        total_issue_fails_due_to_mem_resource                += m_shader_stats->issue_fails_due_to_mem_resource[scheduler_id];
-        total_issue_fails_due_to_int_pipe_inavailable        += m_shader_stats->issue_fails_due_to_int_pipe_inavailable[scheduler_id];
-        total_issue_fails_due_to_sp_pipe_inavailable         += m_shader_stats->issue_fails_due_to_sp_pipe_inavailable[scheduler_id];
-        total_issue_fails_due_to_dp_pipe_inavailable         += m_shader_stats->issue_fails_due_to_dp_pipe_inavailable[scheduler_id];
-        total_issue_fails_due_to_sfu_pipe_inavailable        += m_shader_stats->issue_fails_due_to_sfu_pipe_inavailable[scheduler_id];
-        total_issue_fails_due_to_tensorcore_pipe_inavailable += m_shader_stats->issue_fails_due_to_tensorcore_pipe_inavailable[scheduler_id];
-        total_issue_fails_due_to_spec_pipe_inavailable       += m_shader_stats->issue_fails_due_to_spec_pipe_inavailable[scheduler_id];
+        total_issue_fails_due_to_mem_resource                += m_shader_stats->issue_fails_due_to_mem_resource[sid][scheduler_id];
+        total_issue_fails_due_to_int_pipe_inavailable        += m_shader_stats->issue_fails_due_to_int_pipe_inavailable[sid][scheduler_id];
+        total_issue_fails_due_to_sp_pipe_inavailable         += m_shader_stats->issue_fails_due_to_sp_pipe_inavailable[sid][scheduler_id];
+        total_issue_fails_due_to_dp_pipe_inavailable         += m_shader_stats->issue_fails_due_to_dp_pipe_inavailable[sid][scheduler_id];
+        total_issue_fails_due_to_sfu_pipe_inavailable        += m_shader_stats->issue_fails_due_to_sfu_pipe_inavailable[sid][scheduler_id];
+        total_issue_fails_due_to_tensorcore_pipe_inavailable += m_shader_stats->issue_fails_due_to_tensorcore_pipe_inavailable[sid][scheduler_id];
+        total_issue_fails_due_to_spec_pipe_inavailable       += m_shader_stats->issue_fails_due_to_spec_pipe_inavailable[sid][scheduler_id];
         
-        total_issue_fails += m_shader_stats->issue_fails_due_to_mem_resource[scheduler_id];
-        total_issue_fails += m_shader_stats->issue_fails_due_to_int_pipe_inavailable[scheduler_id];
-        total_issue_fails += m_shader_stats->issue_fails_due_to_sp_pipe_inavailable[scheduler_id];
-        total_issue_fails += m_shader_stats->issue_fails_due_to_dp_pipe_inavailable[scheduler_id];
-        total_issue_fails += m_shader_stats->issue_fails_due_to_sfu_pipe_inavailable[scheduler_id];
-        total_issue_fails += m_shader_stats->issue_fails_due_to_tensorcore_pipe_inavailable[scheduler_id];
-        total_issue_fails += m_shader_stats->issue_fails_due_to_spec_pipe_inavailable[scheduler_id];        
+        total_issue_fails += m_shader_stats->issue_fails_due_to_mem_resource[sid][scheduler_id];
+        total_issue_fails += m_shader_stats->issue_fails_due_to_int_pipe_inavailable[sid][scheduler_id];
+        total_issue_fails += m_shader_stats->issue_fails_due_to_sp_pipe_inavailable[sid][scheduler_id];
+        total_issue_fails += m_shader_stats->issue_fails_due_to_dp_pipe_inavailable[sid][scheduler_id];
+        total_issue_fails += m_shader_stats->issue_fails_due_to_sfu_pipe_inavailable[sid][scheduler_id];
+        total_issue_fails += m_shader_stats->issue_fails_due_to_tensorcore_pipe_inavailable[sid][scheduler_id];
+        total_issue_fails += m_shader_stats->issue_fails_due_to_spec_pipe_inavailable[sid][scheduler_id];
 
         per_core_issued_warp_insts[sid] += m_shader_stats->issued_warp_insts[sid][scheduler_id];
         total_issued_warp_insts         += m_shader_stats->issued_warp_insts[sid][scheduler_id];        
@@ -1739,16 +1739,16 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
   const unsigned schedulers_per_core = m_shader_config->gpgpu_num_sched_per_core;
   const unsigned issue_width         = m_shader_config->gpgpu_max_insn_issue_per_warp;
   const unsigned issue_bandwidth     = clusters * cores_per_cluster * schedulers_per_core * issue_width;
-  total_issue_rate                   = avg_per_core_issue_rate * clusters * cores_per_cluster;
-  float issue_bw_utilization         = total_issue_rate / (float)issue_bandwidth;
+  total_issue_ratio                  = avg_per_core_issue_rate * clusters * cores_per_cluster;
+  float issue_bw_utilization         = total_issue_ratio / (float)issue_bandwidth;
 
   printf("issue_bandwidth:%u = clusters:%u * cores_per_cluster:%u * schedulers_per_core:%u * issue_width:%u\n", 
     issue_bandwidth, clusters, cores_per_cluster, schedulers_per_core, issue_width);
   printf("total_issued_warp_insts = %u\n", total_issued_warp_insts);
   printf("total_shader_cycles     = %llu\n", total_shader_cycles);
   printf("avg_per_core_issue_rate = %f\n", avg_per_core_issue_rate);
-  printf("total_issue_rate        = %f\n", total_issue_rate);
-  printf("issue_bw_utilization    = %f (%f / %u)\n", issue_bw_utilization, total_issue_rate, issue_bandwidth);
+  printf("total_issue_ratio        = %f\n", total_issue_ratio);
+  printf("issue_bw_utilization    = %f (%f / %u)\n", issue_bw_utilization, total_issue_ratio, issue_bandwidth);
 
   printf("total_issue_fails = %u\n", total_issue_fails);
   printf("total_issue_fails_due_to_mem_resource                = %u\n", total_issue_fails_due_to_mem_resource               );
@@ -1765,6 +1765,125 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
   printf("issue_fails[sfu_pipe]     = %f\n", total_issue_fails_due_to_sfu_pipe_inavailable / (float)total_issue_fails);
   printf("issue_fails[tc_pipe]      = %f\n", total_issue_fails_due_to_tensorcore_pipe_inavailable / (float)total_issue_fails);
   printf("issue_fails[spec_pipe]    = %f\n", total_issue_fails_due_to_spec_pipe_inavailable / (float)total_issue_fails);
+
+  unsigned total_issue_fails_bak = 0;
+  std::vector<std::pair<float, ISSUE_FAIL_INFO>> issue_fails_ratio;
+  for (unsigned cluster_id = 0; cluster_id < m_shader_config->n_simt_clusters; cluster_id++) {
+    for (unsigned cid = 0; cid < m_shader_config->n_simt_cores_per_cluster; cid++) {
+      // sid indicate unique shader_core_id crossing clusters
+      unsigned sid = m_shader_config->cid_to_sid(cid, cluster_id);
+
+      for (unsigned scheduler_id = 0; scheduler_id < m_shader_config->gpgpu_num_sched_per_core; scheduler_id++) {
+        float lack_mem_resource_ratio     = m_shader_stats->issue_fails_due_to_mem_resource[sid][scheduler_id] / (float)total_issue_fails;
+        float int_pipe_inavailable_ratio  = m_shader_stats->issue_fails_due_to_int_pipe_inavailable[sid][scheduler_id] / (float)total_issue_fails;
+        float sp_pipe_inavailable_ratio   = m_shader_stats->issue_fails_due_to_sp_pipe_inavailable[sid][scheduler_id] / (float)total_issue_fails;
+        float dp_pipe_inavailable_ratio   = m_shader_stats->issue_fails_due_to_dp_pipe_inavailable[sid][scheduler_id] / (float)total_issue_fails;
+        float sfu_pipe_inavailable_ratio  = m_shader_stats->issue_fails_due_to_sfu_pipe_inavailable[sid][scheduler_id] / (float)total_issue_fails;
+        float tc_pipe_inavailable_ratio   = m_shader_stats->issue_fails_due_to_tensorcore_pipe_inavailable[sid][scheduler_id] / (float)total_issue_fails;
+        float spec_pipe_inavailable_ratio = m_shader_stats->issue_fails_due_to_spec_pipe_inavailable[sid][scheduler_id] / (float)total_issue_fails;
+
+        printf("issue_fails[sid:%u][sched:%u][mem_resource] = %f\n",sid, scheduler_id, lack_mem_resource_ratio);
+        printf("issue_fails[sid:%u][sched:%u][int_pipe]     = %f\n",sid, scheduler_id, int_pipe_inavailable_ratio);
+        printf("issue_fails[sid:%u][sched:%u][sp_pipe]      = %f\n",sid, scheduler_id, sp_pipe_inavailable_ratio);
+        printf("issue_fails[sid:%u][sched:%u][dp_pipe]      = %f\n",sid, scheduler_id, dp_pipe_inavailable_ratio);
+        printf("issue_fails[sid:%u][sched:%u][sfu_pipe]     = %f\n",sid, scheduler_id, sfu_pipe_inavailable_ratio);
+        printf("issue_fails[sid:%u][sched:%u][tc_pipe]      = %f\n",sid, scheduler_id, tc_pipe_inavailable_ratio);
+        printf("issue_fails[sid:%u][sched:%u][spec_pipe]    = %f\n",sid, scheduler_id, spec_pipe_inavailable_ratio);
+
+        ISSUE_FAIL_INFO lack_mem_resource_info(sid, scheduler_id, "mem_resource");
+        ISSUE_FAIL_INFO int_pipe_inavailable_info(sid, scheduler_id, "int_pipe");
+        ISSUE_FAIL_INFO sp_pipe_inavailable_info(sid, scheduler_id, "sp_pipe");
+        ISSUE_FAIL_INFO dp_pipe_inavailable_info(sid, scheduler_id, "dp_pipe");
+        ISSUE_FAIL_INFO sfu_pipe_inavailable_info(sid, scheduler_id, "sfu_pipe");
+        ISSUE_FAIL_INFO tc_pipe_inavailable_info(sid, scheduler_id, "tc_pipe");
+        ISSUE_FAIL_INFO spec_pipe_inavailable_info(sid, scheduler_id, "spec_pipe");
+
+        issue_fails_ratio.push_back(std::pair<float, ISSUE_FAIL_INFO>(lack_mem_resource_ratio, lack_mem_resource_info));
+        issue_fails_ratio.push_back(std::pair<float, ISSUE_FAIL_INFO>(int_pipe_inavailable_ratio, int_pipe_inavailable_info));
+        issue_fails_ratio.push_back(std::pair<float, ISSUE_FAIL_INFO>(sp_pipe_inavailable_ratio, sp_pipe_inavailable_info));
+        issue_fails_ratio.push_back(std::pair<float, ISSUE_FAIL_INFO>(dp_pipe_inavailable_ratio, dp_pipe_inavailable_info));
+        issue_fails_ratio.push_back(std::pair<float, ISSUE_FAIL_INFO>(sfu_pipe_inavailable_ratio, sfu_pipe_inavailable_info));
+        issue_fails_ratio.push_back(std::pair<float, ISSUE_FAIL_INFO>(tc_pipe_inavailable_ratio, tc_pipe_inavailable_info));
+        issue_fails_ratio.push_back(std::pair<float, ISSUE_FAIL_INFO>(spec_pipe_inavailable_ratio, spec_pipe_inavailable_info));
+
+        total_issue_fails_bak += m_shader_stats->issue_fails_due_to_mem_resource[sid][scheduler_id];
+        total_issue_fails_bak += m_shader_stats->issue_fails_due_to_int_pipe_inavailable[sid][scheduler_id];
+        total_issue_fails_bak += m_shader_stats->issue_fails_due_to_sp_pipe_inavailable[sid][scheduler_id];
+        total_issue_fails_bak += m_shader_stats->issue_fails_due_to_dp_pipe_inavailable[sid][scheduler_id];
+        total_issue_fails_bak += m_shader_stats->issue_fails_due_to_sfu_pipe_inavailable[sid][scheduler_id];
+        total_issue_fails_bak += m_shader_stats->issue_fails_due_to_tensorcore_pipe_inavailable[sid][scheduler_id];
+        total_issue_fails_bak += m_shader_stats->issue_fails_due_to_spec_pipe_inavailable[sid][scheduler_id];
+      } // for (unsigned scheduler_id = 0; scheduler_id < m_shader_config->gpgpu_num_sched_per_core; scheduler_id++) {
+    } // for (unsigned cid = 0; cid < m_shader_config->n_simt_cores_per_cluster; cid++) {
+  }
+  assert(total_issue_fails_bak == total_issue_fails);
+  std::sort(issue_fails_ratio.begin(), issue_fails_ratio.end(), cmpForMoreFails);
+  std::vector<std::pair<float, ISSUE_FAIL_INFO>> core_0_issue_fails_ratio;
+  std::vector<std::pair<float, ISSUE_FAIL_INFO>> core_1_issue_fails_ratio;
+  std::vector<std::pair<float, ISSUE_FAIL_INFO>> core_2_issue_fails_ratio;
+  std::vector<std::pair<float, ISSUE_FAIL_INFO>> core_3_issue_fails_ratio;
+  for (unsigned i = 0; i < issue_fails_ratio.size(); i++)
+  {
+    if (issue_fails_ratio[i].second.shader_core_id == 0) {
+      std::pair<float, ISSUE_FAIL_INFO> item = issue_fails_ratio[i];
+      core_0_issue_fails_ratio.push_back(item);
+    } else if (issue_fails_ratio[i].second.shader_core_id == 1) {
+      std::pair<float, ISSUE_FAIL_INFO> item = issue_fails_ratio[i];
+      core_1_issue_fails_ratio.push_back(item);
+    } else if (issue_fails_ratio[i].second.shader_core_id == 2) {
+      std::pair<float, ISSUE_FAIL_INFO> item = issue_fails_ratio[i];
+      core_2_issue_fails_ratio.push_back(item);
+    } else if (issue_fails_ratio[i].second.shader_core_id == 3) {
+      std::pair<float, ISSUE_FAIL_INFO> item = issue_fails_ratio[i];
+      core_3_issue_fails_ratio.push_back(item);
+    }
+  }
+  std::sort(core_0_issue_fails_ratio.begin(), core_0_issue_fails_ratio.end(), cmpForMoreFails);
+  std::sort(core_1_issue_fails_ratio.begin(), core_1_issue_fails_ratio.end(), cmpForMoreFails);
+  std::sort(core_2_issue_fails_ratio.begin(), core_2_issue_fails_ratio.end(), cmpForMoreFails);
+  std::sort(core_3_issue_fails_ratio.begin(), core_3_issue_fails_ratio.end(), cmpForMoreFails);
+  for (unsigned i = 0; i < core_0_issue_fails_ratio.size(); i++)
+  {
+    printf("core_0_issue_fails_ratio[sid:%u][sched:%u][%s] = %f\n", 
+      core_0_issue_fails_ratio[i].second.shader_core_id,
+      core_0_issue_fails_ratio[i].second.warp_scheduler_id,
+      core_0_issue_fails_ratio[i].second.fail_type.c_str(),
+      core_0_issue_fails_ratio[i].first);
+  }
+  for (unsigned i = 0; i < core_1_issue_fails_ratio.size(); i++)
+  {
+    printf("core_1_issue_fails_ratio[sid:%u][sched:%u][%s] = %f\n", 
+      core_1_issue_fails_ratio[i].second.shader_core_id,
+      core_1_issue_fails_ratio[i].second.warp_scheduler_id,
+      core_1_issue_fails_ratio[i].second.fail_type.c_str(),
+      core_1_issue_fails_ratio[i].first);
+  }  
+  for (unsigned i = 0; i < core_2_issue_fails_ratio.size(); i++)
+  {
+    printf("core_2_issue_fails_ratio[sid:%u][sched:%u][%s] = %f\n", 
+      core_2_issue_fails_ratio[i].second.shader_core_id,
+      core_2_issue_fails_ratio[i].second.warp_scheduler_id,
+      core_2_issue_fails_ratio[i].second.fail_type.c_str(),
+      core_2_issue_fails_ratio[i].first);
+  }    
+  for (unsigned i = 0; i < core_3_issue_fails_ratio.size(); i++)
+  {
+    printf("core_3_issue_fails_ratio[sid:%u][sched:%u][%s] = %f\n", 
+      core_3_issue_fails_ratio[i].second.shader_core_id,
+      core_3_issue_fails_ratio[i].second.warp_scheduler_id,
+      core_3_issue_fails_ratio[i].second.fail_type.c_str(),
+      core_3_issue_fails_ratio[i].first);
+  }
+  float sum_issue_fails_ratio = .0f;
+  for (unsigned i = 0; i < issue_fails_ratio.size(); i++)
+  {
+    sum_issue_fails_ratio += issue_fails_ratio[i].first;
+    printf("issue_fails_ratio[sid:%u][sched:%u][%s] = %f sum = %f\n", 
+      issue_fails_ratio[i].second.shader_core_id,
+      issue_fails_ratio[i].second.warp_scheduler_id,
+      issue_fails_ratio[i].second.fail_type.c_str(),
+      issue_fails_ratio[i].first, sum_issue_fails_ratio);
+  }
 
   unsigned total_insts_in_ibuf       = 0;
   unsigned total_valid_insts_in_ibuf = 0;  

@@ -1,4 +1,4 @@
-// Copyright (c) 2009-2021, Tor M. Aamodt, Wilson W.L. Fung, Andrew Turner,
+/// Copyright (c) 2009-2021, Tor M. Aamodt, Wilson W.L. Fung, Andrew Turner,
 // Ali Bakhoda, Vijay Kandiah, Nikos Hardavellas,
 // Mahmoud Khairy, Junrui Pan, Timothy G. Rogers
 // The University of British Columbia, Northwestern University, Purdue
@@ -670,7 +670,9 @@ class opndcoll_rfu_t {  // operand collector based register file unit
   void step() {
     dispatch_ready_cu();
     allocate_reads();
-    for (unsigned p = 0; p < m_in_ports.size(); p++) allocate_cu(p);
+    for (unsigned p = 0; p < m_in_ports.size(); p++) {
+      allocate_cu(p);
+    }
     process_banks();
   }
 
@@ -699,7 +701,9 @@ class opndcoll_rfu_t {  // operand collector based register file unit
 
   class op_t {
    public:
-    op_t() { m_valid = false; }
+    op_t() { 
+      m_valid = false; 
+    }
     op_t(collector_unit_t *cu, unsigned op, unsigned reg, unsigned num_banks,
          bool sub_core_model, unsigned banks_per_sched, unsigned sched_id) {
       m_valid = true;
@@ -1045,9 +1049,37 @@ class opndcoll_rfu_t {  // operand collector based register file unit
           m_sub_core_model ? cusPerSched - (m_last_cu % cusPerSched) : 1;
       for (unsigned n = 0; n < m_num_collectors; n++) {
         unsigned c = (m_last_cu + n + rr_increment) % m_num_collectors;
+
+        // CU[cand:2 = (m_last_cu:0 + loop_id:0 + rr_increment:2) mod num_collectors:8]
+        // CU[cand:4 = (m_last_cu:2 + loop_id:0 + rr_increment:2) mod num_collectors:8]
+        // CU[cand:0 = (m_last_cu:6 + loop_id:0 + rr_increment:2) mod num_collectors:8]
+        // CU[cand:4 = (m_last_cu:3 + loop_id:0 + rr_increment:1) mod num_collectors:8]
+        // CU[cand:0 = (m_last_cu:7 + loop_id:0 + rr_increment:1) mod num_collectors:8]
+        if (DTRACE(DISP_OPC)) {
+          fprintf(Trace::out, "CU"
+            "[cand:%u = (m_last_cu:%u + loop_id:%u + rr_increment:%u) "
+            "mod num_collectors:%u]\n",
+            c, m_last_cu, n, rr_increment, m_num_collectors
+          );
+        }    
         if ((*m_collector_units)[c].ready()) {
+          if (DTRACE(DISP_OPC)) {
+            fprintf(Trace::out, "Dispatched CU"
+              "[rdy:%u = (m_last_cu:%u + loop_id:%u + rr_increment:%u) "
+              "mod num_collectors:%u]. Update m_last_cu = rdy:%u\n",
+              c, m_last_cu, n, rr_increment, m_num_collectors, c
+            );
+          }          
           m_last_cu = c;
           return &((*m_collector_units)[c]);
+        } else {
+          if (DTRACE(DISP_OPC)) {
+            fprintf(Trace::out, "not ready CU"
+              "[%u = (m_last_cu:%u + loop_id:%u + rr_increment:%u) "
+              "mod num_collectors:%u]\n",
+              c, m_last_cu, n, rr_increment, m_num_collectors
+            );
+          } 
         }
       }
       return NULL;
@@ -1083,9 +1115,10 @@ class opndcoll_rfu_t {  // operand collector based register file unit
   // warp_inst_t **m_alu_port;
 
   std::vector<input_port_t> m_in_ports;
-  typedef std::map<unsigned /* collector set */,
-                   std::vector<collector_unit_t> /*collector sets*/>
-      cu_sets_t;
+  typedef std::map<
+    unsigned /* collector set */, 
+    std::vector<collector_unit_t> /*collector sets*/> cu_sets_t;
+
   cu_sets_t m_cus;
   std::vector<dispatch_unit_t> m_dispatch_units;
 
@@ -1871,13 +1904,13 @@ struct shader_core_stats_pod {
   unsigned *single_issue_nums;
   unsigned *dual_issue_nums;
   unsigned **issued_warp_insts;
-  unsigned *issue_fails_due_to_mem_resource;
-  unsigned *issue_fails_due_to_int_pipe_inavailable;
-  unsigned *issue_fails_due_to_sp_pipe_inavailable;
-  unsigned *issue_fails_due_to_dp_pipe_inavailable;
-  unsigned *issue_fails_due_to_sfu_pipe_inavailable;
-  unsigned *issue_fails_due_to_tensorcore_pipe_inavailable;
-  unsigned *issue_fails_due_to_spec_pipe_inavailable;
+  unsigned **issue_fails_due_to_mem_resource;
+  unsigned **issue_fails_due_to_int_pipe_inavailable;
+  unsigned **issue_fails_due_to_sp_pipe_inavailable;
+  unsigned **issue_fails_due_to_dp_pipe_inavailable;
+  unsigned **issue_fails_due_to_sfu_pipe_inavailable;
+  unsigned **issue_fails_due_to_tensorcore_pipe_inavailable;
+  unsigned **issue_fails_due_to_spec_pipe_inavailable;
   unsigned *ibuf_insts;
   unsigned *ibuf_valid_insts;
 
@@ -2015,19 +2048,23 @@ class shader_core_stats : public shader_core_stats_pod {
         (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
 
     issued_warp_insts = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
+    issue_fails_due_to_mem_resource                = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
+    issue_fails_due_to_int_pipe_inavailable        = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
+    issue_fails_due_to_sp_pipe_inavailable         = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
+    issue_fails_due_to_dp_pipe_inavailable         = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
+    issue_fails_due_to_sfu_pipe_inavailable        = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));    
+    issue_fails_due_to_spec_pipe_inavailable       = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
+    issue_fails_due_to_tensorcore_pipe_inavailable = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));    
     for (unsigned i = 0; i < config->n_simt_cores_per_cluster; i++) {
-      issued_warp_insts[i] = (unsigned *)calloc(
-        config->gpgpu_num_sched_per_core, sizeof(unsigned)
-      );
+      issued_warp_insts[i] = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+      issue_fails_due_to_mem_resource[i]                = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+      issue_fails_due_to_int_pipe_inavailable[i]        = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+      issue_fails_due_to_sp_pipe_inavailable[i]         = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+      issue_fails_due_to_dp_pipe_inavailable[i]         = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+      issue_fails_due_to_sfu_pipe_inavailable[i]        = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+      issue_fails_due_to_spec_pipe_inavailable[i]       = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+      issue_fails_due_to_tensorcore_pipe_inavailable[i] = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
     }
-
-    issue_fails_due_to_mem_resource          = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
-    issue_fails_due_to_int_pipe_inavailable  = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
-    issue_fails_due_to_sp_pipe_inavailable   = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
-    issue_fails_due_to_dp_pipe_inavailable   = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
-    issue_fails_due_to_sfu_pipe_inavailable  = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
-    issue_fails_due_to_tensorcore_pipe_inavailable = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
-    issue_fails_due_to_spec_pipe_inavailable = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
 
     ibuf_insts        = (unsigned *)calloc(config->max_warps_per_shader, sizeof(unsigned));
     ibuf_valid_insts  = (unsigned *)calloc(config->max_warps_per_shader, sizeof(unsigned));
