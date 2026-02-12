@@ -141,18 +141,16 @@ class shd_warp_t {
     }
     m_ldgdepbar_buf.clear();
   }
-  void init(address_type start_pc, unsigned cta_id, unsigned wid,
+  void init(unsigned long long time, address_type start_pc, unsigned cta_id, unsigned wid,
             const std::bitset<MAX_WARP_SIZE> &active, unsigned dynamic_warp_id,
             unsigned long long streamID) {
+    m_time = time;
     m_streamID = streamID;
     m_cta_id = cta_id;
     m_warp_id = wid; // start_warp <= m_warp_id < end_warp (m_warp_id may be larger than warp_size)
-    if (DTRACE(SIMT_STACK)) {
-      // fprintf(Trace::out, "%llu WARP[%u]->init m_warp_id = wid = %u\n", 
-      //   m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle,
-      //   wid, m_warp_id);
-      fprintf(Trace::out, "WARP[%u]->init m_warp_id = wid = %u\n", 
-        wid, m_warp_id);      
+    if (DTRACE(SIMT_STACK) || DTRACE(WARP_ID)) {
+      fprintf(Trace::out, "%llu WARP[%u]->init m_warp_id = wid = %u\n", 
+        m_time, wid, m_warp_id);    
     }
     m_dynamic_warp_id = dynamic_warp_id;
     m_next_pc = start_pc;
@@ -289,10 +287,14 @@ class shd_warp_t {
   class shader_core_ctx *get_shader() {
     return m_shader;
   }
+  unsigned long long get_time() {
+    return m_time;
+  }
 
  private:
   static const unsigned IBUFFER_SIZE = 2;
   class shader_core_ctx *m_shader;
+  unsigned long long m_time;
   unsigned long long m_streamID;
   unsigned m_cta_id;
   unsigned m_warp_id;
@@ -324,7 +326,7 @@ class shd_warp_t {
   bool m_done_exit;  // true once thread exit has been registered for threads in
                      // this warp
 
-  unsigned long long m_last_fetch;
+  unsigned long long m_last_fetch;  
 
   unsigned m_stores_outstanding;  // number of store requests sent but not yet
                                   // acknowledged
@@ -1004,7 +1006,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     void init(unsigned n, unsigned num_banks, const core_config *config,
               opndcoll_rfu_t *rfu, bool m_sub_core_model, unsigned reg_id,
               unsigned num_banks_per_sched);
-    bool allocate(register_set *pipeline_reg, register_set *output_reg);
+    bool allocate(unsigned cu_id, register_set *pipeline_reg, register_set *output_reg);
 
     void collect_operand(unsigned op) { m_not_ready.reset(op); }
     unsigned get_num_operands() const { return m_warp->get_num_operands(); }
@@ -1177,13 +1179,18 @@ struct insn_latency_info {
 struct ifetch_buffer_t {
   ifetch_buffer_t() { m_valid = false; }
 
-  ifetch_buffer_t(address_type pc, unsigned nbytes, unsigned warp_id) {
+  ifetch_buffer_t(unsigned long long time, address_type pc, unsigned nbytes, unsigned warp_id) {
+    m_time = time;
     m_valid = true;
     m_pc = pc;
     m_nbytes = nbytes;
     m_warp_id = warp_id;
+    if (DTRACE(WARP_ID)) { // time is ok
+      fprintf(Trace::out, "%llu Init IBUF, m_warp_id = %u\n", m_time, m_warp_id);
+    }
   }
 
+  unsigned long long m_time;
   bool m_valid;
   address_type m_pc;
   unsigned m_nbytes;
@@ -1825,6 +1832,7 @@ struct shader_core_stats_pod {
       shader_core_stats_pod_start[0];  // DO NOT MOVE FROM THE TOP - spaceless
                                        // pointer to the start of this structure
   unsigned long long *shader_cycles;
+  unsigned *m_unique_cachelines;
   unsigned *m_raw_conflicts;
   unsigned *m_rd_reg_reqs;
   unsigned *m_wr_reg_bank_conflicts;
@@ -1904,6 +1912,7 @@ struct shader_core_stats_pod {
   unsigned *single_issue_nums;
   unsigned *dual_issue_nums;
   unsigned **issued_warp_insts;
+  unsigned ***warp_interfere;
   unsigned **issue_fails_due_to_mem_resource;
   unsigned **issue_fails_due_to_int_pipe_inavailable;
   unsigned **issue_fails_due_to_sp_pipe_inavailable;
@@ -1938,13 +1947,14 @@ struct shader_core_stats_pod {
 
 class shader_core_stats : public shader_core_stats_pod {
  public:
+  friend class data_cache;
   shader_core_stats(const shader_core_config *config) {
     m_config = config;
     shader_core_stats_pod *pod = reinterpret_cast<shader_core_stats_pod *>(
         this->shader_core_stats_pod_start);
     memset(pod, 0, sizeof(shader_core_stats_pod));
-    shader_cycles = (unsigned long long *)calloc(config->num_shader(),
-                                                 sizeof(unsigned long long));
+    shader_cycles = (unsigned long long *)calloc(config->num_shader(), sizeof(unsigned long long));
+    m_unique_cachelines = (unsigned*)calloc(config->num_shader(), sizeof(unsigned));
 
     m_raw_conflicts  = (unsigned *)calloc(m_config->gpgpu_num_reg_banks, sizeof(unsigned));
     m_rd_reg_reqs = (unsigned *)calloc(m_config->gpgpu_num_reg_banks, sizeof(unsigned));
@@ -2047,7 +2057,9 @@ class shader_core_stats : public shader_core_stats_pod {
     dual_issue_nums =
         (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
 
-    issued_warp_insts = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
+    issued_warp_insts        = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
+    warp_interfere = (unsigned ***)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned **));
+
     issue_fails_due_to_mem_resource                = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
     issue_fails_due_to_int_pipe_inavailable        = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
     issue_fails_due_to_sp_pipe_inavailable         = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
@@ -2055,15 +2067,20 @@ class shader_core_stats : public shader_core_stats_pod {
     issue_fails_due_to_sfu_pipe_inavailable        = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));    
     issue_fails_due_to_spec_pipe_inavailable       = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
     issue_fails_due_to_tensorcore_pipe_inavailable = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));    
-    for (unsigned i = 0; i < config->n_simt_cores_per_cluster; i++) {
-      issued_warp_insts[i] = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
-      issue_fails_due_to_mem_resource[i]                = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
-      issue_fails_due_to_int_pipe_inavailable[i]        = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
-      issue_fails_due_to_sp_pipe_inavailable[i]         = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
-      issue_fails_due_to_dp_pipe_inavailable[i]         = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
-      issue_fails_due_to_sfu_pipe_inavailable[i]        = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
-      issue_fails_due_to_spec_pipe_inavailable[i]       = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
-      issue_fails_due_to_tensorcore_pipe_inavailable[i] = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+    for (unsigned core = 0; core < config->n_simt_cores_per_cluster; core++) {
+      issued_warp_insts[core] = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));      
+      issue_fails_due_to_mem_resource[core]                = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+      issue_fails_due_to_int_pipe_inavailable[core]        = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+      issue_fails_due_to_sp_pipe_inavailable[core]         = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+      issue_fails_due_to_dp_pipe_inavailable[core]         = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+      issue_fails_due_to_sfu_pipe_inavailable[core]        = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+      issue_fails_due_to_spec_pipe_inavailable[core]       = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+      issue_fails_due_to_tensorcore_pipe_inavailable[core] = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+
+      warp_interfere[core] = (unsigned **)malloc(config->max_warps_per_shader * sizeof(unsigned *));
+      for (unsigned interfere = 0; interfere < config->max_warps_per_shader; interfere++) {
+        warp_interfere[core][interfere] = (unsigned *)calloc(config->max_warps_per_shader, sizeof(unsigned));
+      }
     }
 
     ibuf_insts        = (unsigned *)calloc(config->max_warps_per_shader, sizeof(unsigned));
@@ -2211,6 +2228,7 @@ class shader_core_mem_fetch_allocator : public mem_fetch_allocator {
 
 class shader_core_ctx : public core_t {
  public:
+  friend class opndcoll_rfu_t;
   // creator:
   shader_core_ctx(class gpgpu_sim *gpu, class simt_core_cluster *cluster,
                   unsigned shader_id, unsigned tpc_id,
@@ -2220,6 +2238,9 @@ class shader_core_ctx : public core_t {
   // used by simt_core_cluster:
   // modifiers
   void cycle();
+  unsigned long long get_time() {
+    return m_time; // m_time is assigned during ::shader_core_ctx(...)
+  }
   void reinit(unsigned start_thread, unsigned end_thread,
               bool reset_not_completed);
   void issue_block2core(class kernel_info_t &kernel);
@@ -2679,6 +2700,7 @@ class shader_core_ctx : public core_t {
   std::unordered_map<unsigned long long /* pc */, unsigned long long /* cycle */> m_last_inst_sched_cycle;
 
   // general information
+  unsigned long long m_time;
   unsigned m_sid;  // shader id
   unsigned m_tpc;  // texture processor cluster id (aka, node id when using
                    // interconnect concentration)

@@ -253,6 +253,8 @@ struct cache_block_t {
   virtual unsigned long long get_last_access_time() = 0;
   virtual void set_last_fill_time(unsigned long long time) = 0;
   virtual unsigned long long get_last_fill_time() = 0;
+  virtual void set_last_warp_id(unsigned warp_id) = 0;
+  virtual unsigned get_last_warp_id() = 0;
 
   virtual void update_recency_info(unsigned long long time) = 0;
   virtual void inc_total_hits() = 0;
@@ -385,6 +387,12 @@ struct line_cache_block : public cache_block_t {
   virtual unsigned long long get_last_fill_time() {
     return m_last_fill_time;
   }
+  virtual void set_last_warp_id(unsigned warp_id) {
+    m_last_warp_id = warp_id;
+  }
+  virtual unsigned get_last_warp_id() {
+    return m_last_warp_id;
+  }
 
   virtual void inc_total_hits() {
     m_total_hits++;
@@ -465,6 +473,7 @@ struct line_cache_block : public cache_block_t {
   unsigned long long m_alloc_time;
   unsigned long long m_last_access_time;
   unsigned long long m_last_fill_time;
+  unsigned m_last_warp_id;
 
   unsigned m_total_evictions;
   unsigned m_total_accesses;  
@@ -669,6 +678,13 @@ struct sector_cache_block : public cache_block_t {
     return m_line_last_fill_time;
   }
 
+  virtual void set_last_warp_id(unsigned warp_id) {
+    m_last_warp_id = warp_id;
+  }
+  virtual unsigned get_last_warp_id() {
+    return m_last_warp_id;
+  }
+
   virtual void inc_total_hits() {
     m_total_hits++;
   }
@@ -786,6 +802,7 @@ struct sector_cache_block : public cache_block_t {
   unsigned long long m_line_alloc_time;
   unsigned long long m_line_last_access_time;
   unsigned long long m_line_last_fill_time;
+  unsigned m_last_warp_id;
   unsigned m_total_evictions;
   unsigned m_total_accesses;
   unsigned long long m_last_evict_time;
@@ -833,7 +850,7 @@ enum cache_type { NORMAL = 0, SECTOR };
 
 class cache_config {
  public:
-  cache_config() {
+  cache_config() {    
     m_valid = false;
     m_disabled = false;
     m_config_string = NULL;  // set by option parser
@@ -1284,6 +1301,7 @@ class cache_config {
   const char* m_cache_name;
   unsigned m_sector_size; // Globallly replace the hard-coded "SECTOR_SIZE"
   unsigned m_sub_partition;
+  unsigned m_num_cores; // passed from m_shader_config->n_simt_cores_per_cluster
   bool m_valid;
   bool m_disabled;
   unsigned m_line_sz;
@@ -1358,6 +1376,7 @@ class l1d_cache_config : public cache_config {
     cache_config::init(
       config, mshr_config, rrpv_config, rep_enhance_config, status, cache_name);
   }
+  unsigned m_shader_cores;
   unsigned l1_latency;
   unsigned l1_banks;
   unsigned l1_banks_log2;
@@ -1404,6 +1423,17 @@ enum LINE_RECENCY_ITEMS {
   UNFOLDED_IDX
 };
 
+struct WARP_INTERFERE_RECORD {
+  unsigned last_warp_id;
+  unsigned curr_warp_id;
+  WARP_INTERFERE_RECORD(
+    unsigned last_warp_id_,
+    unsigned curr_warp_id_
+  ) : 
+  last_warp_id(last_warp_id_),
+  curr_warp_id(curr_warp_id_) {}
+};
+
 struct LINE_RECENCY {
   unsigned long long last_access_time;
   unsigned long long last_fill_time;
@@ -1415,6 +1445,7 @@ struct LINE_RECENCY {
   unsigned total_accesses;
   unsigned long long last_evict_interval;
   unsigned long long avg_evict_interval;
+  unsigned warp_id;
   LINE_RECENCY(
     unsigned long long last_access_time_,
     unsigned long long last_fill_time_,
@@ -1425,7 +1456,8 @@ struct LINE_RECENCY {
     unsigned total_evictions_,
     unsigned total_accesses_,
     unsigned long long last_evict_interval_,
-    unsigned long long avg_evict_interval_
+    unsigned long long avg_evict_interval_,
+    unsigned warp_id_
   ) : 
   last_access_time(last_access_time_),
   last_fill_time(last_fill_time_),
@@ -1436,7 +1468,8 @@ struct LINE_RECENCY {
   total_evictions(total_evictions_),
   total_accesses(total_accesses_),
   last_evict_interval(last_evict_interval_),
-  avg_evict_interval(avg_evict_interval_) {}
+  avg_evict_interval(avg_evict_interval_),
+  warp_id(warp_id_) {}
 };
 
 class tag_array {
@@ -1445,6 +1478,10 @@ class tag_array {
   // Use this constructor
   tag_array(cache_config &config, int core_id, int type_id);
   ~tag_array();
+
+  std::vector<std::set<new_addr_type>> get_unique_lines() {
+    return m_unique_lines;
+  }
 
   static bool cmpForSmallerTimestamp(
     const std::pair<unsigned, LINE_RECENCY>& a, 
@@ -1475,7 +1512,9 @@ class tag_array {
 
   void lru_pick(
     cache_block_t* line, unsigned long long& valid_timestamp, 
-    unsigned& valid_line, bool& lru_has_picked, const unsigned& index);
+    unsigned& valid_line, const unsigned& index, 
+    unsigned& warp_id,
+    bool& lru_has_picked);
   void fill_time_pick(
     cache_block_t* line, unsigned long long& valid_timestamp, 
     unsigned& valid_line, const unsigned& index);
@@ -1487,7 +1526,8 @@ class tag_array {
     unsigned& valid_line,
     unsigned long long& smallest_access_time,
     unsigned& lru_picked_total_hits,
-    unsigned long long& lru_picked_avg_evict_interval
+    unsigned long long& lru_picked_avg_evict_interval,
+    unsigned& warp_id
   );
   void pick_modified_by_total_hits_ascend(
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
@@ -1500,19 +1540,24 @@ class tag_array {
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
     unsigned& valid_line,
-    const unsigned long long& smallest_last_access_time);
+    const unsigned long long& smallest_last_access_time,
+    unsigned& warp_id
+  );
 
   void fill_time_awared_modification_for_srrip(
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
-    unsigned& valid_line);
+    unsigned& valid_line,
+    unsigned& warp_id
+  );
 
   void mshr_awared_modification_for_srrip(
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
-    unsigned& valid_line
+    unsigned& valid_line,
+    unsigned& warp_id
   );  
 
   // addr is block_addr
@@ -1520,12 +1565,16 @@ class tag_array {
                                   new_addr_type addr, unsigned &idx,
                                   mem_fetch *mf, bool is_write,
                                   unsigned long long time,
+                                  bool& got_warp_interfere_info, 
+                                  WARP_INTERFERE_RECORD& warp_interfere_record,
                                   bool probe_mode = false);
   enum cache_request_status probe(const std::string& caller,
                                   new_addr_type addr, unsigned &idx,
                                   mem_access_sector_mask_t mask, bool is_write,
                                   unsigned long long time,
-                                  bool probe_mode = false,
+                                  bool probe_mode,
+                                  bool& got_warp_interfere_info, 
+                                  WARP_INTERFERE_RECORD& warp_interfere_record,
                                   mem_fetch *mf = NULL);
   enum cache_request_status access(new_addr_type addr, unsigned long long time,
                                    unsigned &idx, mem_fetch *mf);
@@ -1602,6 +1651,8 @@ class tag_array {
 
   typedef tr1_hash_map<new_addr_type, unsigned> line_table;
   line_table pending_lines;
+  line_table lines_locality;
+  std::vector<std::set<new_addr_type>> m_unique_lines;
 };
 
 class mshr_table {
@@ -2476,7 +2527,9 @@ class data_cache : public baseline_cache {
 /// (the policy used in fermi according to the CUDA manual)
 class l1_cache : public data_cache {
  public:
-  l1_cache(const char *name, cache_config &config, int core_id, int type_id,
+  l1_cache(const char *name, cache_config &config, 
+          int core_id, 
+          int type_id,
            mem_fetch_interface *memport, mem_fetch_allocator *mfcreator,
            enum mem_fetch_status status, class gpgpu_sim *gpu,
            enum cache_gpu_level level)

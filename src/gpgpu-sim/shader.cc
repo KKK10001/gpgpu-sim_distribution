@@ -490,11 +490,13 @@ shader_core_ctx::shader_core_ctx(class gpgpu_sim *gpu,
                                  const shader_core_config *config,
                                  const memory_config *mem_config,
                                  shader_core_stats *stats)
-    : core_t(gpu, NULL, config->warp_size, config->n_thread_per_shader),
-      m_barriers(this, config->max_warps_per_shader, config->max_cta_per_core,
-                 config->max_barriers_per_cta, config->warp_size),
-      m_active_warps(0),
-      m_dynamic_warp_id(0) {
+  : core_t(gpu, NULL, config->warp_size, config->n_thread_per_shader),
+    m_barriers(this, config->max_warps_per_shader, config->max_cta_per_core,
+                config->max_barriers_per_cta, config->warp_size),
+    m_active_warps(0),
+    m_dynamic_warp_id(0) {
+
+  m_time = gpu->gpu_sim_cycle + gpu->gpu_tot_sim_cycle; // 2/11
   m_cluster = cluster;
   m_config = config;
   m_memory_config = mem_config;
@@ -597,7 +599,13 @@ void shader_core_ctx::init_warps(unsigned cta_id, unsigned start_thread,
         start_pc = pc;
       }
 
-      m_warp[i]->init(start_pc, cta_id, i, active_threads, m_dynamic_warp_id,
+      m_time = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle; // 2/11
+      if (DTRACE(SHADER_CYCLES)) {
+        fprintf(Trace::out, "%llu shader_core_ctx::init_warps update m_time = %llu\n",
+          get_time(), m_time);
+      }
+
+      m_warp[i]->init(m_time, start_pc, cta_id, i, active_threads, m_dynamic_warp_id,
                       kernel.get_streamID());
       ++m_dynamic_warp_id;
       m_not_completed += n_active;
@@ -1015,7 +1023,8 @@ void shader_core_ctx::fetch() {
       mem_fetch *mf = m_L1I->next_access(cache_type, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
       m_warp[mf->get_wid()]->clear_imiss_pending();
       m_inst_fetch_buffer =
-          ifetch_buffer_t(m_warp[mf->get_wid()]->get_pc(),
+          ifetch_buffer_t(m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle,
+                          m_warp[mf->get_wid()]->get_pc(),
                           mf->get_access_size(), mf->get_wid());
       assert(m_warp[mf->get_wid()]->get_pc() ==
              (mf->get_addr() -
@@ -1115,11 +1124,12 @@ void shader_core_ctx::fetch() {
             m_warp[warp_id]->set_last_fetch(m_gpu->gpu_sim_cycle);
           } else if (status == HIT) {
             m_last_warp_fetched = warp_id;
+            unsigned long long time = m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
             if (DTRACE(IBUF)) {
               fprintf(Trace::out, "%llu Insert warp_id:%u into IBUF\n", 
-                m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, warp_id);
+                time, warp_id);
             }
-            m_inst_fetch_buffer = ifetch_buffer_t(pc, nbytes, warp_id);
+            m_inst_fetch_buffer = ifetch_buffer_t(time, pc, nbytes, warp_id);
             m_warp[warp_id]->set_last_fetch(m_gpu->gpu_sim_cycle);
             delete mf;
           } else {
@@ -1499,8 +1509,6 @@ void scheduler_unit::order_by_priority(
 void scheduler_unit::cycle() {
 
   SCHED_DPRINTF("scheduler_unit::cycle()\n");
-
-  bool has_issued_this_cycle = false;
 
   // there was one warp with a valid instruction to issue (didn't
   // require flush due to control hazard)
@@ -2086,8 +2094,12 @@ void swl_scheduler::order_warps() {
 }
 
 void shader_core_ctx::read_operands() {
-  for (unsigned int i = 0; i < m_config->reg_file_port_throughput; ++i)
+  // if (get_time()) {
+  //   printf("Hit valid time:%llu > 0\n", get_time());
+  // }
+  for (unsigned int i = 0; i < m_config->reg_file_port_throughput; ++i) {    
     m_operand_collector.step();
+  }
 }
 
 address_type coalesced_segment(address_type addr,
@@ -3245,6 +3257,7 @@ ldst_unit::ldst_unit(mem_fetch_interface *icnt,
   if (!m_config->m_L1D_config.disabled()) {
     char L1D_name[STRSIZE];
     snprintf(L1D_name, STRSIZE, "L1D_%03d", m_sid);
+    m_config->m_L1D_config.m_shader_cores = config->n_simt_cores_per_cluster;
     m_L1D = new l1_cache(L1D_name, m_config->m_L1D_config, m_sid,
                          get_shader_normal_cache_id(), m_icnt, m_mf_allocator,
                          IN_L1D_MISS_QUEUE, core->get_gpu(), L1_GPU_CACHE);
@@ -4394,9 +4407,11 @@ void shader_core_ctx::cycle() {
   }
 
   m_stats->shader_cycles[m_sid]++;
+  m_time = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+  assert(get_time() == m_time);
   if (DTRACE(SHADER_CYCLES)) {
-    // m_sid <= m_shader_config->n_simt_cores_per_cluster (4)
-    fprintf(Trace::out, "m_stats->shader_cycles[sid:%u] = %llu\n", 
+    fprintf(Trace::out, "%llu m_stats->shader_cycles[sid:%u] = %llu\n",
+      get_time(),
       m_sid, m_stats->shader_cycles[m_sid]);
   }
 
@@ -4980,24 +4995,26 @@ unsigned register_bank(int regnum, int wid, unsigned num_banks,
   int bank = regnum;
   bank += wid;
   if (sub_core_model) {
-    unsigned bank_offset    = (bank % banks_per_sched);
-    unsigned warp_sched_loc = (sched_id * banks_per_sched); 
-    unsigned bank_num = bank_offset + warp_sched_loc;
+    unsigned bank_offset   = (bank % banks_per_sched);
+    unsigned uniq_sched_id = (sched_id * banks_per_sched); 
+    unsigned bank_num = bank_offset + uniq_sched_id;
 
     assert(bank_num < num_banks);
     if (DTRACE(REG_BANK)) {
-      fprintf(Trace::out, "orig bank:%u = regnum:%u + wid:%u. bank_num:%u = "
+      fprintf(Trace::out, "orig bank:%u = regnum:%u + wid:%u. "
+        "Final reg_bank:%u = "
         "bank_offset:%u (bank:%u mod banks_per_sched:%u) + "
-        "warp_sched_loc:%u (sched_id:%u * banks_per_sched:%u)\n", 
+        "uniq_sched_id:%u (sched_id:%u * banks_per_sched:%u)\n", 
         bank, regnum, wid,
         bank_num, 
         bank_offset, bank, banks_per_sched,
-        warp_sched_loc, sched_id, banks_per_sched
+        uniq_sched_id, sched_id, banks_per_sched
       );
     }
     return bank_num;
-  } else
+  } else {
     return bank % num_banks;
+  }    
 }
 
 bool opndcoll_rfu_t::writeback(warp_inst_t &inst) {
@@ -5109,7 +5126,7 @@ void opndcoll_rfu_t::allocate_cu(unsigned port_num) {
         for (unsigned k = cuLowerBound; k < cuUpperBound; k++) {
           if (cu_set[k].is_free()) {
             collector_unit_t *cu = &cu_set[k];
-            allocated = cu->allocate(inp.m_in[i], inp.m_out[i]);
+            allocated = cu->allocate(k, inp.m_in[i], inp.m_out[i]);
             m_arbiter.add_read_requests(cu);
             break;
           }
@@ -5136,6 +5153,10 @@ void opndcoll_rfu_t::allocate_reads() {
     const op_t &rr = *r;
     unsigned reg = rr.get_reg();
     unsigned wid = rr.get_wid();
+    if (DTRACE(WARP_ID)) {
+      fprintf(Trace::out, "%llu wid = rr.get_wid = %u\n",
+        m_shader->get_time(), wid);
+    }
     unsigned bank = register_bank(reg, wid, m_num_banks, sub_core_model,
                                   m_num_banks_per_sched, rr.get_sid());
     m_arbiter.allocate_for_read(bank, rr);
@@ -5210,15 +5231,22 @@ void opndcoll_rfu_t::collector_unit_t::init(unsigned n, unsigned num_banks,
   m_num_banks_per_sched = banks_per_sched;
 }
 
-bool opndcoll_rfu_t::collector_unit_t::allocate(register_set *pipeline_reg_set,
-                                                register_set *output_reg_set) {
+bool opndcoll_rfu_t::collector_unit_t::allocate(
+  unsigned cu_id, register_set *pipeline_reg_set, register_set *output_reg_set) {
   assert(m_free);
   assert(m_not_ready.none());
+  [[maybe_unused]] unsigned long long time = 0;
   m_free = false;
   m_output_register = output_reg_set;
   warp_inst_t **pipeline_reg = pipeline_reg_set->get_ready();
   if ((pipeline_reg) and !((*pipeline_reg)->empty())) {
     m_warp_id = (*pipeline_reg)->warp_id();
+    if (DTRACE(WARP_ID)) { // time is ok
+      fprintf(Trace::out, "%llu OPC::allocate "
+        "m_warp_id = (*pipeline_reg)->warp_id() = %u\n", 
+        m_rfu->m_shader->get_time(), m_warp_id);
+    }
+
     std::vector<int> prev_regs;  // remove duplicate regs within same instr
     for (unsigned op = 0; op < MAX_REG_OPERANDS; op++) {
       // this math needs to match that used in function_info::ptx_decode_inst
@@ -5236,9 +5264,10 @@ bool opndcoll_rfu_t::collector_unit_t::allocate(register_set *pipeline_reg_set,
           m_num_banks_per_sched, (*pipeline_reg)->get_schd_id());
 
         if (DTRACE(OPC_ALLOC)) {
-          fprintf(Trace::out, "Allocated src_reg:%u for op:%u on "
+          fprintf(Trace::out, "%llu CU[%u] allocated src_reg:%u for op:%u on "
             "warp_sched:%u reg_bank:%u\n",
-            reg_num, op, (*pipeline_reg)->get_schd_id(), m_src_op[op].get_bank());
+            time, cu_id, reg_num, op, 
+            (*pipeline_reg)->get_schd_id(), m_src_op[op].get_bank());
         }
 
         m_not_ready.set(op);

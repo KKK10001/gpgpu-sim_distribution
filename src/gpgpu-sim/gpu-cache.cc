@@ -380,6 +380,10 @@ void tag_array::update_cache_parameters(cache_config &config) {
 
 tag_array::tag_array(cache_config &config, int core_id, int type_id)
     : m_config(config) {
+      
+  // fprintf("m_config.m_shader_cores = %u\n", m_config.m_shader_cores);
+  // m_unique_lines.resize(config.m_L1D_config.m_shader_cores);
+  m_unique_lines.resize(4); // replace m_shader_core later than
   unsigned cache_lines_num = config.get_max_num_lines();
   m_lines = new cache_block_t *[cache_lines_num];
   if (config.m_cache_type == NORMAL) {
@@ -439,14 +443,21 @@ void tag_array::remove_pending_line(mem_fetch *mf) {
   }
 }
 
-enum cache_request_status tag_array::probe(const std::string& caller,
-                                           new_addr_type addr, unsigned &idx,
-                                           mem_fetch *mf, bool is_write,
-                                           unsigned long long time,
-                                           bool probe_mode) {
+enum cache_request_status tag_array::probe(
+  const std::string& caller,
+  new_addr_type addr, unsigned &idx,
+  mem_fetch *mf, bool is_write,
+  unsigned long long time,
+  bool& got_warp_interfere_info, 
+  WARP_INTERFERE_RECORD& warp_interfere_record,
+  bool probe_mode) {
+
   mem_access_sector_mask_t mask = mf->get_access_sector_mask();
   std::string final_caller = caller + "-> tag_array::probe";
-  return probe(final_caller.c_str(), addr, idx, mask, is_write, time, probe_mode, mf);
+
+  return probe(
+    final_caller.c_str(), addr, idx, mask, is_write, time, 
+    probe_mode, got_warp_interfere_info, warp_interfere_record, mf);
 }
 
 void tag_array::gather_rep_candidates(
@@ -465,7 +476,8 @@ void tag_array::gather_rep_candidates(
     line->get_total_evictions(), 
     line->get_total_accesses(),
     line->get_evict_interval(), 
-    line->get_avg_evict_interval()
+    line->get_avg_evict_interval(),
+    line->get_last_warp_id()
   );
   if (!line->was_recorded_in_mshr()) {
     hybrid_rep_candidates_no_record_in_mshr.push_back(std::pair<unsigned, LINE_RECENCY>(index, recency));
@@ -477,11 +489,13 @@ void tag_array::gather_rep_candidates(
 
 void tag_array::lru_pick(
   cache_block_t* line, unsigned long long& valid_timestamp, 
-  unsigned& valid_line, bool& lru_has_picked, const unsigned& index) {
+  unsigned& valid_line, const unsigned& index, unsigned& warp_id, 
+  bool& lru_has_picked) {
 
   if (line->get_last_access_time() < valid_timestamp) {
     valid_timestamp = line->get_last_access_time();
     valid_line      = index;
+    warp_id         = line->get_last_warp_id();
     lru_has_picked  = true;
   }
 }
@@ -502,7 +516,8 @@ void tag_array::pick_with_lru(
   unsigned& valid_line,
   unsigned long long& smallest_access_time,
   unsigned& lru_picked_total_hits,
-  unsigned long long& lru_picked_avg_evict_interval) {
+  unsigned long long& lru_picked_avg_evict_interval,
+  unsigned& warp_id) {
 
   if (m_config.m_mshr_corr_repl == 'T') {
     std::vector<std::pair<unsigned, LINE_RECENCY>> hybrid_rep_candidates_in_use;
@@ -517,6 +532,7 @@ void tag_array::pick_with_lru(
     smallest_access_time          = hybrid_rep_candidates_in_use[0].second.last_access_time;
     lru_picked_total_hits         = hybrid_rep_candidates_in_use[0].second.total_hits;
     lru_picked_avg_evict_interval = hybrid_rep_candidates_in_use[0].second.avg_evict_interval;
+    warp_id                       = hybrid_rep_candidates_in_use[0].second.warp_id;
   } else {
     assert(hybrid_rep_candidates.size());
     std::sort(hybrid_rep_candidates.begin(), hybrid_rep_candidates.end(), cmpForSmallerTimestamp);
@@ -524,16 +540,17 @@ void tag_array::pick_with_lru(
     smallest_access_time          = hybrid_rep_candidates[0].second.last_access_time;
     lru_picked_total_hits         = hybrid_rep_candidates[0].second.total_hits;
     lru_picked_avg_evict_interval = hybrid_rep_candidates[0].second.avg_evict_interval;
+    warp_id                       = hybrid_rep_candidates[0].second.warp_id;
 
     if (DTRACE(CHECK_LRU_ARRAY)) {
       if (valid_line != hybrid_rep_candidates[0].first) {
         fprintf(Trace::out, "valid_line:%u != hybrid_rep_candidates[0].first:%u\n",
           valid_line, hybrid_rep_candidates[0].first);
-        for (size_t i = 0; i < hybrid_rep_candidates.size(); i++)
+        for (unsigned i = 0; i < hybrid_rep_candidates.size(); i++)
         {
           fprintf(Trace::out, "hybrid_rep_candidates[%u] = {idx:%u timestamp:%llu}\n", 
             i, hybrid_rep_candidates[i].first, hybrid_rep_candidates[i].second.last_access_time);
-        }      
+        }
       }
     }    
     // srad_v2 with mshr_en_but_no_aware_all_lru.config would appear below:
@@ -583,7 +600,9 @@ void tag_array::fill_time_awared_modification_for_srrip(
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
-  unsigned& valid_line) {
+  unsigned& valid_line,
+  unsigned& warp_id
+  ) {
 
   if (m_config.m_mshr_corr_repl == 'T') {
     std::vector<std::pair<unsigned, LINE_RECENCY>> hybrid_rep_candidates_in_use;
@@ -595,11 +614,13 @@ void tag_array::fill_time_awared_modification_for_srrip(
     std::sort(hybrid_rep_candidates_in_use.begin(), hybrid_rep_candidates_in_use.end(), cmpForSmallerFillTime);
     if (hybrid_rep_candidates_in_use[0].second.rrpv == hybrid_rep_candidates_in_use[0].second.max_rrpv) {
       valid_line = hybrid_rep_candidates_in_use[0].first;
+      warp_id    = hybrid_rep_candidates_in_use[0].second.warp_id;
     }
   } else {
     std::sort(hybrid_rep_candidates.begin(), hybrid_rep_candidates.end(), cmpForSmallerFillTime);
     if (hybrid_rep_candidates[0].second.rrpv == hybrid_rep_candidates[0].second.max_rrpv) {
       valid_line = hybrid_rep_candidates[0].first;
+      warp_id    = hybrid_rep_candidates[0].second.warp_id;
     }
   }
 }
@@ -609,7 +630,8 @@ void tag_array::fill_time_awared_modification_for_lru(
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
   unsigned& valid_line,
-  const unsigned long long& smallest_last_access_time) {
+  const unsigned long long& smallest_last_access_time,
+  unsigned& warp_id) {
 
   if (m_config.m_mshr_corr_repl == 'T') {
     std::vector<std::pair<unsigned, LINE_RECENCY>> hybrid_rep_candidates_in_use;
@@ -634,7 +656,8 @@ void tag_array::mshr_awared_modification_for_srrip(
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
-  unsigned& valid_line) {
+  unsigned& valid_line,
+  unsigned& warp_id) {
   
   if (m_config.m_mshr_corr_repl == 'T') {
     std::vector<std::pair<unsigned, LINE_RECENCY>> hybrid_rep_candidates_in_use;
@@ -647,19 +670,23 @@ void tag_array::mshr_awared_modification_for_srrip(
     {      
       if (hybrid_rep_candidates_in_use[i].second.rrpv == hybrid_rep_candidates_in_use[i].second.max_rrpv) {
         valid_line = hybrid_rep_candidates_in_use[i].first;
+        warp_id    = hybrid_rep_candidates_in_use[i].second.warp_id;
         break;
       }
     }    
   }
 }
 
-enum cache_request_status tag_array::probe(const std::string& caller,
-                                           new_addr_type addr, unsigned &idx,
-                                           mem_access_sector_mask_t mask,
-                                           bool is_write, 
-                                           unsigned long long time,
-                                           bool probe_mode,
-                                           mem_fetch *mf) {
+enum cache_request_status tag_array::probe(
+  const std::string& caller,
+  new_addr_type addr, unsigned &idx,
+  mem_access_sector_mask_t mask,
+  bool is_write, 
+  unsigned long long time,
+  bool probe_mode,
+  bool& got_warp_interfere_info, 
+  WARP_INTERFERE_RECORD& warp_interfere_record,
+  mem_fetch *mf) {
 
   if (DTRACE(TAG_PROBE)) {
     fprintf(Trace::out, "%llu %s called tag_array::probe(3rd in-arg mask) addr:%#llx\n", 
@@ -684,6 +711,8 @@ enum cache_request_status tag_array::probe(const std::string& caller,
     str_cache_name += "_sub[";
     str_cache_name += std::to_string(mf->get_sub_partition());
     str_cache_name += "]";
+  } else if (!strcmp(m_config.get_cache_name(), "L1D") && mf) {
+    // printf("tag probe for L1D");
   }
 
   unsigned invalid_line = (unsigned) - 1;
@@ -699,21 +728,38 @@ enum cache_request_status tag_array::probe(const std::string& caller,
   unsigned lru_picked_line       = (unsigned) - 1;
   unsigned lru_picked_total_hits = (unsigned) - 1;
   unsigned long long lru_picked_avg_evict_interval = (unsigned long long) - 1;
+  unsigned last_warp_id = (unsigned) - 1;
 
   std::vector<std::pair<unsigned /* unfolded index */, LINE_RECENCY>> hybrid_rep_candidates;
   std::vector<std::pair<unsigned /* unfolded index */, LINE_RECENCY>> hybrid_rep_candidates_no_record_in_mshr;
   std::vector<std::pair<unsigned /* unfolded index */, LINE_RECENCY>> hybrid_rep_candidates_recorded_in_mshr;
 
   bool cache_hit = false;
-  bool has_unreserved_line = false;
+  [[maybe_unused]] bool has_unreserved_line = false;
   
   for (unsigned way = 0; way < m_config.m_assoc; way++) {
     unsigned index = set_index * m_config.m_assoc + way;
-    cache_block_t *line = m_lines[index];
+    cache_block_t *line = m_lines[index];    
 
     if (line->m_tag == tag) {
       line->inc_total_hits();
       cache_hit = true;
+      lines_locality[addr]++;
+      // unique_lines.insert(addr);
+      if (mf) {
+        m_unique_lines[mf->get_sid()].insert(addr);
+      }      
+      if (DTRACE(DATA_LOCALITY)) {
+        if (mf) {
+          fprintf(Trace::out, "%llu %s lines_locality: "
+            "{size = %lu, lines_locality[addr:%#llx]++ = %u}. "
+            "m_unique_lines[sid:%u]: {wid:%u size:%lu}\n",
+            time, str_cache_name.c_str(), 
+            lines_locality.size(), addr, lines_locality[addr],
+            mf->get_sid(), mf->get_wid(), m_unique_lines[mf->get_sid()].size());
+        }
+      } // if (DTRACE(DATA_LOCALITY)) {
+
       if (m_config.m_replacement_policy == SRRIP) {
         if (m_config.m_srrip_update_policy == srrip_update_policy_t::HP) {
           line->set_rrpv(0);
@@ -732,10 +778,22 @@ enum cache_request_status tag_array::probe(const std::string& caller,
         idx = index;
         return HIT_RESERVED;
       } else if (line->get_status(mask) == VALID) {
+        if (mf) {
+          if (DTRACE(WARP_CACHE_INTERFERE)) {
+            fprintf(Trace::out, "%llu cache hit on addr:%#llx warp:%u\n",
+              time, addr, mf->get_wid());
+          }
+        }
         idx = index;
         return HIT;
       } else if (line->get_status(mask) == MODIFIED) {
         if ((!is_write && line->is_readable(mask)) || is_write) {
+          if (mf) {
+            if (DTRACE(WARP_CACHE_INTERFERE)) {
+              fprintf(Trace::out, "%llu cache hit on addr:%#llx warp:%u\n",
+                time, addr, mf->get_wid());
+            }
+          }          
           idx = index;
           return HIT;
         } else {
@@ -786,7 +844,10 @@ enum cache_request_status tag_array::probe(const std::string& caller,
               }
             }
           } else if (m_config.m_replacement_policy == LRU) {
-            lru_pick(line, valid_timestamp, valid_line, lru_has_picked, index);
+            lru_pick(line, valid_timestamp, valid_line, index, last_warp_id, lru_has_picked);
+            // bool is_mf_valid = (mf != nullptr) ? true : false;
+            // printf("After lru_pick, valid_line = %u last_warp_id = %u is_mf_valid = %u\n", 
+            //   valid_line, last_warp_id, is_mf_valid);
           } else if (m_config.m_replacement_policy == FIFO) {
             if (line->get_alloc_time() < valid_timestamp) {
               valid_timestamp = line->get_alloc_time();
@@ -823,7 +884,9 @@ enum cache_request_status tag_array::probe(const std::string& caller,
         hybrid_rep_candidates_no_record_in_mshr,
         hybrid_rep_candidates_recorded_in_mshr,
         valid_line, valid_timestamp,
-        lru_picked_total_hits, lru_picked_avg_evict_interval);
+        lru_picked_total_hits, lru_picked_avg_evict_interval,
+        last_warp_id
+      );
 
       if (m_config.m_total_hits_ascend == 'T') {
         pick_modified_by_total_hits_ascend(
@@ -839,7 +902,8 @@ enum cache_request_status tag_array::probe(const std::string& caller,
           hybrid_rep_candidates_no_record_in_mshr,
           hybrid_rep_candidates_recorded_in_mshr,
           valid_line,
-          valid_timestamp
+          valid_timestamp,
+          last_warp_id
         );
       }
     } else if (m_config.m_replacement_policy == SRRIP) {
@@ -848,7 +912,8 @@ enum cache_request_status tag_array::probe(const std::string& caller,
         hybrid_rep_candidates,
         hybrid_rep_candidates_no_record_in_mshr,
         hybrid_rep_candidates_recorded_in_mshr,
-        valid_line        
+        valid_line, 
+        last_warp_id
       );
       if (m_config.m_total_hits_ascend == 'T') {
         pick_modified_by_total_hits_ascend(
@@ -863,7 +928,8 @@ enum cache_request_status tag_array::probe(const std::string& caller,
           hybrid_rep_candidates,
           hybrid_rep_candidates_no_record_in_mshr,
           hybrid_rep_candidates_recorded_in_mshr,
-          valid_line
+          valid_line,
+          last_warp_id
         );
       }
     }    
@@ -883,7 +949,8 @@ enum cache_request_status tag_array::probe(const std::string& caller,
         hybrid_rep_candidates_no_record_in_mshr,
         hybrid_rep_candidates_recorded_in_mshr,
         idx, valid_timestamp,
-        lru_picked_total_hits, lru_picked_avg_evict_interval);
+        lru_picked_total_hits, lru_picked_avg_evict_interval,
+        last_warp_id);
       if (m_config.m_total_hits_ascend == 'T') {
         pick_modified_by_total_hits_ascend(
           hybrid_rep_candidates, 
@@ -898,15 +965,32 @@ enum cache_request_status tag_array::probe(const std::string& caller,
           hybrid_rep_candidates_no_record_in_mshr,
           hybrid_rep_candidates_recorded_in_mshr,
           idx,
-          valid_timestamp
+          valid_timestamp,
+          last_warp_id
         );
       }
       if (DTRACE(LRU_SAVED_SRRIP_PICKING)) {
         fprintf(Trace::out, "%llu %s LRU saved SRRIP picking idx:%x\n",
           time, m_config.m_cache_name, idx);
-      }      
+      } 
     }
   } // else if (valid_line == (unsigned) - 1)
+
+  bool has_warp_interfere = 
+    !strcmp(m_config.get_cache_name(), "L1D") && mf && 
+    idx != ((unsigned) - 1) && 
+    valid_line != ((unsigned) - 1);
+  if (has_warp_interfere) {
+    got_warp_interfere_info = true;
+    warp_interfere_record.last_warp_id = last_warp_id;
+    warp_interfere_record.curr_warp_id = mf->get_wid();
+  }
+  if (DTRACE(WARP_INTERFERE)) {
+    if (has_warp_interfere) {
+      fprintf(Trace::out, "%llu warp:%u evicted idx:%#lx hit by warp:%u last time\n",
+        time, mf->get_wid(), idx, last_warp_id);
+    }
+  }
 
   return MISS;
 }
@@ -962,8 +1046,13 @@ enum cache_request_status tag_array::access(new_addr_type addr,
   m_access++;
   is_used = true;
   shader_cache_access_log(m_core_id, m_type_id, 0);  // log accesses to cache
+
+  bool got_warp_interfere_info = false;
+  WARP_INTERFERE_RECORD warp_interfere_record((unsigned )- 1, (unsigned) - 1);
+
   enum cache_request_status status = 
-    probe("tag_array::access", addr, idx, mf, mf->is_write(), time);
+    probe("tag_array::access", addr, idx, mf, mf->is_write(), time, 
+      got_warp_interfere_info, warp_interfere_record);
 
   switch (status) {
     case HIT_RESERVED:
@@ -971,6 +1060,7 @@ enum cache_request_status tag_array::access(new_addr_type addr,
     case HIT:
       mf->get_access_type() == GLOBAL_ACC_W ? m_writes++ : m_reads++;
       m_lines[idx]->set_last_access_time(time, mf->get_access_sector_mask());
+      m_lines[idx]->set_last_warp_id(mf->get_wid());
       break;
     case MISS:
       mf->get_access_type() == GLOBAL_ACC_W ? m_writes++ : m_reads++;
@@ -1031,8 +1121,14 @@ void tag_array::fill(new_addr_type addr, unsigned long long time,
                      mem_access_byte_mask_t byte_mask, bool is_write) {
   // assert( m_config.m_alloc_policy == ON_FILL );
   unsigned idx;
+
+  bool got_warp_interfere_info = false;
+  WARP_INTERFERE_RECORD warp_interfere_record((unsigned )- 1, (unsigned) - 1);
+
   enum cache_request_status status = 
-    probe("tag_array::fill", addr, idx, mask, is_write, time);
+    probe("tag_array::fill", addr, idx, mask, is_write, time, 
+      false /* probe_mode */,
+      got_warp_interfere_info, warp_interfere_record);
 
   if (status == RESERVATION_FAIL) {
     return;
@@ -3387,16 +3483,6 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
         m_stats.inc_l2_mshr_slots_fills(mf->get_streamID(), mf->get_sub_partition());
       }
       if (DTRACE(RECORDED_IN_MSHR)) {
-        // fprintf(Trace::out, "%llu %s block_addr %#llx {tag %#llx set_index %#x} "
-        //   "is recorded in MSHR (mshr hit) occupied_slots[mshr_addr:%#llx] = %u. "
-        //   "mf:{ TPC:%u SM:%u WARP:%u req_uid:%u} "
-        //   "mshr_recorded_lines = %u\n",
-        //   time, cache_type, block_addr, 
-        //   m_config.tag(block_addr), m_config.set_index(block_addr),
-        //   mshr_addr, m_mshrs.occupied_slots(mshr_addr),
-        //   mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(),
-        //   m_tag_array->mshr_recorded_lines()
-        // ); 
         fprintf(Trace::out, "%llu %s block_addr %#llx {tag %#llx set_index %#x} "
           "is recorded in MSHR (mshr hit) occupied_slots[mshr_addr:%#llx] = %u. "
           "mf:{ TPC:%u SM:%u WARP:%u req_uid:%u}\n",
@@ -3464,16 +3550,6 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
         m_stats.inc_l2_mshr_slots_fills(mf->get_streamID(), mf->get_sub_partition());
       }
       if (DTRACE(RECORDED_IN_MSHR)) {
-        // fprintf(Trace::out, "%llu %s block_addr %#llx {tag %#llx set_index %#x} "
-        //   "is recorded in MSHR (mshr miss) occupied_slots[mshr_addr:%#llx] = %u. "
-        //   "mf:{ TPC:%u SM:%u WARP:%u req_uid:%u} "
-        //   "mshr_recorded_lines = %u\n",
-        //   time, cache_type, block_addr, 
-        //   m_config.tag(block_addr), m_config.set_index(block_addr),
-        //   mshr_addr, m_mshrs.occupied_slots(mshr_addr),
-        //   mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(),
-        //   m_tag_array->mshr_recorded_lines()
-        // ); 
         fprintf(Trace::out, "%llu %s block_addr %#llx {tag %#llx set_index %#x} "
           "is recorded in MSHR (mshr miss) occupied_slots[mshr_addr:%#llx] = %u. "
           "mf:{ TPC:%u SM:%u WARP:%u req_uid:%u}\n",
@@ -4207,9 +4283,15 @@ enum cache_request_status read_only_cache::access(
   assert(!mf->get_is_write());
   new_addr_type block_addr = m_config.block_addr(addr);
   unsigned cache_index = (unsigned)-1;
+
+  bool got_warp_interfere_info = false;
+  WARP_INTERFERE_RECORD warp_interfere_record((unsigned )- 1, (unsigned) - 1);
+
   enum cache_request_status status = m_tag_array->probe(
-    "read_only_cache::access", block_addr, cache_index, mf, mf->is_write(), time);
-  enum cache_request_status cache_status = RESERVATION_FAIL;
+    "read_only_cache::access", block_addr, cache_index, mf, mf->is_write(), 
+    time, got_warp_interfere_info, warp_interfere_record);
+  
+    enum cache_request_status cache_status = RESERVATION_FAIL;
 
   if (status == HIT) {
     cache_status = m_tag_array->access(block_addr, time, cache_index, mf); // update LRU state
@@ -4321,9 +4403,29 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
   assert(mf->get_data_size() <= m_config.get_atom_sz());
   bool wr = mf->get_is_write();
   new_addr_type block_addr = m_config.block_addr(addr);
-  unsigned cache_index = (unsigned)-1;
+  unsigned cache_index = (unsigned) - 1;
+
+  bool got_warp_interfere_info = false;
+  WARP_INTERFERE_RECORD warp_interfere_record((unsigned )- 1, (unsigned) - 1);
+
   enum cache_request_status probe_status = m_tag_array->probe(
-    "data_cache::access", block_addr, cache_index, mf, mf->is_write(), time, true);
+    "data_cache::access", block_addr, cache_index, mf, mf->is_write(), time,
+    got_warp_interfere_info, warp_interfere_record,
+    true /* probe_mode */);
+
+  // for debug
+  if (got_warp_interfere_info) {
+    unsigned interfered  = warp_interfere_record.last_warp_id;
+    unsigned interfering = warp_interfere_record.curr_warp_id;
+    m_gpu->get_shader_stats()->warp_interfere[mf->get_sid()][interfered][interfering]++;
+    // printf("warp_interfere[sid:%u][interfered:%u][interfering:%u]++ = %u\n",
+    //   mf->get_sid(), interfered, interfering, 
+    //   m_gpu->get_shader_stats()->warp_interfere[mf->get_sid()][interfered][interfering]);
+  }
+ 
+  const unsigned sid = mf->get_sid();
+  const std::vector<std::set<new_addr_type>>& unique_lines = m_tag_array->get_unique_lines();
+  m_gpu->get_shader_stats()->m_unique_cachelines[sid] = unique_lines[sid].size();
 
   enum cache_request_status access_status =
       process_tag_probe(wr, probe_status, addr, cache_index, mf, time, events);
@@ -4340,21 +4442,7 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
     // For l2 access, time - "gpgpu-sim cycle counters" == m_memcpy_cycle_offset,
     // indicating extra cycles on cudaMemCpy operations.
     // assert((m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle) == time);
-
     dump_cache_access_info("::access ", addr, mf, time, access_status);
-    // uint64_t lat_from_sched_to_access = time - m_gpu->sched_cycle[mf->get_pc()];
-    // fprintf(Trace::out, "%llu: %s L1D " // grep "wr L1D" or "rd L1D"
-    //               "pc=%#llx addr=0x%llx block_addr=0x%llx "
-    //               "probe_status=%s access_status=%s access_type=%s "
-    //               "lat_from_sched_to_access=%llu (%llu - %llu)\n",
-    //               (unsigned long long)time, wr ? "wr" : "rd",                     
-    //               (unsigned long long)mf->get_pc(),
-    //               (unsigned long long)addr, (unsigned long long)block_addr,
-    //               cache_request_status_str(probe_status), 
-    //               cache_request_status_str(access_status),
-    //               mem_access_type_str(mf->get_access_type()),
-    //               (unsigned long long)lat_from_sched_to_access, (unsigned long long)time, (unsigned long long)m_gpu->sched_cycle[mf->get_pc()]
-    //             );
   }
 
   if (m_is_l1d) {

@@ -65,8 +65,10 @@ void warp_inst_t::issue(const active_mask_t &mask, unsigned warp_id,
   m_empty = false;
   m_scheduler_id = sch_id;
 
-  if (DTRACE(WARP_ISSUE) || DTRACE(WARP_SCHEDULER)) {
-    fprintf(Trace::out, "WARP[%u] issued, then m_empty = false\n", dynamic_warp_id);
+  if (DTRACE(WARP_ISSUE) || DTRACE(WARP_SCHEDULER) || DTRACE(WARP_ID)) {
+    fprintf(Trace::out, "%llu warp_inst_t::issue m_warp_id = %u. "
+      "WARP[%u] issued, then m_empty = false\n", 
+      cycle, m_warp_id, dynamic_warp_id);
   }
 }
 
@@ -1037,8 +1039,9 @@ void kernel_info_t::destroy_cta_streams() {
 
 simt_stack::simt_stack(unsigned wid, unsigned warpSize, class gpgpu_sim *gpu) {
   m_warp_id = wid;
-  if (DTRACE(SIMT_STACK)) {
-    fprintf(Trace::out, "simt_stack::simt_stack init wid = %u\n", wid);
+  if (DTRACE(SIMT_STACK) || DTRACE(WARP_ID)) { // time is always 0 (wrong)
+    fprintf(Trace::out, "%llu simt_stack::simt_stack init wid = %u\n", 
+      gpu->gpu_sim_cycle + gpu->gpu_tot_sim_cycle, wid);
   }
   m_warp_size = warpSize;
   m_gpu = gpu;

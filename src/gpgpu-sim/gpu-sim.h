@@ -597,6 +597,30 @@ struct ISSUE_FAIL_INFO {
   fail_type(fail_type_) {}
 };
 
+struct SORTED_WARP_INTERFERE_INFO {
+  unsigned core_id;
+  unsigned sched_id;
+  unsigned warp_id;
+  unsigned interferes;
+
+  SORTED_WARP_INTERFERE_INFO(
+    unsigned core_id_,
+    unsigned sched_id_,
+    unsigned warp_id_,
+    unsigned interferes_
+  ) : 
+  core_id(core_id_),
+  sched_id(sched_id_),
+  warp_id(warp_id_),
+  interferes(interferes_)
+  {}
+
+  void print() const {
+    printf("warp_interfere[sid:%u][warp:%u][warp:%u] = %u\n", 
+      core_id, sched_id, warp_id, interferes);
+  }
+};
+
 class gpgpu_sim : public gpgpu_t {
  public:
   gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx);
@@ -698,6 +722,10 @@ class gpgpu_sim : public gpgpu_t {
     const std::pair<float, ISSUE_FAIL_INFO>& a, 
     const std::pair<float, ISSUE_FAIL_INFO>& b) {
     return a.first > b.first;
+  }
+
+  shader_core_stats* get_shader_stats() {
+    return m_shader_stats;
   }
 
  protected:

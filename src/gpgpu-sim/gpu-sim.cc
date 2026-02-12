@@ -1642,8 +1642,8 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
 
   // Gather stats
   unsigned per_core_issued_warp_insts[m_shader_config->n_simt_cores_per_cluster];
-  float cores_issue_rate[m_shader_config->n_simt_cores_per_cluster];
-  float avg_per_core_issue_rate = 0.0f;
+  float cores_issue_ratio[m_shader_config->n_simt_cores_per_cluster];
+  float avg_per_core_issue_ratio = 0.0f;
   float total_issue_ratio = 0.0f;
   unsigned total_issued_warp_insts       = 0;
   unsigned long long total_shader_cycles = 0;
@@ -1654,9 +1654,14 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
         assert(sid == cid);
       }
       per_core_issued_warp_insts[sid] = 0;
-      cores_issue_rate[sid] = 0.0f;
+      cores_issue_ratio[sid] = 0.0f;
     }
   }  
+
+  std::vector<std::vector<std::vector<unsigned>>> v_warp_interfere;
+  v_warp_interfere.resize(
+    m_shader_config->n_simt_clusters * m_shader_config->n_simt_cores_per_cluster);  
+
   // -gpgpu_n_clusters = 1
   // -gpgpu_n_cores_per_cluster = 4 ---> n_simt_cores_per_cluster = 4
   for (unsigned cluster_id = 0; cluster_id < m_shader_config->n_simt_clusters; cluster_id++) {
@@ -1671,7 +1676,29 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
     
     for (unsigned cid = 0; cid < m_shader_config->n_simt_cores_per_cluster; cid++) {
       // sid indicate unique shader_core_id crossing clusters
-      unsigned sid = m_shader_config->cid_to_sid(cid, cluster_id); 
+      unsigned sid = m_shader_config->cid_to_sid(cid, cluster_id);
+
+      v_warp_interfere[sid].resize(m_shader_config->max_warps_per_shader);
+
+      for (unsigned interfered = 0; interfered < m_shader_config->max_warps_per_shader; interfered++)
+      {
+        v_warp_interfere[sid][interfered].resize(m_shader_config->max_warps_per_shader, 0);
+        for (unsigned interfering = 0; interfering < m_shader_config->max_warps_per_shader; interfering++)
+        {
+          v_warp_interfere[sid][interfered][interfering] = 
+            m_shader_stats->warp_interfere[sid][interfered][interfering];
+          // if (m_shader_stats->warp_interfere[sid][interfered][interfering]) {
+          //   printf("warp_interfere[sid:%u][warp:%u][warp:%u] = %u\n",
+          //     sid, interfered, interfering, 
+          //     m_shader_stats->warp_interfere[sid][interfered][interfering]
+          //   );
+          // }
+        }
+      }
+
+      // Print cache locality related stats      
+      printf("m_unique_cachelines[sid:%u] = %u\n", 
+        sid, m_shader_stats->m_unique_cachelines[sid]);
 
       for (unsigned scheduler_id = 0; scheduler_id < m_shader_config->gpgpu_num_sched_per_core; scheduler_id++) {
         // Theoretically, per-cycle max issued_warp_insts = 
@@ -1722,33 +1749,77 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
         per_core_issued_warp_insts[sid] += m_shader_stats->issued_warp_insts[sid][scheduler_id];
         total_issued_warp_insts         += m_shader_stats->issued_warp_insts[sid][scheduler_id];        
       } // for (unsigned scheduler_id = 0; scheduler_id < m_shader_core->gpgpu_num_sched_per_core; scheduler_id++) {
-      cores_issue_rate[sid] = per_core_issued_warp_insts[sid] / (float)m_shader_stats->shader_cycles[sid];
+      cores_issue_ratio[sid] = per_core_issued_warp_insts[sid] / (float)m_shader_stats->shader_cycles[sid];
       if (!sid) {
-        avg_per_core_issue_rate = cores_issue_rate[sid];
+        avg_per_core_issue_ratio = cores_issue_ratio[sid];
       } else {
-        avg_per_core_issue_rate = (avg_per_core_issue_rate + cores_issue_rate[sid]) / 2;
+        avg_per_core_issue_ratio = (avg_per_core_issue_ratio + cores_issue_ratio[sid]) / 2;
       }
-      printf("cores_issue_rate[sid:%u] = %f (%u / %llu)\n", 
+      printf("cores_issue_ratio[sid:%u] = %f (%u / %llu)\n", 
         sid, 
-        cores_issue_rate[sid], 
+        cores_issue_ratio[sid], 
         per_core_issued_warp_insts[sid], m_shader_stats->shader_cycles[sid]);
     } // cid
   } // for (unsigned cluster_id = 0; cluster_id < m_shader_config->n_simt_clusters; cluster_id++)
+
+  std::vector<SORTED_WARP_INTERFERE_INFO> v_sorted_warp_interfere;
+  for (unsigned core = 0; core < v_warp_interfere.size(); ++core) {
+    for (unsigned sched = 0; sched < v_warp_interfere[core].size(); ++sched) {
+      for (unsigned warp = 0; warp < v_warp_interfere[core][sched].size(); ++warp) {
+        unsigned val = v_warp_interfere[core][sched][warp];
+        if (val) {
+            v_sorted_warp_interfere.push_back({core, sched, warp, val});
+        }
+      }
+    }
+  }  
+
+  std::sort(v_sorted_warp_interfere.begin(), v_sorted_warp_interfere.end(),
+    [](const SORTED_WARP_INTERFERE_INFO& a, const SORTED_WARP_INTERFERE_INFO& b) {
+        return a.interferes > b.interferes;
+    });
+
+  for (const auto& entry : v_sorted_warp_interfere) {
+      entry.print();
+  }    
+
+  // for (auto& core_vec : v_warp_interfere) {
+  //   for (auto& sched_vec : core_vec) {
+  //     std::sort(sched_vec.begin(), sched_vec.end(), std::greater<unsigned>());
+  //   }
+  // }
+  // unsigned core_id = 0;
+  // for (auto& core_vec : v_warp_interfere) {
+  //   unsigned interfered = 0;
+  //   for (auto& sched_vec : core_vec) {
+  //     unsigned interfering = 0;
+  //     for (auto& v : sched_vec) {
+  //       if (v) {
+  //         printf("warp_interfere[sid:%u][warp:%u][warp:%u] = %u\n", 
+  //           core_id, interfered, interfering, v);
+  //       }
+  //       interfering++;
+  //     }
+  //     interfered++;
+  //   }
+  //   core_id++;
+  // }
+
   const unsigned clusters            = m_shader_config->n_simt_clusters;
   const unsigned cores_per_cluster   = m_shader_config->n_simt_cores_per_cluster;
   const unsigned schedulers_per_core = m_shader_config->gpgpu_num_sched_per_core;
   const unsigned issue_width         = m_shader_config->gpgpu_max_insn_issue_per_warp;
   const unsigned issue_bandwidth     = clusters * cores_per_cluster * schedulers_per_core * issue_width;
-  total_issue_ratio                  = avg_per_core_issue_rate * clusters * cores_per_cluster;
+  total_issue_ratio                  = avg_per_core_issue_ratio * clusters * cores_per_cluster;
   float issue_bw_utilization         = total_issue_ratio / (float)issue_bandwidth;
 
   printf("issue_bandwidth:%u = clusters:%u * cores_per_cluster:%u * schedulers_per_core:%u * issue_width:%u\n", 
     issue_bandwidth, clusters, cores_per_cluster, schedulers_per_core, issue_width);
-  printf("total_issued_warp_insts = %u\n", total_issued_warp_insts);
-  printf("total_shader_cycles     = %llu\n", total_shader_cycles);
-  printf("avg_per_core_issue_rate = %f\n", avg_per_core_issue_rate);
+  printf("total_issued_warp_insts  = %u\n", total_issued_warp_insts);
+  printf("total_shader_cycles      = %llu\n", total_shader_cycles);
+  printf("avg_per_core_issue_ratio = %f\n", avg_per_core_issue_ratio);
   printf("total_issue_ratio        = %f\n", total_issue_ratio);
-  printf("issue_bw_utilization    = %f (%f / %u)\n", issue_bw_utilization, total_issue_ratio, issue_bandwidth);
+  printf("issue_bw_utilization     = %f (%f / %u)\n", issue_bw_utilization, total_issue_ratio, issue_bandwidth);
 
   printf("total_issue_fails = %u\n", total_issue_fails);
   printf("total_issue_fails_due_to_mem_resource                = %u\n", total_issue_fails_due_to_mem_resource               );
