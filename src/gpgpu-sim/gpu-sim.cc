@@ -1680,8 +1680,10 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
       {
         for (unsigned interfering = 0; interfering < m_shader_config->max_warps_per_shader; interfering++)
         {
-          v_sorted_warp_interfere.push_back(
-            {sid, interfered, interfering, m_shader_stats->warp_interfere[sid][interfered][interfering]});
+          if (interfering != interfered) {
+            v_sorted_warp_interfere.push_back(
+              {sid, interfered, interfering, m_shader_stats->warp_interfere[sid][interfered][interfering]});
+          }
         }
       }
 
