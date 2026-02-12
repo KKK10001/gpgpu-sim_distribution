@@ -599,25 +599,27 @@ struct ISSUE_FAIL_INFO {
 
 struct SORTED_WARP_INTERFERE_INFO {
   unsigned core_id;
-  unsigned sched_id;
-  unsigned warp_id;
+  unsigned interfered_id;
+  unsigned interfering_id;
   unsigned interferes;
 
   SORTED_WARP_INTERFERE_INFO(
     unsigned core_id_,
-    unsigned sched_id_,
-    unsigned warp_id_,
+    unsigned interfered_id_,
+    unsigned interfering_id_,
     unsigned interferes_
   ) : 
   core_id(core_id_),
-  sched_id(sched_id_),
-  warp_id(warp_id_),
+  interfered_id(interfered_id_),
+  interfering_id(interfering_id_),
   interferes(interferes_)
   {}
 
   void print() const {
-    printf("warp_interfere[sid:%u][warp:%u][warp:%u] = %u\n", 
-      core_id, sched_id, warp_id, interferes);
+    if (interferes) {
+      printf("warp_interfere[sid:%u][warp:%u][warp:%u] = %u\n", 
+        core_id, interfered_id, interfering_id, interferes);
+    }
   }
 };
 

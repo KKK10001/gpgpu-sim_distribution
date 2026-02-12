@@ -1658,9 +1658,7 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
     }
   }  
 
-  std::vector<std::vector<std::vector<unsigned>>> v_warp_interfere;
-  v_warp_interfere.resize(
-    m_shader_config->n_simt_clusters * m_shader_config->n_simt_cores_per_cluster);  
+  std::vector<SORTED_WARP_INTERFERE_INFO> v_sorted_warp_interfere;
 
   // -gpgpu_n_clusters = 1
   // -gpgpu_n_cores_per_cluster = 4 ---> n_simt_cores_per_cluster = 4
@@ -1678,21 +1676,12 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
       // sid indicate unique shader_core_id crossing clusters
       unsigned sid = m_shader_config->cid_to_sid(cid, cluster_id);
 
-      v_warp_interfere[sid].resize(m_shader_config->max_warps_per_shader);
-
       for (unsigned interfered = 0; interfered < m_shader_config->max_warps_per_shader; interfered++)
       {
-        v_warp_interfere[sid][interfered].resize(m_shader_config->max_warps_per_shader, 0);
         for (unsigned interfering = 0; interfering < m_shader_config->max_warps_per_shader; interfering++)
         {
-          v_warp_interfere[sid][interfered][interfering] = 
-            m_shader_stats->warp_interfere[sid][interfered][interfering];
-          // if (m_shader_stats->warp_interfere[sid][interfered][interfering]) {
-          //   printf("warp_interfere[sid:%u][warp:%u][warp:%u] = %u\n",
-          //     sid, interfered, interfering, 
-          //     m_shader_stats->warp_interfere[sid][interfered][interfering]
-          //   );
-          // }
+          v_sorted_warp_interfere.push_back(
+            {sid, interfered, interfering, m_shader_stats->warp_interfere[sid][interfered][interfering]});
         }
       }
 
@@ -1762,18 +1751,6 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
     } // cid
   } // for (unsigned cluster_id = 0; cluster_id < m_shader_config->n_simt_clusters; cluster_id++)
 
-  std::vector<SORTED_WARP_INTERFERE_INFO> v_sorted_warp_interfere;
-  for (unsigned core = 0; core < v_warp_interfere.size(); ++core) {
-    for (unsigned sched = 0; sched < v_warp_interfere[core].size(); ++sched) {
-      for (unsigned warp = 0; warp < v_warp_interfere[core][sched].size(); ++warp) {
-        unsigned val = v_warp_interfere[core][sched][warp];
-        if (val) {
-            v_sorted_warp_interfere.push_back({core, sched, warp, val});
-        }
-      }
-    }
-  }  
-
   std::sort(v_sorted_warp_interfere.begin(), v_sorted_warp_interfere.end(),
     [](const SORTED_WARP_INTERFERE_INFO& a, const SORTED_WARP_INTERFERE_INFO& b) {
         return a.interferes > b.interferes;
@@ -1781,29 +1758,7 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
 
   for (const auto& entry : v_sorted_warp_interfere) {
       entry.print();
-  }    
-
-  // for (auto& core_vec : v_warp_interfere) {
-  //   for (auto& sched_vec : core_vec) {
-  //     std::sort(sched_vec.begin(), sched_vec.end(), std::greater<unsigned>());
-  //   }
-  // }
-  // unsigned core_id = 0;
-  // for (auto& core_vec : v_warp_interfere) {
-  //   unsigned interfered = 0;
-  //   for (auto& sched_vec : core_vec) {
-  //     unsigned interfering = 0;
-  //     for (auto& v : sched_vec) {
-  //       if (v) {
-  //         printf("warp_interfere[sid:%u][warp:%u][warp:%u] = %u\n", 
-  //           core_id, interfered, interfering, v);
-  //       }
-  //       interfering++;
-  //     }
-  //     interfered++;
-  //   }
-  //   core_id++;
-  // }
+  }
 
   const unsigned clusters            = m_shader_config->n_simt_clusters;
   const unsigned cores_per_cluster   = m_shader_config->n_simt_cores_per_cluster;
