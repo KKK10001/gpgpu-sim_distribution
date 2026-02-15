@@ -55,6 +55,12 @@ mem_fetch::mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
   m_tpc = tpc;
   m_wid = wid;
 
+  // 2/13 debug
+  if (DTRACE(DEBUG_SINGLE_MF)) {
+    fprintf(Trace::out, "mem_fetch::mem_fetch m_sid = %u m_tpc = %u m_wid = %u\n",
+      m_sid, m_tpc, m_wid);
+  }
+
   if (!config->is_SST_mode()) {
     // In SST memory model, the SST memory hierarchy is
     // responsible to generate the correct address mapping

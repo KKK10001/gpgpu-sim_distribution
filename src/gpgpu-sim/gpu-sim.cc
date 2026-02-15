@@ -267,8 +267,8 @@ void memory_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_cache:l2_rep_enhance", OPT_CSTR,
                          &m_L2_config.m_rep_enhance_string,
                          "per-GPC shared L2 replacement enhance config "
-                         "<total_hits_ascend>,<fill_time_ascend>",
-                         "F,F");                         
+                         "<total_hits_ascend>,<fill_time_ascend>,<warp_interfere_aware>",
+                         "F,F,F");            
 
   option_parser_register(
       opp, "-disable_wr_merge", OPT_BOOL,
@@ -375,8 +375,8 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_cache:l1t_rep_enhance", OPT_CSTR,
                          &m_L1T_config.m_rep_enhance_string,
                          "per-shader L1T replacement enhance config "
-                         "<total_hits_ascend>,<fill_time_ascend>",
-                         "F,F");
+                         "<total_hits_ascend>,<fill_time_ascend>,<warp_interfere_aware>",
+                         "F,F,F");
               
   option_parser_register(
       opp, "-gpgpu_const_cache:l1", OPT_CSTR, &m_L1C_config.m_config_string,
@@ -397,8 +397,8 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_cache:l1c_rep_enhance", OPT_CSTR,
                          &m_L1C_config.m_rep_enhance_string,
                          "per-shader L1C replacement enhance config "
-                         "<total_hits_ascend>,<fill_time_ascend>",
-                         "F,F");                         
+                         "<total_hits_ascend>,<fill_time_ascend>,<warp_interfere_aware>",
+                         "F,F,F");
       
   option_parser_register(
       opp, "-gpgpu_cache:il1", OPT_CSTR, &m_L1I_config.m_config_string,
@@ -419,8 +419,8 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_cache:l1i_rep_enhance", OPT_CSTR,
                          &m_L1I_config.m_rep_enhance_string,
                          "per-shader L1I replacement enhance config "
-                         "<total_hits_ascend>,<fill_time_ascend>",
-                         "F,F");
+                         "<total_hits_ascend>,<fill_time_ascend>,<warp_interfere_aware>",
+                         "F,F,F");
 
   option_parser_register(opp, "-gpgpu_cache:dl1", OPT_CSTR,
                          &m_L1D_config.m_config_string,
@@ -442,8 +442,8 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_cache:l1d_rep_enhance", OPT_CSTR,
                          &m_L1D_config.m_rep_enhance_string,
                          "per-shader L1D replacement enhance config "
-                         "<total_hits_ascend>,<fill_time_ascend>",
-                         "F,F");
+                         "<total_hits_ascend>,<fill_time_ascend>,<warp_interfere_aware>",
+                         "F,F,F");
 
   option_parser_register(opp, "-gpgpu_l1_cache_write_ratio", OPT_UINT32,
                          &m_L1D_config.m_wr_percent, "L1D write ratio", "0");
@@ -1659,6 +1659,11 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
   }  
 
   std::vector<SORTED_WARP_INTERFERE_INFO> v_sorted_warp_interfere;
+  std::vector<SORTED_WARP_INTERFERE_INFO> v_warp_interfere_below_5;
+  std::vector<SORTED_WARP_INTERFERE_INFO> v_warp_interfere_5_10;
+  std::vector<SORTED_WARP_INTERFERE_INFO> v_warp_interfere_10_20;
+  std::vector<SORTED_WARP_INTERFERE_INFO> v_warp_interfere_20_30;
+  std::vector<SORTED_WARP_INTERFERE_INFO> v_warp_interfere_exceed_30;
 
   // -gpgpu_n_clusters = 1
   // -gpgpu_n_cores_per_cluster = 4 ---> n_simt_cores_per_cluster = 4
@@ -1681,6 +1686,34 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
         for (unsigned interfering = 0; interfering < m_shader_config->max_warps_per_shader; interfering++)
         {
           if (interfering != interfered) {
+            if (m_shader_stats->warp_interfere[sid][interfered][interfering] < 5) {
+              v_warp_interfere_below_5.push_back(
+                {sid, interfered, interfering, m_shader_stats->warp_interfere[sid][interfered][interfering]});
+            } 
+            else if (
+              m_shader_stats->warp_interfere[sid][interfered][interfering] >= 5 && 
+              m_shader_stats->warp_interfere[sid][interfered][interfering] < 10) {
+              v_warp_interfere_5_10.push_back(
+                {sid, interfered, interfering, m_shader_stats->warp_interfere[sid][interfered][interfering]});
+            }            
+            else if (
+              m_shader_stats->warp_interfere[sid][interfered][interfering] >= 10 && 
+              m_shader_stats->warp_interfere[sid][interfered][interfering] < 20) {
+              v_warp_interfere_10_20.push_back(
+                {sid, interfered, interfering, m_shader_stats->warp_interfere[sid][interfered][interfering]});
+            }
+            else if (
+              m_shader_stats->warp_interfere[sid][interfered][interfering] >= 20 && 
+              m_shader_stats->warp_interfere[sid][interfered][interfering] < 30) {
+              v_warp_interfere_20_30.push_back(
+                {sid, interfered, interfering, m_shader_stats->warp_interfere[sid][interfered][interfering]});
+            }
+            else if (
+              m_shader_stats->warp_interfere[sid][interfered][interfering] > 30) {
+              v_warp_interfere_exceed_30.push_back(
+                {sid, interfered, interfering, m_shader_stats->warp_interfere[sid][interfered][interfering]});
+            }
+
             v_sorted_warp_interfere.push_back(
               {sid, interfered, interfering, m_shader_stats->warp_interfere[sid][interfered][interfering]});
           }
@@ -1757,10 +1790,16 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
     [](const SORTED_WARP_INTERFERE_INFO& a, const SORTED_WARP_INTERFERE_INFO& b) {
         return a.interferes > b.interferes;
     });
-
   for (const auto& entry : v_sorted_warp_interfere) {
       entry.print();
   }
+
+  printf("Distribution of warp_interference is:\n");
+  printf("[0:5) %f\n", v_warp_interfere_below_5.size() / (float)v_sorted_warp_interfere.size());
+  printf("[5:10) %f\n", v_warp_interfere_5_10.size() / (float)v_sorted_warp_interfere.size());
+  printf("[10:20) %f\n", v_warp_interfere_10_20.size() / (float)v_sorted_warp_interfere.size());
+  printf("[20:30) %f\n", v_warp_interfere_20_30.size() / (float)v_sorted_warp_interfere.size());
+  printf("[30, +Inf) %f\n", v_warp_interfere_exceed_30.size() / (float)v_sorted_warp_interfere.size());
 
   const unsigned clusters            = m_shader_config->n_simt_clusters;
   const unsigned cores_per_cluster   = m_shader_config->n_simt_cores_per_cluster;

@@ -57,6 +57,15 @@ mem_fetch *partition_mf_allocator::alloc(new_addr_type addr,
   mem_access_t access(type, addr, size, wr, m_memory_config->gpgpu_ctx);
   mem_fetch *mf = new mem_fetch(access, NULL, streamID, WRITE_PACKET_SIZE, -1,
                                 -1, -1, m_memory_config, cycle);
+
+  // 2/13 debug
+  assert(addr == mf->get_addr());
+  if (DTRACE(DEBUG_SINGLE_MF)) {
+    fprintf(Trace::out, "%llu partition_mf_allocator::alloc "
+      "new mem_fetch addr = %#llx sid:%u warp_id:%u\n",
+      cycle, mf->get_addr(), mf->get_sid(), mf->get_wid());
+  }
+
   return mf;
 }
 
@@ -71,6 +80,15 @@ mem_fetch *partition_mf_allocator::alloc(
   mem_fetch *mf = new mem_fetch(access, NULL, streamID,
                                 wr ? WRITE_PACKET_SIZE : READ_PACKET_SIZE, wid,
                                 sid, tpc, m_memory_config, cycle, original_mf);
+
+  // 2/13 debug
+  assert(addr == mf->get_addr());
+  if (DTRACE(DEBUG_SINGLE_MF)) {
+    fprintf(Trace::out, "%llu partition_mf_allocator::alloc "
+      "new mem_fetch addr = %#llx sid:%u warp_id:%u\n",
+      cycle, mf->get_addr(), mf->get_sid(), mf->get_wid());    
+  }
+
   return mf;
 }
 memory_partition_unit::memory_partition_unit(unsigned partition_id,

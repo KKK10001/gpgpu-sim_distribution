@@ -445,6 +445,7 @@ void tag_array::remove_pending_line(mem_fetch *mf) {
 
 enum cache_request_status tag_array::probe(
   const std::string& caller,
+  gpgpu_sim *gpu,
   new_addr_type addr, unsigned &idx,
   mem_fetch *mf, bool is_write,
   unsigned long long time,
@@ -456,7 +457,7 @@ enum cache_request_status tag_array::probe(
   std::string final_caller = caller + "-> tag_array::probe";
 
   return probe(
-    final_caller.c_str(), addr, idx, mask, is_write, time, 
+    final_caller.c_str(), gpu, addr, idx, mask, is_write, time, 
     probe_mode, got_warp_interfere_info, warp_interfere_record, mf);
 }
 
@@ -477,7 +478,8 @@ void tag_array::gather_rep_candidates(
     line->get_total_accesses(),
     line->get_evict_interval(), 
     line->get_avg_evict_interval(),
-    line->get_last_warp_id()
+    line->get_last_warp_id(),
+    line->get_last_core_id()
   );
   if (!line->was_recorded_in_mshr()) {
     hybrid_rep_candidates_no_record_in_mshr.push_back(std::pair<unsigned, LINE_RECENCY>(index, recency));
@@ -489,13 +491,15 @@ void tag_array::gather_rep_candidates(
 
 void tag_array::lru_pick(
   cache_block_t* line, unsigned long long& valid_timestamp, 
-  unsigned& valid_line, const unsigned& index, unsigned& warp_id, 
+  unsigned& valid_line, const unsigned& index, 
+  unsigned& warp_id, unsigned& core_id,
   bool& lru_has_picked) {
 
   if (line->get_last_access_time() < valid_timestamp) {
     valid_timestamp = line->get_last_access_time();
     valid_line      = index;
     warp_id         = line->get_last_warp_id();
+    core_id         = line->get_last_core_id();
     lru_has_picked  = true;
   }
 }
@@ -516,8 +520,7 @@ void tag_array::pick_with_lru(
   unsigned& valid_line,
   unsigned long long& smallest_access_time,
   unsigned& lru_picked_total_hits,
-  unsigned long long& lru_picked_avg_evict_interval,
-  unsigned& warp_id) {
+  unsigned long long& lru_picked_avg_evict_interval) {
 
   if (m_config.m_mshr_corr_repl == 'T') {
     std::vector<std::pair<unsigned, LINE_RECENCY>> hybrid_rep_candidates_in_use;
@@ -532,7 +535,6 @@ void tag_array::pick_with_lru(
     smallest_access_time          = hybrid_rep_candidates_in_use[0].second.last_access_time;
     lru_picked_total_hits         = hybrid_rep_candidates_in_use[0].second.total_hits;
     lru_picked_avg_evict_interval = hybrid_rep_candidates_in_use[0].second.avg_evict_interval;
-    warp_id                       = hybrid_rep_candidates_in_use[0].second.warp_id;
   } else {
     assert(hybrid_rep_candidates.size());
     std::sort(hybrid_rep_candidates.begin(), hybrid_rep_candidates.end(), cmpForSmallerTimestamp);
@@ -540,7 +542,6 @@ void tag_array::pick_with_lru(
     smallest_access_time          = hybrid_rep_candidates[0].second.last_access_time;
     lru_picked_total_hits         = hybrid_rep_candidates[0].second.total_hits;
     lru_picked_avg_evict_interval = hybrid_rep_candidates[0].second.avg_evict_interval;
-    warp_id                       = hybrid_rep_candidates[0].second.warp_id;
 
     if (DTRACE(CHECK_LRU_ARRAY)) {
       if (valid_line != hybrid_rep_candidates[0].first) {
@@ -600,9 +601,7 @@ void tag_array::fill_time_awared_modification_for_srrip(
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
-  unsigned& valid_line,
-  unsigned& warp_id
-  ) {
+  unsigned& valid_line) {
 
   if (m_config.m_mshr_corr_repl == 'T') {
     std::vector<std::pair<unsigned, LINE_RECENCY>> hybrid_rep_candidates_in_use;
@@ -614,13 +613,52 @@ void tag_array::fill_time_awared_modification_for_srrip(
     std::sort(hybrid_rep_candidates_in_use.begin(), hybrid_rep_candidates_in_use.end(), cmpForSmallerFillTime);
     if (hybrid_rep_candidates_in_use[0].second.rrpv == hybrid_rep_candidates_in_use[0].second.max_rrpv) {
       valid_line = hybrid_rep_candidates_in_use[0].first;
-      warp_id    = hybrid_rep_candidates_in_use[0].second.warp_id;
     }
   } else {
     std::sort(hybrid_rep_candidates.begin(), hybrid_rep_candidates.end(), cmpForSmallerFillTime);
     if (hybrid_rep_candidates[0].second.rrpv == hybrid_rep_candidates[0].second.max_rrpv) {
       valid_line = hybrid_rep_candidates[0].first;
+    }
+  }
+}
+void tag_array::warp_interference_awared_modification_for_srrip(
+  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
+  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
+  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
+  unsigned& valid_line,
+  unsigned& warp_id, unsigned& core_id,
+  mem_fetch *mf, gpgpu_sim *gpu
+) {
+  if (m_config.m_mshr_corr_repl == 'T') {
+    std::vector<std::pair<unsigned, LINE_RECENCY>> hybrid_rep_candidates_in_use;
+    if (hybrid_rep_candidates_no_record_in_mshr.size()) {
+      hybrid_rep_candidates_in_use = hybrid_rep_candidates_no_record_in_mshr;
+    } else {
+      hybrid_rep_candidates_in_use = hybrid_rep_candidates_recorded_in_mshr;
+    }
+
+    std::sort(hybrid_rep_candidates_in_use.begin(), hybrid_rep_candidates_in_use.end(), 
+      [gpu, mf](const std::pair<unsigned, LINE_RECENCY>& a, 
+         const std::pair<unsigned, LINE_RECENCY>& b) {
+         return gpu->get_shader_stats()->warp_interfere[mf->get_sid()][a.second.warp_id][mf->get_wid()] <
+                gpu->get_shader_stats()->warp_interfere[mf->get_sid()][b.second.warp_id][mf->get_wid()];
+      });
+    if (hybrid_rep_candidates_in_use[0].second.rrpv == hybrid_rep_candidates_in_use[0].second.max_rrpv) {
+      valid_line = hybrid_rep_candidates_in_use[0].first;
+      warp_id    = hybrid_rep_candidates_in_use[0].second.warp_id;
+      core_id    = hybrid_rep_candidates_in_use[0].second.core_id;
+    }
+  } else {
+    std::sort(hybrid_rep_candidates.begin(), hybrid_rep_candidates.end(), 
+      [gpu, mf](const std::pair<unsigned, LINE_RECENCY>& a, 
+         const std::pair<unsigned, LINE_RECENCY>& b) {
+         return gpu->get_shader_stats()->warp_interfere[mf->get_sid()][a.second.warp_id][mf->get_wid()] <
+                gpu->get_shader_stats()->warp_interfere[mf->get_sid()][b.second.warp_id][mf->get_wid()];
+      });
+    if (hybrid_rep_candidates[0].second.rrpv == hybrid_rep_candidates[0].second.max_rrpv) {
+      valid_line = hybrid_rep_candidates[0].first;
       warp_id    = hybrid_rep_candidates[0].second.warp_id;
+      core_id    = hybrid_rep_candidates[0].second.core_id;
     }
   }
 }
@@ -630,8 +668,7 @@ void tag_array::fill_time_awared_modification_for_lru(
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
   unsigned& valid_line,
-  const unsigned long long& smallest_last_access_time,
-  unsigned& warp_id) {
+  const unsigned long long& smallest_last_access_time) {
 
   if (m_config.m_mshr_corr_repl == 'T') {
     std::vector<std::pair<unsigned, LINE_RECENCY>> hybrid_rep_candidates_in_use;
@@ -651,13 +688,96 @@ void tag_array::fill_time_awared_modification_for_lru(
     }
   }
 }
+void tag_array::mshr_corr_warp_interference_awared_pick(
+  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
+  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
+  std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
+  unsigned& valid_line,
+  unsigned& warp_id, unsigned& core_id,
+  mem_fetch *mf, gpgpu_sim *gpu, 
+  unsigned long long time) {
+
+  if (m_config.m_mshr_corr_repl == 'T') {
+    std::vector<std::pair<unsigned, LINE_RECENCY>> hybrid_rep_candidates_in_use;
+    if (hybrid_rep_candidates_no_record_in_mshr.size()) {
+      hybrid_rep_candidates_in_use = hybrid_rep_candidates_no_record_in_mshr;
+    } else {
+      hybrid_rep_candidates_in_use = hybrid_rep_candidates_recorded_in_mshr;
+    }
+    std::sort(hybrid_rep_candidates_in_use.begin(), hybrid_rep_candidates_in_use.end(), 
+      [gpu, mf](const std::pair<unsigned, LINE_RECENCY>& a, 
+         const std::pair<unsigned, LINE_RECENCY>& b) {
+         return gpu->get_shader_stats()->warp_interfere[mf->get_sid()][a.second.warp_id][mf->get_wid()] <
+                gpu->get_shader_stats()->warp_interfere[mf->get_sid()][b.second.warp_id][mf->get_wid()];
+      });
+    valid_line = hybrid_rep_candidates_in_use[0].first;
+    warp_id    = hybrid_rep_candidates_in_use[0].second.warp_id;
+    core_id    = hybrid_rep_candidates_in_use[0].second.core_id;
+  } else {
+    if (DTRACE(VERIFY_WARP_INTERFERED_SCHED)) {
+      for (unsigned i = 0; i < hybrid_rep_candidates.size(); i++) {
+        fprintf(Trace::out, "warp_interfere[sid:%u][interfered:%u][interfering:%u] = %u\n", 
+          mf->get_sid(), hybrid_rep_candidates[i].second.warp_id, mf->get_wid(), 
+          gpu->get_shader_stats()->warp_interfere[mf->get_sid()][hybrid_rep_candidates[i].second.warp_id][mf->get_wid()]);
+      }
+    }
+
+    std::sort(hybrid_rep_candidates.begin(), hybrid_rep_candidates.end(), 
+      [gpu, mf](const std::pair<unsigned, LINE_RECENCY>& a, 
+         const std::pair<unsigned, LINE_RECENCY>& b) {
+         return gpu->get_shader_stats()->warp_interfere[mf->get_sid()][a.second.warp_id][mf->get_wid()] <
+                gpu->get_shader_stats()->warp_interfere[mf->get_sid()][b.second.warp_id][mf->get_wid()];
+      });
+
+    if (DTRACE(VERIFY_WARP_INTERFERED_SCHED) || DTRACE(WARP_INTERFERE_AWARED_SCHED)) {
+      if (time == 54810) {
+        fprintf(Trace::out, "After sorting..................\n");
+        for (unsigned i = 0; i < hybrid_rep_candidates.size(); i++) {
+          fprintf(Trace::out, "warp_interfere[sid:%u][interfered:%u][interfering:%u] = %u. valid_line = %u\n", 
+            mf->get_sid(), hybrid_rep_candidates[i].second.warp_id, mf->get_wid(), 
+            gpu->get_shader_stats()->warp_interfere[mf->get_sid()][hybrid_rep_candidates[i].second.warp_id][mf->get_wid()],
+            hybrid_rep_candidates[i].first
+          );
+        }
+      }
+    }
+
+    valid_line = hybrid_rep_candidates[0].first; // update valid_line 
+    warp_id    = hybrid_rep_candidates[0].second.warp_id;
+    core_id    = hybrid_rep_candidates[0].second.core_id;
+
+    if (DTRACE(WARP_INTERFERE_AWARED_SCHED)) {
+      if (time == 54810) {
+        fprintf(Trace::out, "-------- Finally picked warp_interfere[sid:%u][interfered:%u][interfering:%u] = %u. "
+          "valid_line = %u\n", 
+          mf->get_sid(), warp_id, mf->get_wid(), 
+          gpu->get_shader_stats()->warp_interfere[mf->get_sid()][warp_id][mf->get_wid()],
+          valid_line
+        );
+      }
+    }
+
+    // valid_line = hybrid_rep_candidates[hybrid_rep_candidates.size() >> 1].first; // update valid_line 
+    // warp_id    = hybrid_rep_candidates[hybrid_rep_candidates.size() >> 1].second.warp_id;
+    // core_id    = hybrid_rep_candidates[hybrid_rep_candidates.size() >> 1].second.core_id;
+
+    // 34.381 (+0.194%)
+    // unsigned picker = (hybrid_rep_candidates.size() >> 1) + (hybrid_rep_candidates.size() >> 2);
+    // 34.205 (-0.320%)
+    // unsigned picker = (hybrid_rep_candidates.size() >> 2);
+    // unsigned picker = (hybrid_rep_candidates.size() >> 1);
+    // valid_line = hybrid_rep_candidates[picker].first; // update valid_line 
+    // warp_id    = hybrid_rep_candidates[picker].second.warp_id;
+    // core_id    = hybrid_rep_candidates[picker].second.core_id;
+  }
+}
+
 
 void tag_array::mshr_awared_modification_for_srrip(
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
-  unsigned& valid_line,
-  unsigned& warp_id) {
+  unsigned& valid_line) {
   
   if (m_config.m_mshr_corr_repl == 'T') {
     std::vector<std::pair<unsigned, LINE_RECENCY>> hybrid_rep_candidates_in_use;
@@ -670,7 +790,6 @@ void tag_array::mshr_awared_modification_for_srrip(
     {      
       if (hybrid_rep_candidates_in_use[i].second.rrpv == hybrid_rep_candidates_in_use[i].second.max_rrpv) {
         valid_line = hybrid_rep_candidates_in_use[i].first;
-        warp_id    = hybrid_rep_candidates_in_use[i].second.warp_id;
         break;
       }
     }    
@@ -679,6 +798,7 @@ void tag_array::mshr_awared_modification_for_srrip(
 
 enum cache_request_status tag_array::probe(
   const std::string& caller,
+  gpgpu_sim *gpu,
   new_addr_type addr, unsigned &idx,
   mem_access_sector_mask_t mask,
   bool is_write, 
@@ -729,6 +849,7 @@ enum cache_request_status tag_array::probe(
   unsigned lru_picked_total_hits = (unsigned) - 1;
   unsigned long long lru_picked_avg_evict_interval = (unsigned long long) - 1;
   unsigned last_warp_id = (unsigned) - 1;
+  unsigned last_core_id = (unsigned) - 1;
 
   std::vector<std::pair<unsigned /* unfolded index */, LINE_RECENCY>> hybrid_rep_candidates;
   std::vector<std::pair<unsigned /* unfolded index */, LINE_RECENCY>> hybrid_rep_candidates_no_record_in_mshr;
@@ -737,9 +858,11 @@ enum cache_request_status tag_array::probe(
   bool cache_hit = false;
   [[maybe_unused]] bool has_unreserved_line = false;
   
+  unsigned first_cand_core_id = (unsigned) - 1;
+  bool gathered_rep_candidates = false;
   for (unsigned way = 0; way < m_config.m_assoc; way++) {
     unsigned index = set_index * m_config.m_assoc + way;
-    cache_block_t *line = m_lines[index];    
+    cache_block_t *line = m_lines[index];
 
     if (line->m_tag == tag) {
       line->inc_total_hits();
@@ -776,24 +899,19 @@ enum cache_request_status tag_array::probe(
       all_miss = false;
       if (line->get_status(mask) == RESERVED) {
         idx = index;
-        return HIT_RESERVED;
-      } else if (line->get_status(mask) == VALID) {
-        if (mf) {
-          if (DTRACE(WARP_CACHE_INTERFERE)) {
-            fprintf(Trace::out, "%llu cache hit on addr:%#llx warp:%u\n",
-              time, addr, mf->get_wid());
+        // 2/13 debug
+        if (DTRACE(DEBUG_SINGLE_MF)) {
+          if (mf) {
+            fprintf(Trace::out, "%llu return HIT_RESERVED for addr = %#llx wid = %u sid = %u\n",
+              time, mf->get_addr(), mf->get_wid(), mf->get_sid());
           }
         }
+        return HIT_RESERVED;
+      } else if (line->get_status(mask) == VALID) {
         idx = index;
         return HIT;
       } else if (line->get_status(mask) == MODIFIED) {
-        if ((!is_write && line->is_readable(mask)) || is_write) {
-          if (mf) {
-            if (DTRACE(WARP_CACHE_INTERFERE)) {
-              fprintf(Trace::out, "%llu cache hit on addr:%#llx warp:%u\n",
-                time, addr, mf->get_wid());
-            }
-          }          
+        if ((!is_write && line->is_readable(mask)) || is_write) {        
           idx = index;
           return HIT;
         } else {
@@ -831,8 +949,11 @@ enum cache_request_status tag_array::probe(
             hybrid_rep_candidates_no_record_in_mshr,
             hybrid_rep_candidates_recorded_in_mshr,
             hybrid_rep_candidates);
+          gathered_rep_candidates = true;
 
-          if (m_config.m_replacement_policy == SRRIP) {
+          if (m_config.m_warp_interfere_aware == 'T') {
+            // nothing
+          } else if (m_config.m_replacement_policy == SRRIP) {
             if (!srrip_has_picked) {
               if (line->get_rrpv() == line->get_max_rrpv()) {
                 valid_line       = index;
@@ -844,17 +965,13 @@ enum cache_request_status tag_array::probe(
               }
             }
           } else if (m_config.m_replacement_policy == LRU) {
-            lru_pick(line, valid_timestamp, valid_line, index, last_warp_id, lru_has_picked);
-            // bool is_mf_valid = (mf != nullptr) ? true : false;
-            // printf("After lru_pick, valid_line = %u last_warp_id = %u is_mf_valid = %u\n", 
-            //   valid_line, last_warp_id, is_mf_valid);
+            lru_pick(line, valid_timestamp, valid_line, index, last_warp_id, last_core_id, lru_has_picked);      
           } else if (m_config.m_replacement_policy == FIFO) {
             if (line->get_alloc_time() < valid_timestamp) {
               valid_timestamp = line->get_alloc_time();
               valid_line = index;
             }
           }
-
         } // valid line
       } // evict conditions (clean || too many dirty lines)
     } // if (!line->is_reserved_line())
@@ -873,122 +990,135 @@ enum cache_request_status tag_array::probe(
 
   if (invalid_line != (unsigned) - 1) {
     idx = invalid_line;
-  } else if (valid_line != (unsigned) - 1) {    
-    if (m_config.m_replacement_policy == LRU) {
-      assert(lru_has_picked);
-      assert(hybrid_rep_candidates.size());
+  } else if (m_config.m_warp_interfere_aware == 'T') {
+    assert(valid_line == ((unsigned) - 1));
+    mshr_corr_warp_interference_awared_pick(
+      hybrid_rep_candidates,
+      hybrid_rep_candidates_no_record_in_mshr,
+      hybrid_rep_candidates_recorded_in_mshr,
+      valid_line /* later used */, 
+      last_warp_id, last_core_id, mf, gpu, time
+    );
+    idx = valid_line;
+  } else {
+    if (valid_line != (unsigned) - 1) {
+      if (m_config.m_replacement_policy == LRU) {
+        assert(lru_has_picked);
+        assert(hybrid_rep_candidates.size());
 
-      // Possible re-pick from "hybrid_rep_candidates_in_use"
-      pick_with_lru(
-        hybrid_rep_candidates,
-        hybrid_rep_candidates_no_record_in_mshr,
-        hybrid_rep_candidates_recorded_in_mshr,
-        valid_line, valid_timestamp,
-        lru_picked_total_hits, lru_picked_avg_evict_interval,
-        last_warp_id
-      );
+        // Possible re-pick from "hybrid_rep_candidates_in_use"
+        pick_with_lru(
+          hybrid_rep_candidates,
+          hybrid_rep_candidates_no_record_in_mshr,
+          hybrid_rep_candidates_recorded_in_mshr,
+          valid_line, valid_timestamp,
+          lru_picked_total_hits, lru_picked_avg_evict_interval);
 
-      if (m_config.m_total_hits_ascend == 'T') {
-        pick_modified_by_total_hits_ascend(
+        if (m_config.m_total_hits_ascend == 'T') {
+          pick_modified_by_total_hits_ascend(
+            hybrid_rep_candidates,
+            hybrid_rep_candidates_no_record_in_mshr,
+            hybrid_rep_candidates_recorded_in_mshr,
+            valid_line,
+            lru_picked_total_hits
+          );
+        } else if (m_config.m_fill_time_ascend == 'T') {
+          fill_time_awared_modification_for_lru(
+            hybrid_rep_candidates,
+            hybrid_rep_candidates_no_record_in_mshr,
+            hybrid_rep_candidates_recorded_in_mshr,
+            valid_line,
+            valid_timestamp);
+        }
+      } // LRU 
+      else if (m_config.m_replacement_policy == SRRIP) {
+        assert(srrip_has_picked);
+        mshr_awared_modification_for_srrip(
           hybrid_rep_candidates,
           hybrid_rep_candidates_no_record_in_mshr,
           hybrid_rep_candidates_recorded_in_mshr,
-          valid_line,
-          lru_picked_total_hits
-        );
-      } else if (m_config.m_fill_time_ascend == 'T') { // 1-25 flush lru results
-        fill_time_awared_modification_for_lru(
-          hybrid_rep_candidates,
-          hybrid_rep_candidates_no_record_in_mshr,
-          hybrid_rep_candidates_recorded_in_mshr,
-          valid_line,
-          valid_timestamp,
-          last_warp_id
-        );
+          valid_line);
+        if (m_config.m_total_hits_ascend == 'T') {
+          pick_modified_by_total_hits_ascend(
+            hybrid_rep_candidates,
+            hybrid_rep_candidates_no_record_in_mshr,
+            hybrid_rep_candidates_recorded_in_mshr,
+            valid_line,
+            lru_picked_total_hits
+          );
+        } else if (m_config.m_fill_time_ascend == 'T') {
+          fill_time_awared_modification_for_srrip(
+            hybrid_rep_candidates,
+            hybrid_rep_candidates_no_record_in_mshr,
+            hybrid_rep_candidates_recorded_in_mshr,
+            valid_line);
+        }
+      } // SRRIP
+      m_lines[valid_line]->update_recency_info(time);
+      if (mf) {
+        mf->set_victim_avg_evict_interval(m_lines[valid_line]->get_avg_evict_interval());
       }
-    } else if (m_config.m_replacement_policy == SRRIP) {
-      assert(srrip_has_picked);
-      mshr_awared_modification_for_srrip(
-        hybrid_rep_candidates,
-        hybrid_rep_candidates_no_record_in_mshr,
-        hybrid_rep_candidates_recorded_in_mshr,
-        valid_line, 
-        last_warp_id
-      );
-      if (m_config.m_total_hits_ascend == 'T') {
-        pick_modified_by_total_hits_ascend(
-          hybrid_rep_candidates,
-          hybrid_rep_candidates_no_record_in_mshr,
-          hybrid_rep_candidates_recorded_in_mshr,
-          valid_line,
-          lru_picked_total_hits
-        );
-      } else if (m_config.m_fill_time_ascend == 'T') {
-        fill_time_awared_modification_for_srrip(
-          hybrid_rep_candidates,
-          hybrid_rep_candidates_no_record_in_mshr,
-          hybrid_rep_candidates_recorded_in_mshr,
-          valid_line,
-          last_warp_id
-        );
-      }
-    }    
-    m_lines[valid_line]->update_recency_info(time);
-    if (mf) {
-      mf->set_victim_avg_evict_interval(m_lines[valid_line]->get_avg_evict_interval());
-    }
-    idx = valid_line;    
-  } else if (valid_line == (unsigned) - 1) {
-    if (m_config.m_replacement_policy == LRU) {
-      assert(0);
-    } else if (m_config.m_replacement_policy == SRRIP) {
-      assert(!srrip_has_picked);
+      idx = valid_line;
+    } else if (valid_line == (unsigned) - 1) {
+      if (m_config.m_replacement_policy == LRU) {
+        assert(0);
+      } else if (m_config.m_replacement_policy == SRRIP) {
+        assert(!srrip_has_picked);
 
-      pick_with_lru(
-        hybrid_rep_candidates,
-        hybrid_rep_candidates_no_record_in_mshr,
-        hybrid_rep_candidates_recorded_in_mshr,
-        idx, valid_timestamp,
-        lru_picked_total_hits, lru_picked_avg_evict_interval,
-        last_warp_id);
-      if (m_config.m_total_hits_ascend == 'T') {
-        pick_modified_by_total_hits_ascend(
-          hybrid_rep_candidates, 
-          hybrid_rep_candidates_no_record_in_mshr,
-          hybrid_rep_candidates_recorded_in_mshr,
-          lru_picked_line, lru_picked_total_hits
-        );
-        idx = lru_picked_line;
-      } else if (m_config.m_fill_time_ascend == 'T') {
-        fill_time_awared_modification_for_lru(
+        pick_with_lru(
           hybrid_rep_candidates,
           hybrid_rep_candidates_no_record_in_mshr,
           hybrid_rep_candidates_recorded_in_mshr,
-          idx,
-          valid_timestamp,
-          last_warp_id
-        );
-      }
-      if (DTRACE(LRU_SAVED_SRRIP_PICKING)) {
-        fprintf(Trace::out, "%llu %s LRU saved SRRIP picking idx:%x\n",
-          time, m_config.m_cache_name, idx);
-      } 
-    }
-  } // else if (valid_line == (unsigned) - 1)
+          idx, valid_timestamp,
+          lru_picked_total_hits, lru_picked_avg_evict_interval);
+        if (m_config.m_total_hits_ascend == 'T') {
+          pick_modified_by_total_hits_ascend(
+            hybrid_rep_candidates, 
+            hybrid_rep_candidates_no_record_in_mshr,
+            hybrid_rep_candidates_recorded_in_mshr,
+            lru_picked_line, lru_picked_total_hits
+          );
+          idx = lru_picked_line;
+        } else if (m_config.m_fill_time_ascend == 'T') {
+          fill_time_awared_modification_for_lru(
+            hybrid_rep_candidates,
+            hybrid_rep_candidates_no_record_in_mshr,
+            hybrid_rep_candidates_recorded_in_mshr,
+            idx,
+            valid_timestamp);
+        }
+        if (DTRACE(LRU_SAVED_SRRIP_PICKING)) {
+          fprintf(Trace::out, "%llu %s LRU saved SRRIP picking idx:%x\n",
+            time, m_config.m_cache_name, idx);
+        } 
+      } // SRRIP
+    } // else if (valid_line == (unsigned) - 1) 
+  } // else if (m_config.m_warp_interfere_aware == 'F')
 
   bool has_warp_interfere = 
     !strcmp(m_config.get_cache_name(), "L1D") && mf && 
     idx != ((unsigned) - 1) && 
-    valid_line != ((unsigned) - 1);
+    valid_line != ((unsigned) - 1) &&
+    last_warp_id != mf->get_wid();
   if (has_warp_interfere) {
+    assert(last_core_id == mf->get_sid());
     got_warp_interfere_info = true;
     warp_interfere_record.last_warp_id = last_warp_id;
     warp_interfere_record.curr_warp_id = mf->get_wid();
   }
   if (DTRACE(WARP_INTERFERE)) {
     if (has_warp_interfere) {
-      fprintf(Trace::out, "%llu warp:%u evicted idx:%#lx hit by warp:%u last time\n",
+      fprintf(Trace::out, "%llu warp:%u evicted idx:%#x hit by warp:%u last time\n",
         time, mf->get_wid(), idx, last_warp_id);
+    }
+  }
+
+  if (DTRACE(WARP_INTERFERE_AWARED_SCHED)) {
+    if (time == 54810) 
+    {
+      fprintf(Trace::out, "%llu caller is %s. "
+        "idx = %#x %s\n", time, caller.c_str(),
+        idx, str_cache_name.c_str());
     }
   }
 
@@ -1028,17 +1158,17 @@ bool tag_array::already_has_max_rrpv_in_one_set(unsigned set_index) {
   return false;
 }
 
-enum cache_request_status tag_array::access(new_addr_type addr, 
+enum cache_request_status tag_array::access(gpgpu_sim *gpu, new_addr_type addr, 
                                             unsigned long long time,
                                             unsigned &idx, mem_fetch *mf) {
   bool wb = false;
   evicted_block_info evicted;
-  enum cache_request_status result = access(addr, time, idx, wb, evicted, mf);
+  enum cache_request_status result = access(gpu, addr, time, idx, wb, evicted, mf);
   assert(!wb);
   return result;
 }
 
-enum cache_request_status tag_array::access(new_addr_type addr, 
+enum cache_request_status tag_array::access(gpgpu_sim *gpu, new_addr_type addr, 
                                             unsigned long long time,
                                             unsigned &idx, bool &wb,
                                             evicted_block_info &evicted,
@@ -1051,8 +1181,11 @@ enum cache_request_status tag_array::access(new_addr_type addr,
   WARP_INTERFERE_RECORD warp_interfere_record((unsigned )- 1, (unsigned) - 1);
 
   enum cache_request_status status = 
-    probe("tag_array::access", addr, idx, mf, mf->is_write(), time, 
+    probe("tag_array::access", gpu, addr, idx, mf, mf->is_write(), time, 
       got_warp_interfere_info, warp_interfere_record);
+
+  m_lines[idx]->set_last_warp_id(mf->get_wid());
+  m_lines[idx]->set_last_core_id(mf->get_sid());
 
   switch (status) {
     case HIT_RESERVED:
@@ -1060,7 +1193,6 @@ enum cache_request_status tag_array::access(new_addr_type addr,
     case HIT:
       mf->get_access_type() == GLOBAL_ACC_W ? m_writes++ : m_reads++;
       m_lines[idx]->set_last_access_time(time, mf->get_access_sector_mask());
-      m_lines[idx]->set_last_warp_id(mf->get_wid());
       break;
     case MISS:
       mf->get_access_type() == GLOBAL_ACC_W ? m_writes++ : m_reads++;
@@ -1110,13 +1242,12 @@ enum cache_request_status tag_array::access(new_addr_type addr,
   return status;
 }
 
-void tag_array::fill(new_addr_type addr, unsigned long long time, mem_fetch *mf,
+void tag_array::fill(gpgpu_sim *gpu, new_addr_type addr, unsigned long long time, mem_fetch *mf,
                      bool is_write) {
-  fill(addr, time, mf->get_access_sector_mask(), mf->get_access_byte_mask(),
-       is_write);
+  fill(gpu, addr, time, mf->get_access_sector_mask(), mf->get_access_byte_mask(), is_write);
 }
 
-void tag_array::fill(new_addr_type addr, unsigned long long time,
+void tag_array::fill(gpgpu_sim *gpu, new_addr_type addr, unsigned long long time,
                      mem_access_sector_mask_t mask,
                      mem_access_byte_mask_t byte_mask, bool is_write) {
   // assert( m_config.m_alloc_policy == ON_FILL );
@@ -1126,7 +1257,7 @@ void tag_array::fill(new_addr_type addr, unsigned long long time,
   WARP_INTERFERE_RECORD warp_interfere_record((unsigned )- 1, (unsigned) - 1);
 
   enum cache_request_status status = 
-    probe("tag_array::fill", addr, idx, mask, is_write, time, 
+    probe("tag_array::fill", gpu, addr, idx, mask, is_write, time, 
       false /* probe_mode */,
       got_warp_interfere_info, warp_interfere_record);
 
@@ -3212,7 +3343,7 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
     if (DTRACE(CACHE_EVENT)) {
       dumpCacheEvent(time, "::fill", "ap:ON_FILL m_tag_array->fill", mf);
     }     
-    m_tag_array->fill(e->second.m_block_addr, time, mf, mf->is_write());
+    m_tag_array->fill(m_gpu, e->second.m_block_addr, time, mf, mf->is_write());
   } else {
     abort();
   }
@@ -3429,9 +3560,9 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
     // No MSHR: only gate on miss_queue capacity, no merge or ready tracking.
     if (m_miss_queue.size() < m_config.m_miss_queue_size) {
       if (read_only) {
-        m_tag_array->access(block_addr, time, cache_index, mf);
+        m_tag_array->access(m_gpu, block_addr, time, cache_index, mf);
       } else {
-        m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
+        m_tag_array->access(m_gpu, block_addr, time, cache_index, wb, evicted, mf);
       }
 
       m_extra_mf_fields[mf] = extra_mf_fields(
@@ -3461,9 +3592,9 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
     bool mshr_avail = !m_mshrs.full(mshr_addr);
     if (mshr_hit && mshr_avail) {
       if (read_only) {
-        m_tag_array->access(block_addr, time, cache_index, mf);
+        m_tag_array->access(m_gpu, block_addr, time, cache_index, mf);
       } else {
-        m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
+        m_tag_array->access(m_gpu, block_addr, time, cache_index, wb, evicted, mf);
       }
 
       const size_t last_occupied_entries = m_mshrs.occupied_entries();
@@ -3529,9 +3660,9 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
     } else if (!mshr_hit && mshr_avail &&
               (m_miss_queue.size() < m_config.m_miss_queue_size)) {
       if (read_only) {
-        m_tag_array->access(block_addr, time, cache_index, mf);
+        m_tag_array->access(m_gpu, block_addr, time, cache_index, mf);
       } else {
-        m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
+        m_tag_array->access(m_gpu, block_addr, time, cache_index, wb, evicted, mf);
       }
 
       [[maybe_unused]] const unsigned last_occupied_entries = m_mshrs.occupied_entries();
@@ -3643,7 +3774,7 @@ cache_request_status data_cache::wr_hit_wb(new_addr_type addr,
                                            std::list<cache_event> &events,
                                            enum cache_request_status status) {
   new_addr_type block_addr = m_config.block_addr(addr);
-  m_tag_array->access(block_addr, time, cache_index, mf);  // update LRU state
+  m_tag_array->access(m_gpu, block_addr, time, cache_index, mf);  // update LRU state
   cache_block_t *block = m_tag_array->get_block(cache_index);
   if (!block->is_modified_line()) {
     m_tag_array->inc_dirty();
@@ -3675,7 +3806,7 @@ cache_request_status data_cache::wr_hit_wt(new_addr_type addr,
   }
 
   new_addr_type block_addr = m_config.block_addr(addr);
-  m_tag_array->access(block_addr, time, cache_index, mf);  // update LRU state
+  m_tag_array->access(m_gpu, block_addr, time, cache_index, mf);  // update LRU state
   cache_block_t *block = m_tag_array->get_block(cache_index);
   if (!block->is_modified_line()) {
     m_tag_array->inc_dirty();
@@ -3808,6 +3939,13 @@ enum cache_request_status data_cache::wr_miss_wa_naive(
       *ma, NULL, mf->get_streamID(), mf->get_ctrl_size(), mf->get_wid(),
       mf->get_sid(), mf->get_tpc(), mf->get_mem_config(),
       m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
+  // 2/13 debug
+  if (DTRACE(DEBUG_SINGLE_MF)) {
+    fprintf(Trace::out, "%llu wr_miss_wa_naive "
+      "new mem_fetch addr = %#llx sid:%u warp_id:%u\n",
+      m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
+      mf->get_addr(), mf->get_sid(), mf->get_wid());
+  }
 
   bool do_miss = false;
   bool wb = false;
@@ -3881,7 +4019,7 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
     evicted_block_info evicted;
 
     cache_request_status status =
-        m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
+        m_tag_array->access(m_gpu, block_addr, time, cache_index, wb, evicted, mf);
     assert(status != HIT);
     cache_block_t *block = m_tag_array->get_block(cache_index);
     if (!block->is_modified_line()) {
@@ -3971,6 +4109,13 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
         *ma, NULL, mf->get_streamID(), mf->get_ctrl_size(), mf->get_wid(),
         mf->get_sid(), mf->get_tpc(), mf->get_mem_config(),
         m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, NULL, mf);
+    // 2/13 debug
+    if (DTRACE(DEBUG_SINGLE_MF)) {
+      fprintf(Trace::out, "%llu wr_miss_wa_fetch_on_write "
+        "new mem_fetch addr = %#llx sid:%u warp_id:%u\n",
+        m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
+        mf->get_addr(), mf->get_sid(), mf->get_wid());
+    }
 
     new_addr_type block_addr = m_config.block_addr(addr);
     bool do_miss = false;
@@ -4051,7 +4196,7 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
   evicted_block_info evicted;
 
   cache_request_status req_status =
-      m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
+      m_tag_array->access(m_gpu, block_addr, time, cache_index, wb, evicted, mf);
 
   assert(req_status != HIT);
   cache_block_t *block = m_tag_array->get_block(cache_index);
@@ -4175,7 +4320,7 @@ enum cache_request_status data_cache::rd_hit_base(
     unsigned long long time,
     std::list<cache_event> &events, enum cache_request_status status) {
   new_addr_type block_addr = m_config.block_addr(addr);
-  m_tag_array->access(block_addr, time, cache_index, mf);
+  m_tag_array->access(m_gpu, block_addr, time, cache_index, mf);
   // Atomics treated as global read/write requests - Perform read, mark line as
   // MODIFIED
   if (mf->isatomic()) {
@@ -4288,13 +4433,13 @@ enum cache_request_status read_only_cache::access(
   WARP_INTERFERE_RECORD warp_interfere_record((unsigned )- 1, (unsigned) - 1);
 
   enum cache_request_status status = m_tag_array->probe(
-    "read_only_cache::access", block_addr, cache_index, mf, mf->is_write(), 
+    "read_only_cache::access", m_gpu, block_addr, cache_index, mf, mf->is_write(), 
     time, got_warp_interfere_info, warp_interfere_record);
   
     enum cache_request_status cache_status = RESERVATION_FAIL;
 
   if (status == HIT) {
-    cache_status = m_tag_array->access(block_addr, time, cache_index, mf); // update LRU state
+    cache_status = m_tag_array->access(m_gpu, block_addr, time, cache_index, mf); // update LRU state
   } else if (status != RESERVATION_FAIL) {
     if (!miss_queue_full(0)) {
       bool do_miss = false;
@@ -4409,18 +4554,22 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
   WARP_INTERFERE_RECORD warp_interfere_record((unsigned )- 1, (unsigned) - 1);
 
   enum cache_request_status probe_status = m_tag_array->probe(
-    "data_cache::access", block_addr, cache_index, mf, mf->is_write(), time,
+    "data_cache::access", m_gpu,
+    block_addr, cache_index, mf, mf->is_write(), time,
     got_warp_interfere_info, warp_interfere_record,
     true /* probe_mode */);
 
-  // for debug
   if (got_warp_interfere_info) {
+    assert(warp_interfere_record.curr_warp_id == mf->get_wid());
     unsigned interfered  = warp_interfere_record.last_warp_id;
     unsigned interfering = warp_interfere_record.curr_warp_id;
     m_gpu->get_shader_stats()->warp_interfere[mf->get_sid()][interfered][interfering]++;
-    // printf("warp_interfere[sid:%u][interfered:%u][interfering:%u]++ = %u\n",
-    //   mf->get_sid(), interfered, interfering, 
-    //   m_gpu->get_shader_stats()->warp_interfere[mf->get_sid()][interfered][interfering]);
+    if (DTRACE(INC_WARP_INTERFERE)) {
+      fprintf(Trace::out, "%llu Increased warp_interfere[sid:%u][interfered:%u][interfering:%u] = %u\n",
+        time, mf->get_sid(), interfered, interfering, 
+        m_gpu->get_shader_stats()->warp_interfere[mf->get_sid()][interfered][interfering]
+      );
+    }
   }
  
   const unsigned sid = mf->get_sid();
@@ -4498,7 +4647,7 @@ enum cache_request_status tex_cache::access(new_addr_type addr, mem_fetch *mf,
   new_addr_type block_addr = m_config.block_addr(addr);
   unsigned cache_index = (unsigned)-1;
   enum cache_request_status status =
-      m_tags.access(block_addr, time, cache_index, mf);
+      m_tags.access(nullptr, block_addr, time, cache_index, mf);
   enum cache_request_status cache_status = RESERVATION_FAIL;
   assert(status != RESERVATION_FAIL);
   assert(status != HIT_RESERVED);  // as far as tags are concerned: HIT or MISS

@@ -43,6 +43,27 @@
 #include "gpgpusim_entrypoint.h"
 #include "option_parser.h"
 
+const char* memory_space_str(enum _memory_space_t type) {
+  static const char *static_memory_space_str[] = {
+    "undefined_space",
+    "reg_space",
+    "local_space",
+    "shared_space",
+    "sstarr_space",
+    "param_space_unclassified",
+    "param_space_kernel",
+    "param_space_local",
+    "const_space",
+    "tex_space",
+    "surf_space",
+    "global_space",
+    "generic_space",
+    "instruction_space"
+  };
+  assert(sizeof(static_memory_space_str) / sizeof(const char *) == NUM_MEMORY_SPACE);
+  return static_memory_space_str[type];
+}
+
 void mem_access_t::init(gpgpu_context *ctx) {
   gpgpu_ctx = ctx;
   m_uid = ++(gpgpu_ctx->sm_next_access_uid);
@@ -363,11 +384,16 @@ void warp_inst_t::broadcast_barrier_reduction(
 }
 
 void warp_inst_t::generate_mem_accesses() {
-  if (empty() || op == MEMORY_BARRIER_OP || m_mem_accesses_created) return;
-  if (!((op == LOAD_OP) || (op == TENSOR_CORE_LOAD_OP) || (op == STORE_OP) ||
-        (op == TENSOR_CORE_STORE_OP)))
+  if (empty() || op == MEMORY_BARRIER_OP || m_mem_accesses_created) {
     return;
-  if (m_warp_active_mask.count() == 0) return;  // predicated off
+  }
+  if (!((op == LOAD_OP) || (op == TENSOR_CORE_LOAD_OP) || (op == STORE_OP) ||
+        (op == TENSOR_CORE_STORE_OP))) {
+    return;
+  }
+  if (m_warp_active_mask.count() == 0) {
+    return;  // predicated off
+  }
 
   const size_t starting_queue_size = m_accessq.size();
 
@@ -379,20 +405,25 @@ void warp_inst_t::generate_mem_accesses() {
   bool is_write = is_store();
 
   mem_access_type access_type;
+  std::string str_access_type = "";
   switch (space.get_type()) {
     case const_space:
     case param_space_kernel:
       access_type = CONST_ACC_R;
+      str_access_type = "CONST_ACC_R";
       break;
     case tex_space:
       access_type = TEXTURE_ACC_R;
+      str_access_type = "TEXTURE_ACC_R";
       break;
     case global_space:
       access_type = is_write ? GLOBAL_ACC_W : GLOBAL_ACC_R;
+      str_access_type = is_write ? "GLOBAL_ACC_W" : "GLOBAL_ACC_R";
       break;
     case local_space:
     case param_space_local:
       access_type = is_write ? LOCAL_ACC_W : LOCAL_ACC_R;
+      str_access_type = is_write ? "LOCAL_ACC_W" : "LOCAL_ACC_R";
       break;
     case shared_space:
       break;
@@ -410,24 +441,37 @@ void warp_inst_t::generate_mem_accesses() {
     case shared_space:
     case sstarr_space: {
       unsigned subwarp_size = m_config->warp_size / m_config->mem_warp_parts;
+      if (DTRACE(SM_PATH)) {
+        // subwarp_size:32 = warp_size:32 / mem_warp_parts:1
+        fprintf(Trace::out, "subwarp_size:%u = warp_size:%u / mem_warp_parts:%u\n",
+          subwarp_size, m_config->warp_size, m_config->mem_warp_parts);
+      }
+
       unsigned total_accesses = 0;
-      for (unsigned subwarp = 0; subwarp < m_config->mem_warp_parts;
-           subwarp++) {
+      for (unsigned subwarp = 0; subwarp < m_config->mem_warp_parts; subwarp++) {
         // data structures used per part warp
-        std::map<unsigned, std::map<new_addr_type, unsigned> >
-            bank_accs;  // bank -> word address -> access count
+        // bank -> word address -> access count
+        std::map<unsigned, std::map<new_addr_type, unsigned>> bank_accs;
 
         // step 1: compute accesses to words in banks
         for (unsigned thread = subwarp * subwarp_size;
              thread < (subwarp + 1) * subwarp_size; thread++) {
-          if (!active(thread)) continue;
+          if (!active(thread)) {
+            continue;
+          }
           new_addr_type addr = m_per_scalar_thread[thread].memreqaddr[0];
           // FIXME: deferred allocation of shared memory should not accumulate
           // across kernel launches assert( addr < m_config->gpgpu_shmem_size );
-          unsigned bank = m_config->shmem_bank_func(addr);
-          new_addr_type word =
-              line_size_based_tag_func(addr, m_config->WORD_SIZE);
+          unsigned bank      = m_config->shmem_bank_func(addr);
+          new_addr_type word = line_size_based_tag_func(addr, m_config->WORD_SIZE);
           bank_accs[bank][word]++;
+          if (DTRACE(SM_PATH) || DTRACE(WARP_SCHEDULER)) {
+            fprintf(Trace::out, "word:%llu = "
+              "line_size_based_tag_func(addr:%#llx, WORD_SIZE:%llu). "
+              "bank_accs[bank:%u][word:%llu]++ = %u\n",
+              word, addr, m_config->WORD_SIZE,
+              bank, word, bank_accs[bank][word]);
+          }
         }
 
         if (m_config->shmem_limited_broadcast) {
@@ -449,9 +493,10 @@ void warp_inst_t::generate_mem_accesses() {
                 break;
               }
             }
-            if (broadcast_detected) break;
+            if (broadcast_detected) {
+              break;
+            }
           }
-
           // step 3: figure out max bank accesses performed, taking account of
           // broadcast case
           unsigned max_bank_accesses = 0;
@@ -472,13 +517,14 @@ void warp_inst_t::generate_mem_accesses() {
                 }
               }
             }
-            if (bank_accesses > max_bank_accesses)
+            if (bank_accesses > max_bank_accesses) {
               max_bank_accesses = bank_accesses;
+            }
           }
-
           // step 4: accumulate
-          total_accesses += max_bank_accesses;
-        } else {
+          total_accesses += max_bank_accesses;       
+        } // if (m_config->shmem_limited_broadcast) { 
+        else {
           // step 2: look for the bank with the maximum number of access to
           // different words
           unsigned max_bank_accesses = 0;
@@ -487,40 +533,42 @@ void warp_inst_t::generate_mem_accesses() {
             max_bank_accesses =
                 std::max(max_bank_accesses, (unsigned)b->second.size());
           }
-
           // step 3: accumulate
           total_accesses += max_bank_accesses;
         }
       }
       assert(total_accesses > 0 && total_accesses <= m_config->warp_size);
-      cycles = total_accesses;  // shared memory conflicts modeled as larger
-                                // initiation interval
-      m_config->gpgpu_ctx->stats->ptx_file_line_stats_add_smem_bank_conflict(
-          pc, total_accesses);
+      cycles = total_accesses;
+      // shared memory conflicts modeled as larger initiation interval
+      m_config->gpgpu_ctx->stats->ptx_file_line_stats_add_smem_bank_conflict(pc, total_accesses);
       break;
     }
-
     case tex_space:
       cache_block_size = m_config->gpgpu_cache_texl1_linesize;
       break;
     case const_space:
     case param_space_kernel:
-      cache_block_size = m_config->gpgpu_cache_constl1_linesize;
+      cache_block_size = m_config->gpgpu_cache_constl1_linesize;     
       break;
-
     case global_space:
     case local_space:
     case param_space_local:
-      if (m_config->gpgpu_coalesce_arch >= 13) {
-        if (isatomic())
+      if (m_config->gpgpu_coalesce_arch >= 13) { // = 70 for default Volta
+        if (isatomic()) {
           memory_coalescing_arch_atomic(is_write, access_type);
-        else
+        } else {
+          if (DTRACE(SM_PATH)) {
+            fprintf(Trace::out, "(global_space | local_space | param_space_local) "
+              "memory_coalescing_arch(is_write:%u, access_type:%s)\n",
+              is_write, str_access_type.c_str()
+            );
+          }          
           memory_coalescing_arch(is_write, access_type);
-      } else
+        }          
+      } else {
         abort();
-
+      }  
       break;
-
     default:
       abort();
   }
@@ -621,9 +669,11 @@ void warp_inst_t::memory_coalescing_arch(bool is_write,
     std::map<new_addr_type, transaction_info> subwarp_transactions;
 
     // step 1: find all transactions generated by this subwarp
-    for (unsigned thread = subwarp * subwarp_size;
-         thread < subwarp_size * (subwarp + 1); thread++) {
-      if (!active(thread)) continue;
+    for (unsigned thread = subwarp * subwarp_size; 
+        thread < subwarp_size * (subwarp + 1); thread++) {
+      if (!active(thread)) {
+        continue;
+      }
 
       unsigned data_size_coales = data_size;
       unsigned num_accesses = 1;
@@ -661,31 +711,34 @@ void warp_inst_t::memory_coalescing_arch(bool is_write,
         info.chunks.set(chunk);
         info.active.set(thread);
         unsigned idx = (addr & 127);
-        for (unsigned i = 0; i < data_size_coales; i++)
-          if ((idx + i) < MAX_MEMORY_ACCESS_SIZE) info.bytes.set(idx + i);
-
+        for (unsigned i = 0; i < data_size_coales; i++) {
+          if ((idx + i) < MAX_MEMORY_ACCESS_SIZE) {
+            info.bytes.set(idx + i);
+          }
+        }
         // it seems like in trace driven, a thread can write to more than one
         // segment handle this special case
-        if (block_address != line_size_based_tag_func(
-                                 addr + data_size_coales - 1, segment_size)) {
+        if (block_address != 
+            line_size_based_tag_func(addr + data_size_coales - 1, segment_size)) {
+
           addr = addr + data_size_coales - 1;
-          new_addr_type block_address =
-              line_size_based_tag_func(addr, segment_size);
+          new_addr_type block_address = line_size_based_tag_func(addr, segment_size);
           unsigned chunk = (addr & 127) / 32;
           transaction_info &info = subwarp_transactions[block_address];
           info.chunks.set(chunk);
           info.active.set(thread);
           unsigned idx = (addr & 127);
-          for (unsigned i = 0; i < data_size_coales; i++)
-            if ((idx + i) < MAX_MEMORY_ACCESS_SIZE) info.bytes.set(idx + i);
+          for (unsigned i = 0; i < data_size_coales; i++) {
+            if ((idx + i) < MAX_MEMORY_ACCESS_SIZE) {
+              info.bytes.set(idx + i);
+            }
+          }
         }
       }
     }
-
     // step 2: reduce each transaction size, if possible
     std::map<new_addr_type, transaction_info>::iterator t;
-    for (t = subwarp_transactions.begin(); t != subwarp_transactions.end();
-         t++) {
+    for (t = subwarp_transactions.begin(); t != subwarp_transactions.end(); t++) {
       new_addr_type addr = t->first;
       const transaction_info &info = t->second;
 

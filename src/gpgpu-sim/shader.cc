@@ -66,6 +66,14 @@ mem_fetch *shader_core_mem_fetch_allocator::alloc(
   mem_fetch *mf = new mem_fetch(
       access, NULL, streamID, wr ? WRITE_PACKET_SIZE : READ_PACKET_SIZE, -1,
       m_core_id, m_cluster_id, m_memory_config, cycle);
+
+  // 2/13 debug
+  if (DTRACE(DEBUG_SINGLE_MF)) {
+    fprintf(Trace::out, "shader_core_mem_fetch_allocator::alloc "
+      "new mem_fetch addr = %#llx sid:%u warp_id:%u\n",
+      mf->get_addr(), mf->get_sid(), mf->get_wid());    
+  }
+
   return mf;
 }
 
@@ -80,6 +88,14 @@ mem_fetch *shader_core_mem_fetch_allocator::alloc(
   mem_fetch *mf = new mem_fetch(
       access, NULL, streamID, wr ? WRITE_PACKET_SIZE : READ_PACKET_SIZE, wid,
       m_core_id, m_cluster_id, m_memory_config, cycle, original_mf);
+
+  // 2/13 debug
+  if (DTRACE(DEBUG_SINGLE_MF)) {
+    fprintf(Trace::out, "%llu shader_core_mem_fetch_allocator::alloc "
+      "new mem_fetch addr = %#llx sid:%u warp_id:%u\n",
+      cycle, mf->get_addr(), mf->get_sid(), mf->get_wid());    
+  }
+
   return mf;
 }
 /////////////////////////////////////////////////////////////////////////////
@@ -1037,9 +1053,34 @@ void shader_core_ctx::fetch() {
       // find an active warp with space in instruction buffer that is not
       // already waiting on a cache miss and get next 1-2 instructions from
       // i-cache...
+
+      // std::vector<int> v_has_fetch_chance(m_config->max_warps_per_shader, 0);
+      // int has_fetch_chance = 0;
+      // bool apply_warp_interference = true;
+      // unsigned n_can_fetch = 0;
+      // unsigned n_ibuf = 0;
+      // for (unsigned i = 0; i < m_config->max_warps_per_shader; i++) {
+      //   unsigned warp_id = (m_last_warp_fetched + 1 + i) % m_config->max_warps_per_shader;
+
+      //   if (!m_warp[warp_id]->functional_done() &&
+      //     !m_warp[warp_id]->imiss_pending() &&
+      //     m_warp[warp_id]->ibuffer_empty()) {
+      //     v_has_fetch_chance[i] = 1;
+      //   }
+      //   // if (m_gpu->get_shader_stats()->warp_interfere[m_sid][m_last_warp_fetched][warp_id] > 3) {
+      //   // if (m_gpu->get_shader_stats()->warp_interfere[m_sid][m_last_warp_fetched][warp_id] > 5) {
+      //   if (m_gpu->get_shader_stats()->warp_interfere[m_sid][m_last_warp_fetched][warp_id] > 10) {
+      //   // if (m_gpu->get_shader_stats()->warp_interfere[m_sid][m_last_warp_fetched][warp_id] > 20) {
+      //     v_has_fetch_chance[i] = 0;
+      //   }
+      //   has_fetch_chance |= v_has_fetch_chance[i];
+      // }
+      // if (!has_fetch_chance) {
+      //   apply_warp_interference = false;
+      // }
+
       for (unsigned i = 0; i < m_config->max_warps_per_shader; i++) {
-        unsigned warp_id =
-            (m_last_warp_fetched + 1 + i) % m_config->max_warps_per_shader;
+        unsigned warp_id = (m_last_warp_fetched + 1 + i) % m_config->max_warps_per_shader;
 
         // this code checks if this warp has finished executing and can be
         // reclaimed
@@ -1053,18 +1094,18 @@ void shader_core_ctx::fetch() {
               m_threadState[tid].m_active = false;
               unsigned cta_id = m_warp[warp_id]->get_cta_id();
               if (m_thread[tid] == NULL) {
-                register_cta_thread_exit(cta_id,
-                                         m_warp[warp_id]->get_kernel_info());
+                register_cta_thread_exit(cta_id, m_warp[warp_id]->get_kernel_info());
               } else {
-                register_cta_thread_exit(cta_id,
-                                         &(m_thread[tid]->get_kernel()));
+                register_cta_thread_exit(cta_id, &(m_thread[tid]->get_kernel()));
               }
               m_not_completed -= 1;
               m_active_threads.reset(tid);
               did_exit = true;
             }
           }
-          if (did_exit) m_warp[warp_id]->set_done_exit();
+          if (did_exit) {
+            m_warp[warp_id]->set_done_exit();
+          }
           --m_active_warps;
           assert(m_active_warps >= 0);
         }
@@ -1075,20 +1116,14 @@ void shader_core_ctx::fetch() {
             m_warp[warp_id]->ibuffer_empty()) {
 
           address_type pc;
-          pc = m_warp[warp_id]->get_pc();
-
-          if (DTRACE(IBUF)) {
-            fprintf(Trace::out, "%llu WARP[%u] IBUF is empty on pc:%#llx\n",
-              m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, warp_id, pc          
-            );
-          }          
+          pc = m_warp[warp_id]->get_pc();      
 
           address_type ppc = pc + PROGRAM_MEM_START;
           unsigned nbytes = 16;
-          unsigned offset_in_block =
-              pc & (m_config->m_L1I_config.get_line_sz() - 1);
-          if ((offset_in_block + nbytes) > m_config->m_L1I_config.get_line_sz())
+          unsigned offset_in_block = pc & (m_config->m_L1I_config.get_line_sz() - 1);
+          if ((offset_in_block + nbytes) > m_config->m_L1I_config.get_line_sz()) {
             nbytes = (m_config->m_L1I_config.get_line_sz() - offset_in_block);
+          }
 
           // TODO: replace with use of allocator
           // mem_fetch *mf = m_mem_fetch_allocator->alloc()
@@ -1097,6 +1132,7 @@ void shader_core_ctx::fetch() {
               acc, NULL, m_warp[warp_id]->get_streamID(), READ_PACKET_SIZE,
               warp_id, m_sid, m_tpc, m_memory_config,
               m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
+
           std::list<cache_event> events;
           enum cache_request_status status;
           if (m_config->perfect_inst_const_cache) {
@@ -1110,7 +1146,7 @@ void shader_core_ctx::fetch() {
 
           if (DTRACE(FETCH)) {
             fprintf(Trace::out, "%llu: fetched inst for warp %u pc=0x%llx "
-                                 "(access I$ va=0x%llx, nbytes=%u) => %s\n",
+                                "(access I$ va=0x%llx, nbytes=%u) => %s\n",
                     m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, warp_id,
                     pc, ppc, nbytes, cache_request_status_str(status));
           }
@@ -1139,9 +1175,9 @@ void shader_core_ctx::fetch() {
           }
           break;
         }
-      }
-    }
-  }
+      } // for (unsigned i = 0; i < m_config->max_warps_per_shader; i++) {
+    } // !if (m_L1I->access_ready()) {
+  } // if (!m_inst_fetch_buffer.m_valid) {
 
   m_L1I->cycle();
 }
@@ -3609,15 +3645,13 @@ void ldst_unit::cycle() {
       if (pipe_reg.space.get_type() == shared_space) {
         if (m_pipeline_reg[m_config->smem_latency - 1]->empty()) {
           // new shared memory request
+          if (DTRACE(SM_PATH)) {
+            fprintf(Trace::out, "warp:%u launched new sm request\n", warp_id);
+          }
           move_warp(m_pipeline_reg[m_config->smem_latency - 1], m_dispatch_reg);
           m_dispatch_reg->clear();
         }
       } else {
-        // if( pipe_reg.active_count() > 0 ) {
-        //    if( !m_operand_collector->writeback(pipe_reg) )
-        //        return;
-        //}
-
         bool pending_requests = false;
         for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
           unsigned reg_id = pipe_reg.out[r];
@@ -3650,13 +3684,14 @@ void ldst_unit::cycle() {
         m_core->dec_inst_in_pipeline(warp_id);
         m_dispatch_reg->clear();
       }
-    } else {
+    } // if (pipe_reg.is_load()) { 
+    else {
       // stores exit pipeline here
       m_core->dec_inst_in_pipeline(warp_id);
       m_core->warp_inst_complete(*m_dispatch_reg);
       m_dispatch_reg->clear();
     }
-  }
+  } // if (!pipe_reg.empty()) {
 }
 
 void shader_core_ctx::register_cta_thread_exit(unsigned cta_num,

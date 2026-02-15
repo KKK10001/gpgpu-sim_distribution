@@ -255,6 +255,8 @@ struct cache_block_t {
   virtual unsigned long long get_last_fill_time() = 0;
   virtual void set_last_warp_id(unsigned warp_id) = 0;
   virtual unsigned get_last_warp_id() = 0;
+  virtual void set_last_core_id(unsigned core_id) = 0;
+  virtual unsigned get_last_core_id() = 0;
 
   virtual void update_recency_info(unsigned long long time) = 0;
   virtual void inc_total_hits() = 0;
@@ -393,6 +395,12 @@ struct line_cache_block : public cache_block_t {
   virtual unsigned get_last_warp_id() {
     return m_last_warp_id;
   }
+  virtual void set_last_core_id(unsigned core_id) {
+    m_last_core_id = core_id;
+  }
+  virtual unsigned get_last_core_id() {
+    return m_last_core_id;
+  }  
 
   virtual void inc_total_hits() {
     m_total_hits++;
@@ -474,6 +482,7 @@ struct line_cache_block : public cache_block_t {
   unsigned long long m_last_access_time;
   unsigned long long m_last_fill_time;
   unsigned m_last_warp_id;
+  unsigned m_last_core_id;
 
   unsigned m_total_evictions;
   unsigned m_total_accesses;  
@@ -684,6 +693,12 @@ struct sector_cache_block : public cache_block_t {
   virtual unsigned get_last_warp_id() {
     return m_last_warp_id;
   }
+  virtual void set_last_core_id(unsigned core_id) {
+    m_last_core_id = core_id;
+  }
+  virtual unsigned get_last_core_id() {
+    return m_last_core_id;
+  }    
 
   virtual void inc_total_hits() {
     m_total_hits++;
@@ -803,6 +818,7 @@ struct sector_cache_block : public cache_block_t {
   unsigned long long m_line_last_access_time;
   unsigned long long m_line_last_fill_time;
   unsigned m_last_warp_id;
+  unsigned m_last_core_id;
   unsigned m_total_evictions;
   unsigned m_total_accesses;
   unsigned long long m_last_evict_time;
@@ -890,12 +906,12 @@ class cache_config {
             &m_rrpv_bits, &m_combined_srrip_lru, &m_srrip_up);
 
     [[maybe_unused]] int ntok_rep_enhance = 
-      sscanf(rep_enhance_config, "%c,%c", 
-        &m_total_hits_ascend, &m_fill_time_ascend);
+      sscanf(rep_enhance_config, "%c,%c,%c", 
+        &m_total_hits_ascend, &m_fill_time_ascend, &m_warp_interfere_aware);
     fprintf(Trace::out, 
       "----------- %s rep_enhance_config is below -----------\n "
-      "m_total_hits_ascend = %c m_fill_time_ascend = %c\n",
-      cache_name, m_total_hits_ascend, m_fill_time_ascend);
+      "m_total_hits_ascend = %c m_fill_time_ascend = %c m_warp_interfere_aware = %c\n",
+      cache_name, m_total_hits_ascend, m_fill_time_ascend, m_warp_interfere_aware);
 
     fprintf(Trace::out, 
       "----------- %s srrip_config is below -----------\n "
@@ -1330,6 +1346,7 @@ class cache_config {
   char m_mshr_corr_repl;
   char m_total_hits_ascend;
   char m_fill_time_ascend;
+  char m_warp_interfere_aware;
 
   enum srrip_update_policy_t m_srrip_update_policy;
   unsigned m_rrpv_bits;
@@ -1446,6 +1463,7 @@ struct LINE_RECENCY {
   unsigned long long last_evict_interval;
   unsigned long long avg_evict_interval;
   unsigned warp_id;
+  unsigned core_id;
   LINE_RECENCY(
     unsigned long long last_access_time_,
     unsigned long long last_fill_time_,
@@ -1457,7 +1475,8 @@ struct LINE_RECENCY {
     unsigned total_accesses_,
     unsigned long long last_evict_interval_,
     unsigned long long avg_evict_interval_,
-    unsigned warp_id_
+    unsigned warp_id_,
+    unsigned core_id_
   ) : 
   last_access_time(last_access_time_),
   last_fill_time(last_fill_time_),
@@ -1469,7 +1488,24 @@ struct LINE_RECENCY {
   total_accesses(total_accesses_),
   last_evict_interval(last_evict_interval_),
   avg_evict_interval(avg_evict_interval_),
-  warp_id(warp_id_) {}
+  warp_id(warp_id_),
+  core_id(core_id_)
+  {}
+
+  void init() {
+    last_access_time = (unsigned long long) - 1;
+    last_fill_time   = (unsigned long long) - 1;
+    rrpv                   = (unsigned) - 1;
+    max_rrpv               = (unsigned) - 1;
+    recorded_times_in_mshr = (unsigned) - 1;
+    total_hits             = (unsigned) - 1;
+    total_evictions        = (unsigned) - 1;
+    total_accesses         = (unsigned) - 1;
+    last_evict_interval = (unsigned long long) - 1;
+    avg_evict_interval  = (unsigned long long) - 1;
+    warp_id = (unsigned) - 1;
+    core_id = (unsigned) - 1;
+  }
 };
 
 class tag_array {
@@ -1503,6 +1539,11 @@ class tag_array {
     const std::pair<unsigned, LINE_RECENCY>& b) {
     return a.second.last_fill_time < b.second.last_fill_time;
   }
+  // static bool cmpForSmallerWarpInterfere(
+  //   const std::pair<unsigned, LINE_RECENCY>& a, 
+  //   const std::pair<unsigned, LINE_RECENCY>& b) {
+  //   // return a.second. < b.second.last_fill_time;
+  // }  
 
   void gather_rep_candidates(
     cache_block_t* line, const unsigned& index,
@@ -1513,7 +1554,7 @@ class tag_array {
   void lru_pick(
     cache_block_t* line, unsigned long long& valid_timestamp, 
     unsigned& valid_line, const unsigned& index, 
-    unsigned& warp_id,
+    unsigned& warp_id, unsigned& core_id,
     bool& lru_has_picked);
   void fill_time_pick(
     cache_block_t* line, unsigned long long& valid_timestamp, 
@@ -1526,8 +1567,7 @@ class tag_array {
     unsigned& valid_line,
     unsigned long long& smallest_access_time,
     unsigned& lru_picked_total_hits,
-    unsigned long long& lru_picked_avg_evict_interval,
-    unsigned& warp_id
+    unsigned long long& lru_picked_avg_evict_interval
   );
   void pick_modified_by_total_hits_ascend(
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
@@ -1540,28 +1580,39 @@ class tag_array {
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
     unsigned& valid_line,
-    const unsigned long long& smallest_last_access_time,
-    unsigned& warp_id
-  );
+    const unsigned long long& smallest_last_access_time);
+  void mshr_corr_warp_interference_awared_pick(
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
+    unsigned& valid_line,
+    unsigned& warp_id, unsigned& core_id,
+    mem_fetch *mf, gpgpu_sim *gpu,
+    unsigned long long time
+  );  
 
   void fill_time_awared_modification_for_srrip(
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
-    unsigned& valid_line,
-    unsigned& warp_id
-  );
-
-  void mshr_awared_modification_for_srrip(
+    unsigned& valid_line);
+  void warp_interference_awared_modification_for_srrip(
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
     unsigned& valid_line,
-    unsigned& warp_id
+    unsigned& warp_id, unsigned& core_id,
+    mem_fetch *mf, gpgpu_sim *gpu
   );  
+  void mshr_awared_modification_for_srrip(
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
+    unsigned& valid_line);  
 
   // addr is block_addr
   enum cache_request_status probe(const std::string& caller,
+                                  gpgpu_sim *gpu,
                                   new_addr_type addr, unsigned &idx,
                                   mem_fetch *mf, bool is_write,
                                   unsigned long long time,
@@ -1569,6 +1620,7 @@ class tag_array {
                                   WARP_INTERFERE_RECORD& warp_interfere_record,
                                   bool probe_mode = false);
   enum cache_request_status probe(const std::string& caller,
+                                  gpgpu_sim *gpu,
                                   new_addr_type addr, unsigned &idx,
                                   mem_access_sector_mask_t mask, bool is_write,
                                   unsigned long long time,
@@ -1576,17 +1628,17 @@ class tag_array {
                                   bool& got_warp_interfere_info, 
                                   WARP_INTERFERE_RECORD& warp_interfere_record,
                                   mem_fetch *mf = NULL);
-  enum cache_request_status access(new_addr_type addr, unsigned long long time,
+  enum cache_request_status access(gpgpu_sim *gpu, new_addr_type addr, unsigned long long time,
                                    unsigned &idx, mem_fetch *mf);
-  enum cache_request_status access(new_addr_type addr, unsigned long long time,
+  enum cache_request_status access(gpgpu_sim *gpu, new_addr_type addr, unsigned long long time,
                                    unsigned &idx, bool &wb,
                                    evicted_block_info &evicted, mem_fetch *mf);
   void inc_rrpv_for_one_set(unsigned set_index);
   bool already_has_max_rrpv_in_one_set(unsigned set_index);
 
-  void fill(new_addr_type addr, unsigned long long time, mem_fetch *mf, bool is_write);
+  void fill(gpgpu_sim *gpu, new_addr_type addr, unsigned long long time, mem_fetch *mf, bool is_write);
   void fill(unsigned index, unsigned long long time, mem_fetch *mf);
-  void fill(new_addr_type addr, unsigned long long time, mem_access_sector_mask_t mask,
+  void fill(gpgpu_sim *gpu, new_addr_type addr, unsigned long long time, mem_access_sector_mask_t mask,
             mem_access_byte_mask_t byte_mask, bool is_write);
   void set_recorded_in_mshr(unsigned index, unsigned long long time);
 
@@ -2020,6 +2072,7 @@ bool was_writeallocate_sent(const std::list<cache_event> &events);
 /// Implements common functions for read_only_cache and data_cache
 /// Each subclass implements its own 'access' function
 class baseline_cache : public cache_t {
+  friend class tag_array;
   friend class tex_cache;
   friend class shader_core_ctx;
   friend class ldst_unit;
@@ -2201,7 +2254,7 @@ class baseline_cache : public cache_t {
   void force_tag_access(new_addr_type addr, unsigned time,
                         mem_access_sector_mask_t mask) {
     mem_access_byte_mask_t byte_mask;
-    m_tag_array->fill(addr, time, mask, byte_mask, true);
+    m_tag_array->fill(m_gpu, addr, time, mask, byte_mask, true);
   }
 
  protected:
@@ -2412,10 +2465,8 @@ class data_cache : public baseline_cache {
     m_gpu = gpu;
   }
 
-  mem_access_type m_wr_alloc_type;  // Specifies type of write allocate request
-                                    // (e.g., L1 or L2)
-  mem_access_type
-      m_wrbk_type;  // Specifies type of writeback request (e.g., L1 or L2)
+  mem_access_type m_wr_alloc_type; // Specifies type of write allocate request (e.g., L1 or L2)
+  mem_access_type m_wrbk_type;     // Specifies type of writeback request (e.g., L1 or L2)
   class gpgpu_sim *m_gpu;
 
   //! A general function that takes the result of a tag_array probe

@@ -59,8 +59,10 @@ enum _memory_space_t {
   surf_space,
   global_space,
   generic_space,
-  instruction_space
+  instruction_space,
+  NUM_MEMORY_SPACE
 };
+const char* memory_space_str(enum _memory_space_t type);
 
 #ifndef COEFF_STRUCT
 #define COEFF_STRUCT

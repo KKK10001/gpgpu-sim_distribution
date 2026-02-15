@@ -2216,7 +2216,8 @@ class shader_core_mem_fetch_allocator : public mem_fetch_allocator {
     mem_fetch *mf = new mem_fetch(
         access, &inst_copy, inst.get_streamID(),
         access.is_write() ? WRITE_PACKET_SIZE : READ_PACKET_SIZE,
-        inst.warp_id(), m_core_id, m_cluster_id, m_memory_config, cycle);
+        inst.warp_id(), m_core_id, m_cluster_id, m_memory_config, cycle);     
+
     return mf;
   }
 
@@ -2228,6 +2229,12 @@ class shader_core_mem_fetch_allocator : public mem_fetch_allocator {
 
 class shader_core_ctx : public core_t {
  public:
+  static bool selSmallerWarpInterference(
+    const std::pair<unsigned, unsigned>& a, 
+    const std::pair<unsigned, unsigned>& b) {
+    return a.second < b.second;
+  }
+
   friend class opndcoll_rfu_t;
   // creator:
   shader_core_ctx(class gpgpu_sim *gpu, class simt_core_cluster *cluster,
@@ -2291,6 +2298,9 @@ class shader_core_ctx : public core_t {
   void mem_instruction_stats(const warp_inst_t &inst);
   void decrement_atomic_count(unsigned wid, unsigned n);
   void inc_store_req(unsigned warp_id) { m_warp[warp_id]->inc_store_req(); }
+  unsigned num_inst_in_pipeline(unsigned warp_id) {
+    return m_warp[warp_id]->num_inst_in_pipeline();
+  }
   void dec_inst_in_pipeline(unsigned warp_id) {
     m_warp[warp_id]->dec_inst_in_pipeline();
   }  // also used in writeback()

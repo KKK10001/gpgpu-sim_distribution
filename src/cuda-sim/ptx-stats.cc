@@ -93,18 +93,18 @@ class ptx_file_line_stats {
   unsigned long exec_count;
   unsigned long long latency;
   unsigned long long dram_traffic;
-  unsigned long long
-      smem_n_way_bank_conflict_total;  // total number of banks accessed by this
-                                       // instruction
-  unsigned long smem_warp_count;  // number of warps accessing shared memory
-  unsigned long long gmem_n_access_total;  // number of uncoalesced access in
-                                           // total from this instruction
-  unsigned long
-      gmem_warp_count;  // number of warps causing these uncoalesced access
-  unsigned long long exposed_latency;  // latency exposed as pipeline bubbles
-                                       // (attributed to this instruction)
-  unsigned long long
-      warp_divergence;  // number of warp divergence occured at this instruction
+  // total number of banks accessed by this instruction
+  unsigned long long smem_n_way_bank_conflict_total;
+  // number of warps accessing shared memory
+  unsigned long smem_warp_count;
+  // number of uncoalesced access in total from this instruction
+  unsigned long long gmem_n_access_total;
+  // number of warps causing these uncoalesced access
+  unsigned long gmem_warp_count;
+  // latency exposed as pipeline bubbles (attributed to this instruction)
+  unsigned long long exposed_latency;
+  // number of warp divergence occured at this instruction 
+  unsigned long long warp_divergence;
 };
 
 #if (tr1_hash_map_ismap == 1)
@@ -198,6 +198,17 @@ void ptx_stats::ptx_file_line_stats_add_smem_bank_conflict(
         pInsn->source_file(), pInsn->source_line())];
     line_stats.smem_n_way_bank_conflict_total += n_way_bkconflict;
     line_stats.smem_warp_count += 1;
+    if (DTRACE(SM_PATH)) {
+      fprintf(Trace::out, 
+        "sm_bank_conflict:%llu += n_way_bkconflict:%u. "
+        "sm_warp_count++ = %lu pInsn->source_file = %s\n", 
+        line_stats.smem_n_way_bank_conflict_total, n_way_bkconflict,
+        line_stats.smem_warp_count, pInsn->source_file());
+    }
+  } else {
+    if (DTRACE(SM_PATH)) {
+      fprintf(Trace::out, "pc:%#x has no sm bank conflict\n", pc);
+    }
   }
 }
 
