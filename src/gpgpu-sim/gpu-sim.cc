@@ -1664,6 +1664,7 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
   std::vector<SORTED_WARP_INTERFERE_INFO> v_warp_interfere_10_20;
   std::vector<SORTED_WARP_INTERFERE_INFO> v_warp_interfere_20_30;
   std::vector<SORTED_WARP_INTERFERE_INFO> v_warp_interfere_exceed_30;
+  std::map<unsigned, unsigned> per_core_warp_interferences;
 
   // -gpgpu_n_clusters = 1
   // -gpgpu_n_cores_per_cluster = 4 ---> n_simt_cores_per_cluster = 4
@@ -1714,9 +1715,12 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
                 {sid, interfered, interfering, m_shader_stats->warp_interfere[sid][interfered][interfering]});
             }
 
-            v_sorted_warp_interfere.push_back(
-              {sid, interfered, interfering, m_shader_stats->warp_interfere[sid][interfered][interfering]});
-          }
+            if (m_shader_stats->warp_interfere[sid][interfered][interfering]) {
+              per_core_warp_interferences[sid] += m_shader_stats->warp_interfere[sid][interfered][interfering];
+              v_sorted_warp_interfere.push_back(
+                {sid, interfered, interfering, m_shader_stats->warp_interfere[sid][interfered][interfering]});
+            }
+          } // if (interfering != interfered) {
         }
       }
 
@@ -1794,6 +1798,16 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
       entry.print();
   }
 
+  unsigned total_warp_interferences = 0;
+  for (unsigned cluster_id = 0; cluster_id < m_shader_config->n_simt_clusters; cluster_id++) {
+    for (unsigned cid = 0; cid < m_shader_config->n_simt_cores_per_cluster; cid++) {
+      unsigned sid = m_shader_config->cid_to_sid(cid, cluster_id);
+      total_warp_interferences += per_core_warp_interferences[sid];
+      printf("per_core_warp_interferences[sid:%u] = %u\n", sid, per_core_warp_interferences[sid]);
+    }  
+  }
+  printf("total_warp_interferences = %u\n", total_warp_interferences);
+  
   printf("Distribution of warp_interference is:\n");
   printf("[0:5) %f\n", v_warp_interfere_below_5.size() / (float)v_sorted_warp_interfere.size());
   printf("[5:10) %f\n", v_warp_interfere_5_10.size() / (float)v_sorted_warp_interfere.size());
