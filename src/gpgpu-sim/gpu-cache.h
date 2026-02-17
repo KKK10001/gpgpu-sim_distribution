@@ -207,6 +207,7 @@ struct cache_block_t {
   cache_block_t() {
     m_tag = 0;
     m_block_addr = 0;
+    m_owner = (unsigned) - 1;
     m_was_recorded_in_mshr        = false;
     m_recorded_times_in_mshr      = 0;
     m_last_record_time_in_mshr    = 0;
@@ -284,6 +285,7 @@ struct cache_block_t {
 
   new_addr_type m_tag;
   new_addr_type m_block_addr;
+  unsigned m_owner; // warp_id
   bool m_was_recorded_in_mshr; // "was" means that the line might be invalid now
   unsigned m_recorded_times_in_mshr;
   unsigned long long m_last_record_time_in_mshr;
@@ -1551,6 +1553,7 @@ class tag_array {
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates);
 
+  // Update valid_line with index parsed from [set_index][way]
   void lru_pick(
     cache_block_t* line, unsigned long long& valid_timestamp, 
     unsigned& valid_line, const unsigned& index, 
@@ -1560,11 +1563,20 @@ class tag_array {
     cache_block_t* line, unsigned long long& valid_timestamp, 
     unsigned& valid_line, const unsigned& index);
 
+  void warp_interfere_awared_pick(
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
+    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
+    unsigned& valid_line,
+    unsigned& warp_id, unsigned& core_id,
+    mem_fetch *mf
+  );
   void pick_with_lru(
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
     unsigned& valid_line,
+    unsigned& warp_id, unsigned& core_id,
     unsigned long long& smallest_access_time,
     unsigned& lru_picked_total_hits,
     unsigned long long& lru_picked_avg_evict_interval

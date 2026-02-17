@@ -625,6 +625,8 @@ struct SORTED_WARP_INTERFERE_INFO {
 
 class gpgpu_sim : public gpgpu_t {
  public:
+  friend class tag_array;
+  
   gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx);
 
   void set_prop(struct cudaDeviceProp *prop);
