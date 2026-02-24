@@ -2293,8 +2293,7 @@ void ldst_unit::print_cache_stats(FILE *fp, unsigned &dl1_accesses,
 void ldst_unit::get_cache_stats(cache_stats &cs, unsigned sm) {  
   // Adds stats to 'cs' from each cache
   if (m_L1D) {
-    const char* cache_type = "L1D";
-    cs.set_cache_name(cache_type);
+    cs.set_cache_name(m_config->m_L1D_config.get_cache_name());
     if (DTRACE(DATA_CACHE_STATS) || DTRACE(CACHE_STATS)) {
       fprintf(Trace::out, "%llu SM:%u m_L1D->get_stats()\n",
         m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, sm);
@@ -2302,8 +2301,7 @@ void ldst_unit::get_cache_stats(cache_stats &cs, unsigned sm) {
     cs += m_L1D->get_stats();
   } 
   if (m_L1C) {
-    const char* cache_type = "L1C";
-    cs.set_cache_name(cache_type);
+    cs.set_cache_name(m_config->m_L1C_config.get_cache_name());
     if (DTRACE(CACHE_STATS)) {
       fprintf(Trace::out, "%llu SM:%u m_L1C->get_stats()\n",
         m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, sm);
@@ -2311,8 +2309,7 @@ void ldst_unit::get_cache_stats(cache_stats &cs, unsigned sm) {
     cs += m_L1C->get_stats();
   }
   if (m_L1T) {
-    const char* cache_type = "L1T";
-    cs.set_cache_name(cache_type);
+    cs.set_cache_name(m_config->m_L1T_config.get_cache_name());
     if (DTRACE(CACHE_STATS)) {
       fprintf(Trace::out, "%llu SM:%u m_L1T->get_stats()\n",
         m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, sm);
@@ -3248,6 +3245,7 @@ void ldst_unit::init(mem_fetch_interface *icnt,
                      Scoreboard *scoreboard, const shader_core_config *config,
                      const memory_config *mem_config, shader_core_stats *stats,
                      unsigned sid, unsigned tpc) {
+  // m_gpu has already been fetched before ::init during ldst_unit::ldst_unit
   m_memory_config = mem_config;
   m_icnt = icnt;
   m_mf_allocator = mf_allocator;
@@ -3262,7 +3260,7 @@ void ldst_unit::init(mem_fetch_interface *icnt,
   char L1C_name[STRSIZE];
   snprintf(L1T_name, STRSIZE, "L1T_%03d", m_sid);
   snprintf(L1C_name, STRSIZE, "L1C_%03d", m_sid);
-  m_L1T = new tex_cache(L1T_name, m_config->m_L1T_config, m_sid,
+  m_L1T = new tex_cache(m_gpu, L1T_name, m_config->m_L1T_config, m_sid,
                         get_shader_texture_cache_id(), icnt, IN_L1T_MISS_QUEUE,
                         IN_SHADER_L1T_ROB);
   m_L1C = new read_only_cache(L1C_name, m_config->m_L1C_config, m_sid,
@@ -3588,8 +3586,7 @@ void ldst_unit::cycle() {
           }
         } else {
           if (m_L1D->fill_port_free()) {
-            m_L1D->fill(mf, m_core->get_gpu()->gpu_sim_cycle +
-                                m_core->get_gpu()->gpu_tot_sim_cycle);
+            m_L1D->fill(mf, time);
             m_response_fifo.pop_front();
             // Return path filled into L1D: extend chain
             if (mf->get_inst().is_load()) {

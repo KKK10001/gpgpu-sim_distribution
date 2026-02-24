@@ -204,7 +204,7 @@ class memory_sub_partition {
   void get_L2cache_sub_stats_pw(struct cache_sub_stats_pw &css) const;
   void clear_L2cache_stats_pw();
 
-  void force_l2_tag_update(new_addr_type addr, unsigned time,
+  void force_l2_tag_update(new_addr_type addr, unsigned long long time,
                            mem_access_sector_mask_t mask) {
     m_L2cache->force_tag_access(addr, m_memcpy_cycle_offset + time, mask);
   #ifndef EXCLUDE_MEMCPY_CYCLES_FROM_CACHE_TIMING

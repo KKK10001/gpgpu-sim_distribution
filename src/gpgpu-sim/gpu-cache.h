@@ -208,18 +208,16 @@ struct cache_block_t {
     m_tag = 0;
     m_block_addr = 0;
     m_owner = (unsigned) - 1;
-    m_was_recorded_in_mshr        = false;
-    m_recorded_times_in_mshr      = 0;
-    m_last_record_time_in_mshr    = 0;
-    m_record_interval_in_mshr     = 0;
-    m_avg_record_interval_in_mshr = 0;
+    m_was_recorded_in_mshr = false;
   }
 
   virtual void allocate(new_addr_type tag, new_addr_type block_addr,
-                        unsigned time,
+                        unsigned long long time,
                         mem_access_sector_mask_t sector_mask) = 0;
-  virtual void fill(unsigned time, mem_access_sector_mask_t sector_mask,
-                    mem_access_byte_mask_t byte_mask) = 0;
+  virtual void fill(
+    unsigned long long time, 
+    mem_access_sector_mask_t sector_mask, mem_access_byte_mask_t byte_mask, 
+    mem_fetch *mf = nullptr) = 0;
 
   virtual bool is_invalid_line() = 0;
   virtual bool is_valid_line() = 0;
@@ -227,14 +225,15 @@ struct cache_block_t {
   virtual bool is_modified_line() = 0;
 
   virtual bool was_recorded_in_mshr() { return m_was_recorded_in_mshr; }
-  virtual unsigned get_recorded_times_in_mshr() { return m_recorded_times_in_mshr; }
-  virtual unsigned get_record_interval_in_mshr() { return m_record_interval_in_mshr; }
-  virtual unsigned get_avg_record_interval_in_mshr() { return m_avg_record_interval_in_mshr; }
 
   virtual enum cache_block_state get_status(
       mem_access_sector_mask_t sector_mask) = 0;
-  virtual unsigned set_status(enum cache_block_state m_status,
-                          mem_access_sector_mask_t sector_mask) = 0;  
+  virtual unsigned set_status(
+    unsigned long long time, enum cache_block_state m_status,
+    mem_access_sector_mask_t sector_mask, std::string caller = "") = 0;
+  virtual unsigned set_status(
+    enum cache_block_state m_status,
+    mem_access_sector_mask_t sector_mask, std::string caller = "") = 0;                          
   virtual void set_byte_mask(mem_fetch *mf) = 0;
   virtual void set_byte_mask(mem_access_byte_mask_t byte_mask) = 0;
   virtual mem_access_byte_mask_t get_dirty_byte_mask() = 0;
@@ -251,6 +250,7 @@ struct cache_block_t {
   virtual void dec_rrpv() = 0;
   virtual void set_last_access_time(unsigned long long time,
                                     mem_access_sector_mask_t sector_mask) = 0;
+  virtual unsigned long long get_reref_gap() = 0;
   virtual unsigned long long get_last_access_time() = 0;
   virtual void set_last_fill_time(unsigned long long time) = 0;
   virtual unsigned long long get_last_fill_time() = 0;
@@ -259,13 +259,10 @@ struct cache_block_t {
   virtual void set_last_core_id(unsigned core_id) = 0;
   virtual unsigned get_last_core_id() = 0;
 
-  virtual void update_recency_info(unsigned long long time) = 0;
   virtual void inc_total_hits() = 0;
+  virtual void inc_total_evictions() = 0;
   virtual unsigned long long get_total_accesses() = 0;
   virtual unsigned long long get_total_evictions() = 0;
-  virtual unsigned long long get_last_evict_time() = 0;
-  virtual unsigned long long get_evict_interval() = 0; 
-  virtual unsigned long long get_avg_evict_interval() = 0;
   virtual unsigned get_total_hits() = 0;
 
   virtual unsigned long long get_alloc_time() = 0;
@@ -280,18 +277,15 @@ struct cache_block_t {
   virtual void set_m_readable(bool readable,
                               mem_access_sector_mask_t sector_mask) = 0;
   virtual bool is_readable(mem_access_sector_mask_t sector_mask) = 0;
-  virtual void print_status() = 0;  
+  virtual void print_status() = 0;
+  virtual void print_readable() = 0;
+  virtual std::string get_sector_status(unsigned sidx) = 0;
   virtual ~cache_block_t() {}
 
   new_addr_type m_tag;
   new_addr_type m_block_addr;
-  unsigned m_owner; // warp_id
+  unsigned m_owner; // warp_id  
   bool m_was_recorded_in_mshr; // "was" means that the line might be invalid now
-  unsigned m_recorded_times_in_mshr;
-  unsigned long long m_last_record_time_in_mshr;
-  unsigned long long m_record_interval_in_mshr;
-  unsigned long long m_avg_record_interval_in_mshr;
-
 };
 
 struct line_cache_block : public cache_block_t {
@@ -302,12 +296,12 @@ struct line_cache_block : public cache_block_t {
     m_total_evictions     = 0;
     m_total_accesses      = 0;
 
-    m_avg_evict_interval = 0;
-    m_evict_interval     = 0;
-    m_last_evict_time    = 0;
     m_total_hits         = 0;
 
     m_fill_time = 0;
+    m_last_fill_time = 0;
+    m_last_warp_id = (unsigned) - 1;
+    m_last_core_id = (unsigned) - 1;
     m_rrpv     = get_max_rrpv();
     m_max_rrpv = get_max_rrpv();
     m_status = INVALID;
@@ -316,7 +310,7 @@ struct line_cache_block : public cache_block_t {
     m_set_readable_on_fill = false;
     m_readable = true;
   }
-  void allocate(new_addr_type tag, new_addr_type block_addr, unsigned time,
+  void allocate(new_addr_type tag, new_addr_type block_addr, unsigned long long time,
                 mem_access_sector_mask_t sector_mask) {
     m_tag = tag;
     m_block_addr = block_addr;
@@ -330,9 +324,15 @@ struct line_cache_block : public cache_block_t {
     m_set_readable_on_fill = false;
     m_set_byte_mask_on_fill = false;
   }
-  virtual void fill(unsigned time, mem_access_sector_mask_t sector_mask,
-                    mem_access_byte_mask_t byte_mask) {
+
+  virtual void fill(
+    unsigned long long time, 
+    mem_access_sector_mask_t sector_mask, mem_access_byte_mask_t byte_mask,
+    mem_fetch *mf = nullptr) {
+
     m_status = m_set_modified_on_fill ? MODIFIED : VALID;
+    m_last_warp_id = mf->get_wid();
+    m_last_core_id = mf->get_sid();
 
     if (m_set_readable_on_fill) {
       m_readable = true;
@@ -358,11 +358,20 @@ struct line_cache_block : public cache_block_t {
     return "xx -> impl in derived class";
   }
 
-  virtual unsigned set_status(enum cache_block_state status,
-                          mem_access_sector_mask_t sector_mask) {
+  virtual unsigned set_status(
+    unsigned long long time, enum cache_block_state status,
+    mem_access_sector_mask_t sector_mask, std::string caller = "") {
+
     m_status = status;
     return 0;
   }  
+  virtual unsigned set_status(
+    enum cache_block_state status,
+    mem_access_sector_mask_t sector_mask, std::string caller = "") {
+
+    m_status = status;
+    return 0;
+  }    
   virtual void set_byte_mask(mem_fetch *mf) {
     m_dirty_byte_mask = m_dirty_byte_mask | mf->get_access_byte_mask();
   }
@@ -381,6 +390,9 @@ struct line_cache_block : public cache_block_t {
   virtual void set_last_access_time(unsigned long long time,
                                     mem_access_sector_mask_t sector_mask) {
     m_last_access_time = time;
+  }
+  virtual unsigned long long get_reref_gap() {
+    return m_reref_gap;
   }
   virtual unsigned long long get_last_access_time() {
     return m_last_access_time;
@@ -407,18 +419,8 @@ struct line_cache_block : public cache_block_t {
   virtual void inc_total_hits() {
     m_total_hits++;
   }
-  virtual void update_recency_info(unsigned long long time) {
-    m_total_accesses++;
+  virtual void inc_total_evictions() {
     m_total_evictions++;
-    if (!m_last_access_time) {
-      m_avg_evict_interval = 0;
-      m_evict_interval     = 0;
-      m_last_evict_time    = 0;
-    } else {
-      m_avg_evict_interval = ((m_avg_evict_interval + m_evict_interval) >> 1);
-      m_evict_interval     = (time - m_last_evict_time);
-      m_last_evict_time    = time;
-    }
   }
   virtual unsigned long long get_total_accesses() {
     return m_total_accesses;
@@ -430,15 +432,6 @@ struct line_cache_block : public cache_block_t {
   virtual unsigned get_total_hits() {
     return m_total_hits;
   }
-  virtual unsigned long long get_avg_evict_interval() {
-    return m_avg_evict_interval;
-  }
-  virtual unsigned long long get_evict_interval() {
-    return m_evict_interval;
-  }
-  virtual unsigned long long get_last_evict_time() {
-    return m_last_evict_time;
-  }  
 
   virtual void set_rrpv(unsigned rrpv) { m_rrpv = rrpv; }
   virtual unsigned get_rrpv() { return m_rrpv; }
@@ -476,25 +469,26 @@ struct line_cache_block : public cache_block_t {
     return m_readable;
   }
   virtual void print_status() {
-    printf("m_block_addr is %llu, status = %u\n", m_block_addr, m_status);
+    printf("m_block_addr is %#llx, status = %u\n", m_block_addr, m_status);
   }
+  virtual void print_readable() {
+    printf("m_block_addr is %#llx, readable = %u\n", m_block_addr, m_readable);
+  }  
 
  private:
   unsigned long long m_alloc_time;
+  unsigned long long m_reref_gap;
   unsigned long long m_last_access_time;
   unsigned long long m_last_fill_time;
   unsigned m_last_warp_id;
   unsigned m_last_core_id;
-
-  unsigned m_total_evictions;
-  unsigned m_total_accesses;  
-  
-  unsigned long long m_avg_evict_interval;
-  unsigned long long m_evict_interval;
-  unsigned long long m_last_evict_time;
-  unsigned m_total_hits;
-  
+ 
   unsigned long long m_fill_time;
+
+  unsigned m_total_accesses;  
+  unsigned m_total_hits;
+  unsigned m_total_evictions;
+    
   unsigned m_rrpv;
   unsigned m_max_rrpv;
   char* m_cache_name;
@@ -524,12 +518,11 @@ struct sector_cache_block : public cache_block_t {
     m_line_alloc_time = 0;
     m_line_last_access_time = 0;
     m_line_last_fill_time   = 0;
+    m_last_warp_id          = (unsigned) - 1;
+    m_last_core_id          = (unsigned) - 1;
     m_total_evictions       = 0;
     m_total_accesses        = 0;
          
-    m_avg_evict_interval    = 0;
-    m_evict_interval        = 0; 
-    m_last_evict_time       = 0;
     m_total_hits            = 0;
     m_rrpv     = get_max_rrpv();
     m_max_rrpv = get_max_rrpv();
@@ -538,11 +531,11 @@ struct sector_cache_block : public cache_block_t {
   }  
 
   virtual void allocate(new_addr_type tag, new_addr_type block_addr,
-                        unsigned time, mem_access_sector_mask_t sector_mask) {
+                        unsigned long long time, mem_access_sector_mask_t sector_mask) {
     allocate_line(tag, block_addr, time, sector_mask);
   }
 
-  void allocate_line(new_addr_type tag, new_addr_type block_addr, unsigned time,
+  void allocate_line(new_addr_type tag, new_addr_type block_addr, unsigned long long time,
                      mem_access_sector_mask_t sector_mask) {
     // allocate a new line
     // assert(m_block_addr != 0 && m_block_addr != block_addr);
@@ -556,6 +549,7 @@ struct sector_cache_block : public cache_block_t {
     m_sector_alloc_time[sidx] = time;       // no-used var.
     m_last_sector_access_time[sidx] = time; // no-used var.
     m_sector_fill_time[sidx] = 0;           // no-used var.
+    [[maybe_unused]] std::string prev_status = get_sector_status(sidx);
     m_status[sidx] = RESERVED;
     m_ignore_on_fill_status[sidx] = false;  // no-used var.
     m_set_modified_on_fill[sidx] = false;
@@ -566,6 +560,12 @@ struct sector_cache_block : public cache_block_t {
     m_line_alloc_time       = time;  // only set this for the first allocated sector
     m_line_last_access_time = time;
     m_rrpv = (get_max_rrpv() >> 1) + 1;
+
+    if (DTRACE(LINE_STATUS_CHANGE)) {
+      fprintf(Trace::out, "%llu allocate_line addr:%#llx "
+        "m_status[%u] = {%s->%s}\n", 
+        time, m_block_addr, sidx, prev_status.c_str(), get_sector_status(sidx).c_str());
+    }    
   }
 
   void allocate_sector(unsigned long long time, mem_access_sector_mask_t sector_mask) {
@@ -577,30 +577,56 @@ struct sector_cache_block : public cache_block_t {
     m_sector_alloc_time[sidx] = time;        // no-used var.
     m_last_sector_access_time[sidx] = time;  // no-used var.
     m_sector_fill_time[sidx] = 0;            // no-used var.
-    if (m_status[sidx] == MODIFIED)  // this should be the case only for fetch-on-write policy //TO DO
+      // this should be the case only for fetch-on-write policy //TO DO
+    if (m_status[sidx] == MODIFIED) {
       m_set_modified_on_fill[sidx] = true;
-    else
+    } else {
       m_set_modified_on_fill[sidx] = false;
+    }
 
     m_set_readable_on_fill[sidx] = false;
 
+    [[maybe_unused]] std::string prev_status = get_sector_status(sidx);
     m_status[sidx] = RESERVED;
     m_ignore_on_fill_status[sidx] = false;
-    // m_set_modified_on_fill[sidx] = false;
     m_readable[sidx] = true;
 
     // set line stats
     m_line_last_access_time = time;
     m_line_last_fill_time   = time; 
-    m_rrpv = (get_max_rrpv() >> 1) + 1;    
+    m_rrpv = (get_max_rrpv() >> 1) + 1;
+    
+    if (DTRACE(LINE_STATUS_CHANGE)) {
+      if (m_status[sidx] == MODIFIED) {
+        fprintf(Trace::out, "%llu allocate_sector addr:%#llx "
+          "m_status[%u] == MODIFIED -> m_set_modified_on_fill[%u] = true. "
+          "m_status[%u] = RESERVED\n", 
+          time, m_block_addr /* has already been assigned in allocate_line */,
+          sidx, sidx, sidx
+        );
+      } else {
+        fprintf(Trace::out, "%llu allocate_sector addr:%#llx "
+          "m_set_modified_on_fill[%u] = false. m_status[%u] = RESERVED\n", 
+          time, m_block_addr /* has already been assigned in allocate_line */,
+          sidx, sidx
+        );
+      }
+    }  
+
+    if (DTRACE(LINE_STATUS_CHANGE)) {
+      fprintf(Trace::out, "%llu allocate_sector addr:%#llx "
+        "m_status[%u] = {%s->%s}\n", 
+        time, m_block_addr /* should has been assigned during allocate_line */, 
+        sidx, prev_status.c_str(), get_sector_status(sidx).c_str() /* RESERVED */);
+    }    
   }
 
-  virtual void fill(unsigned time, mem_access_sector_mask_t sector_mask,
-                    mem_access_byte_mask_t byte_mask) {
-    unsigned sidx = get_sector_index(sector_mask);
+  virtual void fill(
+    unsigned long long time, 
+    mem_access_sector_mask_t sector_mask, mem_access_byte_mask_t byte_mask,
+    mem_fetch *mf = nullptr) {
 
-    //	if(!m_ignore_on_fill_status[sidx])
-    //	         assert( m_status[sidx] == RESERVED );
+    unsigned sidx  = get_sector_index(sector_mask);
     m_status[sidx] = m_set_modified_on_fill[sidx] ? MODIFIED : VALID;
 
     if (m_set_readable_on_fill[sidx]) {
@@ -613,10 +639,14 @@ struct sector_cache_block : public cache_block_t {
 
     m_sector_fill_time[sidx] = time;
     m_line_last_fill_time    = time;
+    if (mf) {
+      m_last_warp_id = mf->get_wid();
+      m_last_core_id = mf->get_sid();
+    }
     m_rrpv = (get_max_rrpv() >> 1) + 1; // for SRRIP 3'b111->3'b100
   }
   virtual bool is_invalid_line() {
-    // all the sectors should be invalid
+    // all the sectors should be invalid 
     for (unsigned i = 0; i < SECTOR_CHUNK_SIZE; ++i) {
       if (m_status[i] != INVALID) return false;
     }
@@ -648,12 +678,40 @@ struct sector_cache_block : public cache_block_t {
   }
 
   // Added return type for a chain-style calling
-  virtual unsigned set_status(enum cache_block_state status,
-                        mem_access_sector_mask_t sector_mask) {
+  virtual unsigned set_status(
+    unsigned long long time, enum cache_block_state status,
+    mem_access_sector_mask_t sector_mask, std::string caller = "") {    
+
     unsigned sidx = get_sector_index(sector_mask);
+    [[maybe_unused]] std::string prev_status = get_sector_status(sidx);
     m_status[sidx] = status;
+
+    if (DTRACE(LINE_STATUS_CHANGE)) {
+      fprintf(Trace::out, "%llu %s set_status addr:%#llx "
+        "m_status[%u] = {%s->%s}\n", 
+        time, caller.c_str(), m_block_addr /* should has been assigned during allocate_line */, 
+        sidx, prev_status.c_str(), get_sector_status(sidx).c_str());
+    }
+
     return sidx;
-  }  
+  }
+  virtual unsigned set_status(
+    enum cache_block_state status,
+    mem_access_sector_mask_t sector_mask, std::string caller = "") {    
+
+    unsigned sidx = get_sector_index(sector_mask);
+    [[maybe_unused]] std::string prev_status = get_sector_status(sidx);
+    m_status[sidx] = status;
+
+    if (DTRACE(LINE_STATUS_CHANGE)) {
+      fprintf(Trace::out, "%s set_status addr:%#llx "
+        "m_status[%u] = {%s->%s}\n", 
+        caller.c_str(), m_block_addr /* should has been assigned during allocate_line */, 
+        sidx, prev_status.c_str(), get_sector_status(sidx).c_str());
+    }
+
+    return sidx;
+  }    
 
   virtual void set_byte_mask(mem_fetch *mf) {
     m_dirty_byte_mask = m_dirty_byte_mask | mf->get_access_byte_mask();
@@ -679,6 +737,9 @@ struct sector_cache_block : public cache_block_t {
     m_last_sector_access_time[sidx] = time;
     m_line_last_access_time = time;
   }
+  virtual unsigned long long get_reref_gap() {
+    return m_reref_gap;
+  }  
   virtual unsigned long long get_last_access_time() {
     return m_line_last_access_time;
   }
@@ -705,18 +766,8 @@ struct sector_cache_block : public cache_block_t {
   virtual void inc_total_hits() {
     m_total_hits++;
   }
-  virtual void update_recency_info(unsigned long long time) {
-    m_total_accesses++;
+  virtual void inc_total_evictions() {
     m_total_evictions++;
-    if (!m_line_last_access_time) {
-      m_avg_evict_interval = 0;
-      m_evict_interval     = 0;
-      m_last_evict_time    = 0;
-    } else {
-      m_avg_evict_interval = ((m_avg_evict_interval + m_evict_interval) >> 1);
-      m_evict_interval     = (time - m_last_evict_time);
-      m_last_evict_time    = time;
-    }
   }
   virtual unsigned long long get_total_accesses() {
     return m_total_accesses;
@@ -727,15 +778,6 @@ struct sector_cache_block : public cache_block_t {
   
   virtual unsigned get_total_hits() {
     return m_total_hits;
-  }  
-  virtual unsigned long long get_last_evict_time() {
-    return m_last_evict_time;
-  }  
-  virtual unsigned long long get_evict_interval() {
-    return m_evict_interval;
-  }
-  virtual unsigned long long get_avg_evict_interval() {
-    return m_avg_evict_interval;
   }
 
   virtual void set_rrpv(unsigned rrpv) { m_rrpv = rrpv; }
@@ -779,6 +821,9 @@ struct sector_cache_block : public cache_block_t {
     unsigned sidx = get_sector_index(sector_mask);
     return m_readable[sidx];
   }
+  virtual bool is_readable(unsigned sidx) {
+    return m_readable[sidx];
+  }
 
   virtual unsigned get_modified_size() {
     unsigned modified = 0;
@@ -789,15 +834,22 @@ struct sector_cache_block : public cache_block_t {
   }
 
   virtual void print_status() {
-    printf("m_block_addr is %llu, status = %u %u %u %u\n", m_block_addr,
+    printf("m_block_addr is %#llx, status = {%u %u %u %u}\n", m_block_addr,
            m_status[0], m_status[1], m_status[2], m_status[3]);
+  }
+  virtual void print_readable() {
+    printf("m_block_addr is %#llx, readable = {%u %u %u %u}\n", m_block_addr,
+           m_readable[0], m_readable[1], m_readable[2], m_readable[3]);
   }
 
   virtual std::string get_sector_status(unsigned sidx) {
+    // INVALID = 0, RESERVED, VALID, MODIFIED,
     switch (m_status[sidx])
     {
     case INVALID:
       return "INVALID";
+    case RESERVED:
+      return "RESERVED";
     case VALID:
       return "VALID";
     case MODIFIED:
@@ -809,24 +861,22 @@ struct sector_cache_block : public cache_block_t {
 
  private:
   //////////////////////// no-used var. ////////////////////////
-  unsigned m_sector_alloc_time[SECTOR_CHUNK_SIZE];
-  unsigned m_last_sector_access_time[SECTOR_CHUNK_SIZE];  
-  unsigned m_sector_fill_time[SECTOR_CHUNK_SIZE];
-  bool m_ignore_on_fill_status[SECTOR_CHUNK_SIZE];  
+  unsigned long long m_sector_alloc_time[SECTOR_CHUNK_SIZE];
+  unsigned long long m_last_sector_access_time[SECTOR_CHUNK_SIZE];  
+  unsigned long long m_sector_fill_time[SECTOR_CHUNK_SIZE];
+  bool m_ignore_on_fill_status[SECTOR_CHUNK_SIZE];
   //////////////////////////////////////////////////////////////
 
-  // LRU replacement_policy related control info.
+  // LRU replacement_policy related control info.  
   unsigned long long m_line_alloc_time;
+  unsigned long long m_reref_gap;
   unsigned long long m_line_last_access_time;
   unsigned long long m_line_last_fill_time;
   unsigned m_last_warp_id;
-  unsigned m_last_core_id;
-  unsigned m_total_evictions;
+  unsigned m_last_core_id;  
   unsigned m_total_accesses;
-  unsigned long long m_last_evict_time;
-  unsigned long long m_evict_interval;  
-  unsigned long long m_avg_evict_interval;
   unsigned m_total_hits;
+  unsigned m_total_evictions;
   // Static Re-reference Interval Prediction (SRRIP) related control info.
   unsigned m_rrpv;
   unsigned m_max_rrpv;
@@ -855,7 +905,8 @@ enum set_index_function {
   BITWISE_XORING_FUNCTION,
   HASH_IPOLY_FUNCTION,
   FERMI_HASH_SET_FUNCTION,
-  CUSTOM_SET_FUNCTION
+  CUSTOM_SET_FUNCTION,
+  WARP_CORR_FUNCTION
 };
 
 enum cache_type { NORMAL = 0, SECTOR };
@@ -908,12 +959,12 @@ class cache_config {
             &m_rrpv_bits, &m_combined_srrip_lru, &m_srrip_up);
 
     [[maybe_unused]] int ntok_rep_enhance = 
-      sscanf(rep_enhance_config, "%c,%c,%c", 
-        &m_total_hits_ascend, &m_fill_time_ascend, &m_warp_interfere_aware);
+      sscanf(rep_enhance_config, "%c,%c", 
+        &m_fill_time_ascend, &m_warp_interfere_aware);
     fprintf(Trace::out, 
       "----------- %s rep_enhance_config is below -----------\n "
-      "m_total_hits_ascend = %c m_fill_time_ascend = %c m_warp_interfere_aware = %c\n",
-      cache_name, m_total_hits_ascend, m_fill_time_ascend, m_warp_interfere_aware);
+      "m_fill_time_ascend = %c m_warp_interfere_aware = %c\n",
+      cache_name, m_fill_time_ascend, m_warp_interfere_aware);
 
     fprintf(Trace::out, 
       "----------- %s srrip_config is below -----------\n "
@@ -1188,6 +1239,9 @@ class cache_config {
       case 'L':
         m_set_index_function = LINEAR_SET_FUNCTION;
         break;
+      case 'W':
+        m_set_index_function = WARP_CORR_FUNCTION;
+        break;
       case 'X':
         m_set_index_function = BITWISE_XORING_FUNCTION;
         break;
@@ -1241,7 +1295,11 @@ class cache_config {
     return m_nset_log2;
   }
 
-  virtual unsigned set_index(new_addr_type addr) const;
+  virtual unsigned set_index(
+    new_addr_type addr, unsigned warp_id = (unsigned) - 1) const;
+  virtual std::pair<unsigned, unsigned> set_index_pairs(
+    new_addr_type addr, unsigned warp_id = (unsigned) - 1) const;
+
   virtual unsigned recalc_orig_addr(new_addr_type tag, unsigned set_index) const;
 
   virtual unsigned get_max_cache_multiplier() const {
@@ -1250,7 +1308,8 @@ class cache_config {
 
   unsigned hash_function(new_addr_type addr, unsigned m_nset,
                          unsigned m_line_sz_log2, unsigned m_nset_log2,
-                         unsigned m_index_function) const;
+                         unsigned m_index_function, 
+                         unsigned warp_id = (unsigned) - 1) const;
 
   new_addr_type tag(new_addr_type addr) const {
     // For generality, the tag includes both index and tag. This allows for more
@@ -1291,7 +1350,7 @@ class cache_config {
   char *m_config_string;
   char *m_mshr_config_string;
   char *m_rrpv_config_string;
-  char *m_rep_enhance_string; // {timestamp, total_hits}
+  char *m_rep_enhance_string;
   char *m_config_stringPrefL1;
   char *m_config_stringPrefShared;
   FuncCache cache_status;  
@@ -1346,7 +1405,6 @@ class cache_config {
 
   char m_mshr_disable;
   char m_mshr_corr_repl;
-  char m_total_hits_ascend;
   char m_fill_time_ascend;
   char m_warp_interfere_aware;
 
@@ -1422,7 +1480,8 @@ class l2_cache_config : public cache_config {
     cache_name = "L2";
   }
   void init(linear_to_raw_address_translation *address_mapping);
-  virtual unsigned set_index(new_addr_type addr) const;
+  virtual unsigned set_index(
+    new_addr_type addr, unsigned warp_id = (unsigned) - 1) const;
   bool m_disable_wr_merge;
  private:
   const char* cache_name;
@@ -1454,71 +1513,90 @@ struct WARP_INTERFERE_RECORD {
 };
 
 struct LINE_RECENCY {
+  bool is_valid;
+  bool was_recorded_in_mshr;
+  unsigned long long reref_gap;
   unsigned long long last_access_time;
   unsigned long long last_fill_time;
   unsigned rrpv;
   unsigned max_rrpv;
-  unsigned recorded_times_in_mshr;
   unsigned total_hits;
   unsigned total_evictions;
   unsigned total_accesses;
-  unsigned long long last_evict_interval;
-  unsigned long long avg_evict_interval;
   unsigned warp_id;
   unsigned core_id;
   LINE_RECENCY(
+    bool is_valid_,
+    bool was_recorded_in_mshr_,
+    unsigned long long reref_gap_,
     unsigned long long last_access_time_,
     unsigned long long last_fill_time_,
     unsigned rrpv_,    
     unsigned max_rrpv_,
-    unsigned recorded_times_in_mshr_,
     unsigned total_hits_,
     unsigned total_evictions_,
     unsigned total_accesses_,
-    unsigned long long last_evict_interval_,
-    unsigned long long avg_evict_interval_,
     unsigned warp_id_,
     unsigned core_id_
   ) : 
+  is_valid(is_valid_),
+  was_recorded_in_mshr(was_recorded_in_mshr_),
+  reref_gap(reref_gap_),
   last_access_time(last_access_time_),
   last_fill_time(last_fill_time_),
   rrpv(rrpv_),
   max_rrpv(max_rrpv_),
-  recorded_times_in_mshr(recorded_times_in_mshr_),
   total_hits(total_hits_),
   total_evictions(total_evictions_),
   total_accesses(total_accesses_),
-  last_evict_interval(last_evict_interval_),
-  avg_evict_interval(avg_evict_interval_),
   warp_id(warp_id_),
   core_id(core_id_)
   {}
 
   void init() {
+    is_valid = false;
+    was_recorded_in_mshr = false;
+    reref_gap        = (unsigned long long) - 1;
     last_access_time = (unsigned long long) - 1;
     last_fill_time   = (unsigned long long) - 1;
     rrpv                   = (unsigned) - 1;
     max_rrpv               = (unsigned) - 1;
-    recorded_times_in_mshr = (unsigned) - 1;
     total_hits             = (unsigned) - 1;
     total_evictions        = (unsigned) - 1;
     total_accesses         = (unsigned) - 1;
-    last_evict_interval = (unsigned long long) - 1;
-    avg_evict_interval  = (unsigned long long) - 1;
     warp_id = (unsigned) - 1;
     core_id = (unsigned) - 1;
   }
 };
 
+struct LINE_LOCALITY
+{
+  unsigned total_hits;
+  unsigned total_fills;
+  unsigned total_evictions;
+  float thrash_dist;
+  LINE_LOCALITY() : 
+    total_hits(0), total_fills(0), total_evictions(0), thrash_dist(0.0f) {}
+  LINE_LOCALITY(unsigned total_hits_, unsigned total_fills_, unsigned total_evictions_) :
+    total_hits(total_hits_),
+    total_fills(total_fills_),
+    total_evictions(total_evictions_),
+    thrash_dist(total_evictions_ / (float)total_hits_) {}
+  void updateThrash() {
+    thrash_dist = total_evictions / (float)total_hits;
+  }
+};
+
 class tag_array {
   friend class baseline_cache;
+  friend class cache_config;
  public:
   // Use this constructor
-  tag_array(cache_config &config, int core_id, int type_id);
+  tag_array(gpgpu_sim *gpu, cache_config &config, int core_id, int type_id);
   ~tag_array();
 
-  std::vector<std::set<new_addr_type>> get_unique_lines() {
-    return m_unique_lines;
+  std::vector<std::set<new_addr_type>> get_l1d_unique_lines() {
+    return m_l1d_unique_lines;
   }
 
   static bool cmpForSmallerTimestamp(
@@ -1526,11 +1604,6 @@ class tag_array {
     const std::pair<unsigned, LINE_RECENCY>& b) {
     return a.second.last_access_time < b.second.last_access_time;
   }
-  static bool cmpForSmallerRecordsInMSHR(
-    const std::pair<unsigned, LINE_RECENCY>& a, 
-    const std::pair<unsigned, LINE_RECENCY>& b) {
-    return a.second.recorded_times_in_mshr < b.second.recorded_times_in_mshr;
-  }  
   static bool cmpForSmallerTotalHits(
     const std::pair<unsigned, LINE_RECENCY>& a, 
     const std::pair<unsigned, LINE_RECENCY>& b) {
@@ -1541,14 +1614,9 @@ class tag_array {
     const std::pair<unsigned, LINE_RECENCY>& b) {
     return a.second.last_fill_time < b.second.last_fill_time;
   }
-  // static bool cmpForSmallerWarpInterfere(
-  //   const std::pair<unsigned, LINE_RECENCY>& a, 
-  //   const std::pair<unsigned, LINE_RECENCY>& b) {
-  //   // return a.second. < b.second.last_fill_time;
-  // }  
 
   void gather_rep_candidates(
-    cache_block_t* line, const unsigned& index,
+    mem_fetch* mf, cache_block_t* line, const unsigned& set_index, const unsigned& index,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates);
@@ -1567,6 +1635,7 @@ class tag_array {
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
+    bool& has_interfered,
     unsigned& valid_line,
     unsigned& warp_id, unsigned& core_id,
     mem_fetch *mf
@@ -1593,29 +1662,12 @@ class tag_array {
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
     unsigned& valid_line,
     const unsigned long long& smallest_last_access_time);
-  void mshr_corr_warp_interference_awared_pick(
-    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
-    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
-    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
-    unsigned& valid_line,
-    unsigned& warp_id, unsigned& core_id,
-    mem_fetch *mf, gpgpu_sim *gpu,
-    unsigned long long time
-  );  
 
   void fill_time_awared_modification_for_srrip(
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
     unsigned& valid_line);
-  void warp_interference_awared_modification_for_srrip(
-    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
-    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
-    std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
-    unsigned& valid_line,
-    unsigned& warp_id, unsigned& core_id,
-    mem_fetch *mf, gpgpu_sim *gpu
-  );  
   void mshr_awared_modification_for_srrip(
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
@@ -1624,7 +1676,6 @@ class tag_array {
 
   // addr is block_addr
   enum cache_request_status probe(const std::string& caller,
-                                  gpgpu_sim *gpu,
                                   new_addr_type addr, unsigned &idx,
                                   mem_fetch *mf, bool is_write,
                                   unsigned long long time,
@@ -1632,7 +1683,6 @@ class tag_array {
                                   WARP_INTERFERE_RECORD& warp_interfere_record,
                                   bool probe_mode = false);
   enum cache_request_status probe(const std::string& caller,
-                                  gpgpu_sim *gpu,
                                   new_addr_type addr, unsigned &idx,
                                   mem_access_sector_mask_t mask, bool is_write,
                                   unsigned long long time,
@@ -1640,19 +1690,21 @@ class tag_array {
                                   bool& got_warp_interfere_info, 
                                   WARP_INTERFERE_RECORD& warp_interfere_record,
                                   mem_fetch *mf = NULL);
-  enum cache_request_status access(gpgpu_sim *gpu, new_addr_type addr, unsigned long long time,
+  enum cache_request_status access(new_addr_type addr, unsigned long long time,
                                    unsigned &idx, mem_fetch *mf);
-  enum cache_request_status access(gpgpu_sim *gpu, new_addr_type addr, unsigned long long time,
+  enum cache_request_status access(new_addr_type addr, unsigned long long time,
                                    unsigned &idx, bool &wb,
                                    evicted_block_info &evicted, mem_fetch *mf);
   void inc_rrpv_for_one_set(unsigned set_index);
   bool already_has_max_rrpv_in_one_set(unsigned set_index);
 
-  void fill(gpgpu_sim *gpu, new_addr_type addr, unsigned long long time, mem_fetch *mf, bool is_write);
+  void fill(new_addr_type addr, unsigned long long time, mem_fetch *mf, bool is_write);
   void fill(unsigned index, unsigned long long time, mem_fetch *mf);
-  void fill(gpgpu_sim *gpu, new_addr_type addr, unsigned long long time, mem_access_sector_mask_t mask,
-            mem_access_byte_mask_t byte_mask, bool is_write);
-  void set_recorded_in_mshr(unsigned index, unsigned long long time);
+  void fill(new_addr_type addr, unsigned long long time, mem_access_sector_mask_t mask,
+            mem_access_byte_mask_t byte_mask, bool is_write,
+            mem_fetch *mf = NULL);
+  void reset_record_in_mshr(unsigned index);
+  void set_recorded_in_mshr(unsigned index);
 
   unsigned size() const { return m_config.get_num_lines(); }
   cache_block_t *get_block(unsigned idx) { return m_lines[idx]; }
@@ -1681,11 +1733,14 @@ class tag_array {
   void init(int core_id, int type_id);
 
  protected:
+  gpgpu_sim *m_gpu;
   cache_config &m_config;
 
   cache_block_t **m_lines; /* nbanks x nset x assoc lines in total */
   unsigned m_total_records_in_mshr;
 
+  bool m_is_l1d;
+  bool m_is_l2;
   unsigned m_access;
   unsigned m_reads;
   unsigned m_writes;
@@ -1716,7 +1771,12 @@ class tag_array {
   typedef tr1_hash_map<new_addr_type, unsigned> line_table;
   line_table pending_lines;
   line_table lines_locality;
-  std::vector<std::set<new_addr_type>> m_unique_lines;
+  std::vector<std::set<new_addr_type>> m_l2_mshr_recorded_addr;
+  std::vector<std::set<new_addr_type>> m_l1d_mshr_recorded_addr;
+  std::vector<std::set<new_addr_type>> m_l1d_unique_lines;
+  std::vector<std::vector<std::pair<new_addr_type, unsigned long long>>> m_reref_gap;  
+  std::vector<unsigned long long> m_avg_reref_gap;
+  // std::vector<std::map<new_addr_type, LINE_LOCALITY>> m_lines_locality;
 };
 
 class mshr_table {
@@ -2125,7 +2185,7 @@ class baseline_cache : public cache_t {
                  enum mem_fetch_status status, enum cache_gpu_level level,
                  gpgpu_sim *gpu)
       : m_config(config),
-        m_tag_array(new tag_array(config, core_id, type_id)),
+        m_tag_array(new tag_array(gpu, config, core_id, type_id)),
         m_mshrs(config.m_mshr_entries, config.m_mshr_max_merge),        
         m_level(level),
         m_gpu(gpu),
@@ -2139,14 +2199,16 @@ class baseline_cache : public cache_t {
 
   void init(const char *name, const cache_config &config,
             mem_fetch_interface *memport, enum mem_fetch_status status) {
-    m_name = name;
-    m_is_l1d       = false;
-    m_is_l2        = false;
-    if (m_name.find("L1D") != std::string::npos) {
+    m_name   = name;
+    m_is_l1d = false;
+    m_is_l2  = false;
+    if (!strcmp(config.get_cache_name(), "L1D")) {
       m_is_l1d = true;        
-    } else if (m_name.find("L2") != std::string::npos) {
+    } else if (!strcmp(config.get_cache_name(), "L2")) {
       m_is_l2 = true;
     }
+    m_tag_array->m_is_l1d = m_is_l1d;
+    m_tag_array->m_is_l2  = m_is_l2;
     fprintf(Trace::out, "init cache: %s\n", m_name.c_str());
 
     m_l1d_rd_miss_addresses.clear();
@@ -2263,10 +2325,10 @@ class baseline_cache : public cache_t {
   // filling the cache on cudamemcopies. We don't care about anything other than
   // L2 state after the memcopy - so just force the tag array to act as though
   // something is read or written without doing anything else.
-  void force_tag_access(new_addr_type addr, unsigned time,
+  void force_tag_access(new_addr_type addr, unsigned long long time,
                         mem_access_sector_mask_t mask) {
     mem_access_byte_mask_t byte_mask;
-    m_tag_array->fill(m_gpu, addr, time, mask, byte_mask, true);
+    m_tag_array->fill(addr, time, mask, byte_mask, true);
   }
 
  protected:
@@ -2351,13 +2413,13 @@ class baseline_cache : public cache_t {
 
   virtual void dump_cache_access_info(
     const char* caller,
-    new_addr_type addr, mem_fetch *mf, unsigned time, 
+    new_addr_type addr, mem_fetch *mf, unsigned long long time, 
     enum cache_request_status status,
     bool dump_inst_str = false);                     
 
   virtual void dump_cache_fill_info(
     const char* caller,
-    new_addr_type addr, mem_fetch *mf, unsigned time, 
+    new_addr_type addr, mem_fetch *mf, unsigned long long time, 
     bool dump_inst_str = false);     
 
   bandwidth_management m_bandwidth_management;
@@ -2382,7 +2444,7 @@ class read_only_cache : public baseline_cache {
   virtual ~read_only_cache() {}
 
  protected:
-  read_only_cache(const char *name, cache_config &config, int core_id,
+  read_only_cache(gpgpu_sim *gpu, const char *name, cache_config &config, int core_id,
                   int type_id, mem_fetch_interface *memport,
                   enum mem_fetch_status status, tag_array *new_tag_array)
       : baseline_cache(name, config, core_id, type_id, memport, status,
@@ -2496,62 +2558,62 @@ class data_cache : public baseline_cache {
 
   // Functions for data cache access
   /// Sends write request to lower level memory (write or writeback)
-  void send_write_request(mem_fetch *mf, cache_event request, unsigned time,
+  void send_write_request(mem_fetch *mf, cache_event request, unsigned long long time,
                           std::list<cache_event> &events);
   void update_m_readable(mem_fetch *mf, unsigned cache_index);
   // Member Function pointers - Set by configuration options
   // to the functions below each grouping
   /******* Write-hit configs *******/
   enum cache_request_status (data_cache::*m_wr_hit)(
-      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
+      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned long long time,
       std::list<cache_event> &events, enum cache_request_status status);
   /// Marks block as MODIFIED and updates block LRU
   enum cache_request_status wr_hit_wb(
-      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
+      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned long long time,
       std::list<cache_event> &events,
       enum cache_request_status status);  // write-back
   enum cache_request_status wr_hit_wt(
-      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
+      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned long long time,
       std::list<cache_event> &events,
       enum cache_request_status status);  // write-through
 
   /// Marks block as INVALID and sends write request to lower level memory
   enum cache_request_status wr_hit_we(
-      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
+      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned long long time,
       std::list<cache_event> &events,
       enum cache_request_status status);  // write-evict
   enum cache_request_status wr_hit_global_we_local_wb(
-      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
+      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned long long time,
       std::list<cache_event> &events, enum cache_request_status status);
   // global write-evict, local write-back
 
   /******* Write-miss configs *******/
   enum cache_request_status (data_cache::*m_wr_miss)(
-      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
+      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned long long time,
       std::list<cache_event> &events, enum cache_request_status status);
   /// Sends read request, and possible write-back request,
   //  to lower level memory for a write miss with write-allocate
   enum cache_request_status wr_miss_wa_naive(
-      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
+      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned long long time,
       std::list<cache_event> &events,
       enum cache_request_status
           status);  // write-allocate-send-write-and-read-request
   enum cache_request_status wr_miss_wa_fetch_on_write(
-      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
+      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned long long time,
       std::list<cache_event> &events,
       enum cache_request_status
           status);  // write-allocate with fetch-on-every-write
   enum cache_request_status wr_miss_wa_lazy_fetch_on_read(
-      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
+      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned long long time,
       std::list<cache_event> &events,
       enum cache_request_status status);  // write-allocate with read-fetch-only
   enum cache_request_status wr_miss_wa_write_validate(
-      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
+      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned long long time,
       std::list<cache_event> &events,
       enum cache_request_status
           status);  // write-allocate that writes with no read fetch
   enum cache_request_status wr_miss_no_wa(
-      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned time,
+      new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned long long time,
       std::list<cache_event> &events,
       enum cache_request_status status);  // no write-allocate
 
@@ -2579,7 +2641,7 @@ class data_cache : public baseline_cache {
                                          enum cache_request_status status);
   // void dump_cache_access_info(
   //   const char* caller,
-  //   new_addr_type addr, mem_fetch *mf, unsigned time, 
+  //   new_addr_type addr, mem_fetch *mf, unsigned long long time, 
   //   enum cache_request_status status,
   //   bool dump_inst_str = false);
 };
@@ -2650,11 +2712,12 @@ class l2_cache : public data_cache {
 // http://www-graphics.stanford.edu/papers/texture_prefetch/
 class tex_cache : public cache_t {
  public:
-  tex_cache(const char *name, cache_config &config, int core_id, int type_id,
+  tex_cache(gpgpu_sim *gpu, const char *name, cache_config &config, int core_id, int type_id,
             mem_fetch_interface *memport, enum mem_fetch_status request_status,
             enum mem_fetch_status rob_status)
-      : m_config(config),
-        m_tags(config, core_id, type_id),
+      : m_gpu(gpu),
+        m_config(config),
+        m_tags(gpu, config, core_id, type_id),
         m_fragment_fifo(config.m_fragment_fifo_entries),
         m_request_fifo(config.m_request_fifo_entries),
         m_rob(config.m_rob_entries),
@@ -2709,6 +2772,7 @@ class tex_cache : public cache_t {
 
  private:
   std::string m_name;
+  gpgpu_sim *m_gpu;
   const cache_config &m_config;
 
   struct fragment_entry {

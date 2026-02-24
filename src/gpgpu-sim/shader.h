@@ -1911,8 +1911,10 @@ struct shader_core_stats_pod {
   unsigned gpgpu_n_stall_shd_mem;
   unsigned *single_issue_nums;
   unsigned *dual_issue_nums;
+  unsigned **l1d_thrash;
   unsigned **issued_warp_insts;
   unsigned ***warp_interfere;
+  
   unsigned **issue_fails_due_to_mem_resource;
   unsigned **issue_fails_due_to_int_pipe_inavailable;
   unsigned **issue_fails_due_to_sp_pipe_inavailable;
@@ -2057,7 +2059,8 @@ class shader_core_stats : public shader_core_stats_pod {
     dual_issue_nums =
         (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
 
-    issued_warp_insts        = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
+    l1d_thrash        = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
+    issued_warp_insts = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
     warp_interfere = (unsigned ***)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned **));
 
     issue_fails_due_to_mem_resource                = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
@@ -2067,7 +2070,8 @@ class shader_core_stats : public shader_core_stats_pod {
     issue_fails_due_to_sfu_pipe_inavailable        = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));    
     issue_fails_due_to_spec_pipe_inavailable       = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
     issue_fails_due_to_tensorcore_pipe_inavailable = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));    
-    for (unsigned core = 0; core < config->n_simt_cores_per_cluster; core++) {
+    for (unsigned core = 0; core < config->n_simt_cores_per_cluster; core++) {      
+      l1d_thrash[core] = (unsigned *)calloc(2, sizeof(unsigned)); // {[0,100), [100, Inf)}
       issued_warp_insts[core] = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));      
       issue_fails_due_to_mem_resource[core]                = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
       issue_fails_due_to_int_pipe_inavailable[core]        = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));

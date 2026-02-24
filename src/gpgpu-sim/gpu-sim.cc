@@ -267,8 +267,8 @@ void memory_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_cache:l2_rep_enhance", OPT_CSTR,
                          &m_L2_config.m_rep_enhance_string,
                          "per-GPC shared L2 replacement enhance config "
-                         "<total_hits_ascend>,<fill_time_ascend>,<warp_interfere_aware>",
-                         "F,F,F");            
+                         "<fill_time_ascend>,<warp_interfere_aware>",
+                         "F,F");            
 
   option_parser_register(
       opp, "-disable_wr_merge", OPT_BOOL,
@@ -375,8 +375,8 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_cache:l1t_rep_enhance", OPT_CSTR,
                          &m_L1T_config.m_rep_enhance_string,
                          "per-shader L1T replacement enhance config "
-                         "<total_hits_ascend>,<fill_time_ascend>,<warp_interfere_aware>",
-                         "F,F,F");
+                         "<fill_time_ascend>,<warp_interfere_aware>",
+                         "F,F");
               
   option_parser_register(
       opp, "-gpgpu_const_cache:l1", OPT_CSTR, &m_L1C_config.m_config_string,
@@ -397,8 +397,8 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_cache:l1c_rep_enhance", OPT_CSTR,
                          &m_L1C_config.m_rep_enhance_string,
                          "per-shader L1C replacement enhance config "
-                         "<total_hits_ascend>,<fill_time_ascend>,<warp_interfere_aware>",
-                         "F,F,F");
+                         "<fill_time_ascend>,<warp_interfere_aware>",
+                         "F,F");
       
   option_parser_register(
       opp, "-gpgpu_cache:il1", OPT_CSTR, &m_L1I_config.m_config_string,
@@ -419,8 +419,8 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_cache:l1i_rep_enhance", OPT_CSTR,
                          &m_L1I_config.m_rep_enhance_string,
                          "per-shader L1I replacement enhance config "
-                         "<total_hits_ascend>,<fill_time_ascend>,<warp_interfere_aware>",
-                         "F,F,F");
+                         "<fill_time_ascend>,<warp_interfere_aware>",
+                         "F,F");
 
   option_parser_register(opp, "-gpgpu_cache:dl1", OPT_CSTR,
                          &m_L1D_config.m_config_string,
@@ -442,8 +442,8 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_cache:l1d_rep_enhance", OPT_CSTR,
                          &m_L1D_config.m_rep_enhance_string,
                          "per-shader L1D replacement enhance config "
-                         "<total_hits_ascend>,<fill_time_ascend>,<warp_interfere_aware>",
-                         "F,F,F");
+                         "<fill_time_ascend>,<warp_interfere_aware>",
+                         "F,F");
 
   option_parser_register(opp, "-gpgpu_l1_cache_write_ratio", OPT_UINT32,
                          &m_L1D_config.m_wr_percent, "L1D write ratio", "0");
@@ -1641,8 +1641,10 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
   unsigned total_issue_fails = 0;
 
   // Gather stats
-  unsigned per_core_issued_warp_insts[m_shader_config->n_simt_cores_per_cluster];
-  float cores_issue_ratio[m_shader_config->n_simt_cores_per_cluster];
+  // ROLLBACK_MARKER(index-guard-2026-02-21-sid): sid is global across clusters.
+  // Use total shader count to avoid sid-based out-of-bounds indexing.
+  std::vector<unsigned> per_core_issued_warp_insts(m_shader_config->num_shader(), 0);
+  std::vector<float> cores_issue_ratio(m_shader_config->num_shader(), 0.0f);
   float avg_per_core_issue_ratio = 0.0f;
   float total_issue_ratio = 0.0f;
   unsigned total_issued_warp_insts       = 0;
@@ -1682,6 +1684,25 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
       // sid indicate unique shader_core_id crossing clusters
       unsigned sid = m_shader_config->cid_to_sid(cid, cluster_id);
 
+      unsigned total_l1d_thrash = 0;
+      for (unsigned region = 0; region < 2; region++)
+      {
+        total_l1d_thrash += m_shader_stats->l1d_thrash[sid][region];
+      }
+      auto format_region = [](unsigned region) -> std::string {
+        if (region < 1) {
+          return "[0,100)";
+        } else {
+          return "[100,Inf)";
+        }
+      };
+      for (unsigned region = 0; region < 2; region++)
+      {
+        printf("l1d_thrash[sid:%u]%s = %f\n", 
+          sid, format_region(region).c_str(), 
+          m_shader_stats->l1d_thrash[sid][region] / float(total_l1d_thrash));
+      }
+
       for (unsigned interfered = 0; interfered < m_shader_config->max_warps_per_shader; interfered++)
       {
         for (unsigned interfering = 0; interfering < m_shader_config->max_warps_per_shader; interfering++)
@@ -1715,11 +1736,9 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
                 {sid, interfered, interfering, m_shader_stats->warp_interfere[sid][interfered][interfering]});
             }
 
-            if (m_shader_stats->warp_interfere[sid][interfered][interfering]) {
-              per_core_warp_interferences[sid] += m_shader_stats->warp_interfere[sid][interfered][interfering];
-              v_sorted_warp_interfere.push_back(
-                {sid, interfered, interfering, m_shader_stats->warp_interfere[sid][interfered][interfering]});
-            }
+            per_core_warp_interferences[sid] += m_shader_stats->warp_interfere[sid][interfered][interfering];
+            v_sorted_warp_interfere.push_back(
+              {sid, interfered, interfering, m_shader_stats->warp_interfere[sid][interfered][interfering]});
           } // if (interfering != interfered) {
         }
       }
@@ -1775,7 +1794,7 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
         total_issue_fails += m_shader_stats->issue_fails_due_to_spec_pipe_inavailable[sid][scheduler_id];
 
         per_core_issued_warp_insts[sid] += m_shader_stats->issued_warp_insts[sid][scheduler_id];
-        total_issued_warp_insts         += m_shader_stats->issued_warp_insts[sid][scheduler_id];        
+        total_issued_warp_insts += m_shader_stats->issued_warp_insts[sid][scheduler_id];        
       } // for (unsigned scheduler_id = 0; scheduler_id < m_shader_core->gpgpu_num_sched_per_core; scheduler_id++) {
       cores_issue_ratio[sid] = per_core_issued_warp_insts[sid] / (float)m_shader_stats->shader_cycles[sid];
       if (!sid) {
@@ -1795,7 +1814,7 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
         return a.interferes > b.interferes;
     });
   for (const auto& entry : v_sorted_warp_interfere) {
-      entry.print();
+      entry.print(); // warp_interfere[sid:%u][warp:%u][warp:%u] = %u
   }
 
   unsigned total_warp_interferences = 0;
@@ -1803,17 +1822,21 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
     for (unsigned cid = 0; cid < m_shader_config->n_simt_cores_per_cluster; cid++) {
       unsigned sid = m_shader_config->cid_to_sid(cid, cluster_id);
       total_warp_interferences += per_core_warp_interferences[sid];
-      printf("per_core_warp_interferences[sid:%u] = %u\n", sid, per_core_warp_interferences[sid]);
+      if (per_core_warp_interferences[sid]) {
+        printf("per_core_warp_interferences[sid:%u] = %u\n", sid, per_core_warp_interferences[sid]);
+      }
     }  
   }
   printf("total_warp_interferences = %u\n", total_warp_interferences);
   
-  printf("Distribution of warp_interference is:\n");
-  printf("[0:5) %f\n", v_warp_interfere_below_5.size() / (float)v_sorted_warp_interfere.size());
-  printf("[5:10) %f\n", v_warp_interfere_5_10.size() / (float)v_sorted_warp_interfere.size());
-  printf("[10:20) %f\n", v_warp_interfere_10_20.size() / (float)v_sorted_warp_interfere.size());
-  printf("[20:30) %f\n", v_warp_interfere_20_30.size() / (float)v_sorted_warp_interfere.size());
-  printf("[30, +Inf) %f\n", v_warp_interfere_exceed_30.size() / (float)v_sorted_warp_interfere.size());
+  if (!v_sorted_warp_interfere.empty()) {
+    printf("Distribution of warp_interference is:\n");
+    printf("[0:5) %f\n", v_warp_interfere_below_5.size() / (float)v_sorted_warp_interfere.size());
+    printf("[5:10) %f\n", v_warp_interfere_5_10.size() / (float)v_sorted_warp_interfere.size());
+    printf("[10:20) %f\n", v_warp_interfere_10_20.size() / (float)v_sorted_warp_interfere.size());
+    printf("[20:30) %f\n", v_warp_interfere_20_30.size() / (float)v_sorted_warp_interfere.size());
+    printf("[30, +Inf) %f\n", v_warp_interfere_exceed_30.size() / (float)v_sorted_warp_interfere.size());
+  }
 
   const unsigned clusters            = m_shader_config->n_simt_clusters;
   const unsigned cores_per_cluster   = m_shader_config->n_simt_cores_per_cluster;
