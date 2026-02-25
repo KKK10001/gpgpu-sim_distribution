@@ -225,6 +225,9 @@ struct cache_block_t {
   virtual bool is_modified_line() = 0;
 
   virtual bool was_recorded_in_mshr() { return m_was_recorded_in_mshr; }
+  virtual void set_recorded_in_mshr() {
+    m_was_recorded_in_mshr = true;
+  }
 
   virtual enum cache_block_state get_status(
       mem_access_sector_mask_t sector_mask) = 0;
@@ -1616,6 +1619,7 @@ class tag_array {
   }
 
   void gather_rep_candidates(
+    unsigned long long time,
     mem_fetch* mf, cache_block_t* line, const unsigned& set_index, const unsigned& index,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
@@ -1771,8 +1775,6 @@ class tag_array {
   typedef tr1_hash_map<new_addr_type, unsigned> line_table;
   line_table pending_lines;
   line_table lines_locality;
-  std::vector<std::set<new_addr_type>> m_l2_mshr_recorded_addr;
-  std::vector<std::set<new_addr_type>> m_l1d_mshr_recorded_addr;
   std::vector<std::set<new_addr_type>> m_l1d_unique_lines;
   std::vector<std::vector<std::pair<new_addr_type, unsigned long long>>> m_reref_gap;  
   std::vector<unsigned long long> m_avg_reref_gap;

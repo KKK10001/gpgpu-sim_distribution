@@ -2937,19 +2937,24 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
         stall_cond = ICNT_RC_FAIL;
         break;
       } else {
-        mem_fetch *mf =
-            m_mf_allocator->alloc(inst, access,
-                                  m_core->get_gpu()->gpu_sim_cycle +
-                                      m_core->get_gpu()->gpu_tot_sim_cycle);
+        unsigned long long time = 
+          m_core->get_gpu()->gpu_sim_cycle + 
+          m_core->get_gpu()->gpu_tot_sim_cycle;
+
+        mem_fetch *mf = m_mf_allocator->alloc(inst, access, time);
+
         m_icnt->push(mf);
         inst.accessq_pop_back();
         // inst.clear_active( access.get_warp_mask() );
         if (inst.is_load()) {
-          for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++)
-            if (inst.out[r] > 0)
+          for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
+            if (inst.out[r] > 0) {
               assert(m_pending_writes[inst.warp_id()][inst.out[r]] > 0);
-        } else if (inst.is_store())
+            }
+          }
+        } else if (inst.is_store()) {
           m_core->inc_store_req(inst.warp_id());
+        }          
       }
     }
   } else {
@@ -3530,9 +3535,11 @@ void ldst_unit::cycle() {
   unsigned long long time = \
     m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle;
 
-  for (unsigned stage = 0; (stage + 1) < m_pipeline_depth; stage++)
-    if (m_pipeline_reg[stage]->empty() && !m_pipeline_reg[stage + 1]->empty())
+  for (unsigned stage = 0; (stage + 1) < m_pipeline_depth; stage++) {
+    if (m_pipeline_reg[stage]->empty() && !m_pipeline_reg[stage + 1]->empty()) {
       move_warp(m_pipeline_reg[stage], m_pipeline_reg[stage + 1]);
+    }
+  }
 
   if (!m_response_fifo.empty()) {
     mem_fetch *mf = m_response_fifo.front();
@@ -3565,7 +3572,9 @@ void ldst_unit::cycle() {
           bypassL1D = true;
         } else if (mf->get_access_type() == GLOBAL_ACC_R ||
                    mf->get_access_type() == GLOBAL_ACC_W) {  // global memory access
-          if (m_core->get_config()->gmem_skip_L1D) bypassL1D = true;
+            if (m_core->get_config()->gmem_skip_L1D) { 
+              bypassL1D = true;
+            }
         }
         if (bypassL1D) {
           if (m_next_global == NULL) {

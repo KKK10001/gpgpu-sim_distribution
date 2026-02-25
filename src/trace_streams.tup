@@ -94,6 +94,7 @@ TS_TUP_BEGIN( trace_streams_type )
     TS_TUP( XBAR_ROUTER ), 
     TS_TUP( CACHE_EVENT ),
     TS_TUP( MSHR_EVENT ),
+    TS_TUP( MSHR_AWARED_REPL ),
     TS_TUP( MISS_QUEUE_EVENT ),
     TS_TUP( ROP_EVENT ),
     TS_TUP( DRAM_EVENT ),

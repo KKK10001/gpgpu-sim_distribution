@@ -406,8 +406,6 @@ void tag_array::update_cache_parameters(cache_config &config) {
 tag_array::tag_array(gpgpu_sim *gpu, cache_config &config, int core_id, int type_id)
     : m_gpu(gpu), m_config(config) {
   
-  m_l2_mshr_recorded_addr.resize(gpu->m_memory_config->m_n_mem_sub_partition);
-  m_l1d_mshr_recorded_addr.resize(gpu->m_shader_config->num_shader());
   m_l1d_unique_lines.resize(gpu->m_shader_config->num_shader());
   m_reref_gap.resize(gpu->m_shader_config->num_shader());
   m_avg_reref_gap.resize(gpu->m_shader_config->num_shader(), 0);
@@ -492,6 +490,7 @@ enum cache_request_status tag_array::probe(
 }
 
 void tag_array::gather_rep_candidates(
+  unsigned long long time,
   mem_fetch *mf, cache_block_t* line, const unsigned& set_index, const unsigned& index,
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
@@ -519,25 +518,14 @@ void tag_array::gather_rep_candidates(
   }
 
   if (m_config.m_mshr_corr_repl == 'T') {
-    if (m_is_l1d && mf) {
-      for (auto& block_addr : m_l1d_mshr_recorded_addr[mf->get_sid()])
-      {
-        unsigned held_set_index = m_config.set_index(block_addr);
-        unsigned held_tag       = m_config.tag(block_addr);
-        if (held_set_index == set_index && held_tag == line->m_tag) {
-          set_recorded_in_mshr(index);
-          break;
-        }
-      }
-    } else if (m_is_l2 && mf) {
-      for (auto& block_addr : m_l2_mshr_recorded_addr[mf->get_sub_partition()])
-      {
-        unsigned held_set_index = m_config.set_index(block_addr);
-        unsigned held_tag       = m_config.tag(block_addr);
-        if (held_set_index == set_index && held_tag == line->m_tag) {
-          set_recorded_in_mshr(index);
-          break;
-        }
+    assert(m_config.m_mshr_disable == 'F');
+    if (DTRACE(MSHR_AWARED_REPL)) {
+      if (line->was_recorded_in_mshr()) {
+        fprintf(Trace::out, "%llu %s lines[index:%u] was_recorded_in_mshr = 1\n",
+          time, m_config.get_cache_name(), index, line->was_recorded_in_mshr());
+      } else {
+        fprintf(Trace::out, "%llu %s lines[index:%u] was_recorded_in_mshr = 0\n",
+          time, m_config.get_cache_name(), index, line->was_recorded_in_mshr());        
       }
     }
   }
@@ -983,7 +971,6 @@ enum cache_request_status tag_array::probe(
   for (unsigned way = 0; way < m_config.m_assoc; way++) {
     unsigned index = set_index * m_config.m_assoc + way;
     cache_block_t *line = m_lines[index];
-    reset_record_in_mshr(index);
 
     if (line->m_tag == tag) {
       line->inc_total_hits();
@@ -1053,7 +1040,7 @@ enum cache_request_status tag_array::probe(
           }
         } else {
           gather_rep_candidates(
-            mf, line, set_index, index /* unfolded */, 
+            time, mf, line, set_index, index /* unfolded */, 
             hybrid_rep_candidates_no_record_in_mshr,
             hybrid_rep_candidates_recorded_in_mshr,
             hybrid_rep_candidates);   
@@ -1229,6 +1216,13 @@ enum cache_request_status tag_array::probe(
     fprintf(stderr, "tag_array::probe - Error: No victim found for addr %#llx in %s\n",
             addr, m_config.get_cache_name());
     abort();
+  }
+
+  // 2/25 Reset MSHR record
+  reset_record_in_mshr(idx);
+  if (DTRACE(MSHR_AWARED_REPL)) {
+    fprintf(Trace::out, "%llu %s reset_record_in_mshr(index:%u)\n",
+      time, m_config.get_cache_name(), idx);
   }
 
   if (m_is_l1d && (idx != (unsigned) - 1)) {
@@ -1444,7 +1438,7 @@ void tag_array::fill(unsigned index, unsigned long long time, mem_fetch *mf) {
   // m_lines[index]->print_status();  
   if (DTRACE(LINE_STATUS_CHANGE)) {
     fprintf(Trace::out, "%llu %s tag_array::fill addr:%#llx "
-      "status = {%s %s %s %s}\n", 
+      "status = {%s %s %s %s}\n",
       time, m_config.get_cache_name(),
       m_lines[index]->m_block_addr,
       m_lines[index]->get_sector_status(0).c_str(),
@@ -1456,11 +1450,9 @@ void tag_array::fill(unsigned index, unsigned long long time, mem_fetch *mf) {
   bool reserved = m_lines[index]->is_reserved_line();
   bool modified = m_lines[index]->is_modified_line();
   assert(reserved | modified);
-  // assert(!m_is_l2);
   if (m_is_l1d && mf && (mf->get_wid() < shader_cfg->max_warps_per_shader)) {
+    // {set_last_warp_id, set_last_core_id} has already been done inside func below.
     m_lines[index]->fill(time, mf->get_access_sector_mask(), mf->get_access_byte_mask(), mf);
-    // m_lines[index]->set_last_warp_id(mf->get_wid());
-    // m_lines[index]->set_last_core_id(mf->get_sid());
     assert(m_lines[index]->get_last_core_id() != ((unsigned) - 1));
     assert(m_lines[index]->get_last_warp_id() != ((unsigned) - 1));
     if (DTRACE(WARP_CACHE_INTERFERE)) {
@@ -3512,7 +3504,7 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
     }
     if (DTRACE(CACHE_EVENT)) {
       dumpCacheEvent(time, "::fill", "ap:ON_MISS m_tag_array->fill", mf);
-    }    
+    }
     m_tag_array->fill(e->second.m_cache_index, time, mf);
   }
   else if (m_config.m_alloc_policy == ON_FILL) {
@@ -3784,11 +3776,11 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
 
       bool is_new_mshr_entry = false;
 
-      if (mf && m_is_l1d) {
-        m_tag_array->m_l1d_mshr_recorded_addr[mf->get_sid()].insert(block_addr);
-      } else if (mf && m_is_l2) {
-        m_tag_array->m_l2_mshr_recorded_addr[mf->get_sub_partition()].insert(block_addr);
-      }
+      // if (mf && m_is_l1d) {
+      //   m_tag_array->m_l1d_mshr_recorded_addr[mf->get_sid()].insert(block_addr);
+      // } else if (mf && m_is_l2) {
+      //   m_tag_array->m_l2_mshr_recorded_addr[mf->get_sub_partition()].insert(block_addr);
+      // }
 
       m_mshrs.add(mshr_addr, mf, is_new_mshr_entry, cache_type); // orig GPGPU-SIM logic
 
@@ -3858,10 +3850,10 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
 
       bool is_new_mshr_entry = false;
 
-      if (mf && m_is_l1d) {
-        m_tag_array->m_l1d_mshr_recorded_addr[mf->get_sid()].insert(block_addr);
-      } else if (mf && m_is_l2) {
-        m_tag_array->m_l2_mshr_recorded_addr[mf->get_sub_partition()].insert(block_addr);
+      m_tag_array->set_recorded_in_mshr(cache_index); // 2/25
+      if (DTRACE(MSHR_AWARED_REPL)) { 
+        fprintf(Trace::out, "%llu %s m_tag_array->set_recorded_in_mshr(index:%u)\n",
+          time, m_config.get_cache_name(), cache_index);
       }
 
       m_mshrs.add(mshr_addr, mf, is_new_mshr_entry, cache_type); // orig GPGPU-SIM logic      
@@ -4076,7 +4068,7 @@ enum cache_request_status data_cache::wr_miss_wa_naive(
     new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned long long time,
     std::list<cache_event> &events, enum cache_request_status status) {
   new_addr_type block_addr = m_config.block_addr(addr);
-  new_addr_type mshr_addr = m_config.mshr_addr(mf->get_addr());
+  new_addr_type mshr_addr  = m_config.mshr_addr(mf->get_addr());
 
   // Write allocate, maximum 3 requests (write miss, read request, write back
   // request) Conservatively ensure the worst-case request can be handled this
@@ -4752,6 +4744,11 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
   bool got_warp_interfere_info = false;
   WARP_INTERFERE_RECORD warp_interfere_record((unsigned )- 1, (unsigned) - 1);
 
+  // 2/25 test 
+  extra_mf_fields_lookup::iterator e = m_extra_mf_fields.find(mf);
+  unsigned long long mshr_recorded_blk_addr = e->second.m_block_addr;
+
+  // Pick one victim to update "cache_index" that was init as "-1" above.
   enum cache_request_status probe_status = m_tag_array->probe(
     "data_cache::access",
     block_addr, cache_index, mf, mf->is_write(), time,
