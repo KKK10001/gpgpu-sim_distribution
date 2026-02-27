@@ -1106,6 +1106,7 @@ const unsigned MAX_ACCESSES_PER_INSN_PER_THREAD = 8;
 
 class warp_inst_t : public inst_t {
  public:
+  friend class data_cache;
   // constructors
   warp_inst_t() {
     m_uid = 0;
@@ -1284,6 +1285,10 @@ class warp_inst_t : public inst_t {
   unsigned get_schd_id() const { return m_scheduler_id; }
   active_mask_t get_warp_active_mask() const { return m_warp_active_mask; }
 
+  const core_config* get_config() const {
+    return m_config;
+  }
+
  protected:
   unsigned m_uid;
   unsigned long long m_streamID;
@@ -1297,11 +1302,13 @@ class warp_inst_t : public inst_t {
   unsigned m_warp_id;
   unsigned m_dynamic_warp_id;
   const core_config *m_config;
-  active_mask_t m_warp_active_mask;  // dynamic active mask for timing model
-                                     // (after predication)
-  active_mask_t
-      m_warp_issued_mask;  // active mask at issue (prior to predication test)
-                           // -- for instruction counting
+
+  // dynamic active mask for timing model (after predication)  
+  active_mask_t m_warp_active_mask;  
+                                   
+  // active mask at issue (prior to predication test)
+  // -- for instruction counting
+  active_mask_t m_warp_issued_mask;
 
   struct per_thread_info {
     per_thread_info() {

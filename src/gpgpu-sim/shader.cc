@@ -258,9 +258,12 @@ void shader_core_ctx::create_schedulers() {
       case CONCRETE_SCHEDULER_GTO:
         schedulers.push_back(new gto_scheduler(
             m_stats, this, m_scoreboard, m_simt_stack, &m_warp,
-            &m_pipeline_reg[ID_OC_SP], &m_pipeline_reg[ID_OC_DP],
-            &m_pipeline_reg[ID_OC_SFU], &m_pipeline_reg[ID_OC_INT],
-            &m_pipeline_reg[ID_OC_TENSOR_CORE], m_specilized_dispatch_reg,
+            &m_pipeline_reg[ID_OC_SP], 
+            &m_pipeline_reg[ID_OC_DP],
+            &m_pipeline_reg[ID_OC_SFU], 
+            &m_pipeline_reg[ID_OC_INT],
+            &m_pipeline_reg[ID_OC_TENSOR_CORE], 
+            m_specilized_dispatch_reg,
             &m_pipeline_reg[ID_OC_MEM], i));
         break;
       case CONCRETE_SCHEDULER_RRR:
@@ -274,9 +277,12 @@ void shader_core_ctx::create_schedulers() {
       case CONCRETE_SCHEDULER_OLDEST_FIRST:
         schedulers.push_back(new oldest_scheduler(
             m_stats, this, m_scoreboard, m_simt_stack, &m_warp,
-            &m_pipeline_reg[ID_OC_SP], &m_pipeline_reg[ID_OC_DP],
-            &m_pipeline_reg[ID_OC_SFU], &m_pipeline_reg[ID_OC_INT],
-            &m_pipeline_reg[ID_OC_TENSOR_CORE], m_specilized_dispatch_reg,
+            &m_pipeline_reg[ID_OC_SP], 
+            &m_pipeline_reg[ID_OC_DP],
+            &m_pipeline_reg[ID_OC_SFU], 
+            &m_pipeline_reg[ID_OC_INT],
+            &m_pipeline_reg[ID_OC_TENSOR_CORE], 
+            m_specilized_dispatch_reg,
             &m_pipeline_reg[ID_OC_MEM], i));
         break;
       case CONCRETE_SCHEDULER_WARP_LIMITING:
@@ -294,8 +300,7 @@ void shader_core_ctx::create_schedulers() {
 
   for (unsigned i = 0; i < m_warp.size(); i++) {
     // distribute i's evenly though schedulers;
-    schedulers[i % m_config->gpgpu_num_sched_per_core]->add_supervised_warp_id(
-        i);
+    schedulers[i % m_config->gpgpu_num_sched_per_core]->add_supervised_warp_id(i);
   }
   for (unsigned i = 0; i < m_config->gpgpu_num_sched_per_core; ++i) {
     schedulers[i]->done_adding_supervised_warps();
@@ -1322,9 +1327,9 @@ static inline void __report_memstall_core__(shader_core_ctx* sc,
     __cycle_memstall_details__.clear();
   }
   ++__memstall_cores_seen__;
-  if (core_mem_blocked) ++__memstall_blocked_cores__;
   // If this core is blocked by memory this cycle, stash a representative detail
   if (core_mem_blocked) {
+    ++__memstall_blocked_cores__;
     unsigned warp = 0; int reg = -1; unsigned pc = 0; unsigned long long addr = 0ULL;
     if (sc->get_ldst_unit() && sc->get_ldst_unit()->get_any_pending_longop_detail(warp, reg, pc, addr)) {
       __cycle_memstall_details__[sc->get_sid()] = std::make_tuple(warp, reg, pc, addr);
@@ -1443,8 +1448,8 @@ shd_warp_t &scheduler_unit::warp(int i) { return *((*m_warp)[i]); }
  * @param last_issued_from_input:  An iterator pointing the last member in the
  * input_list that issued. Since this function orders in a RR fashion, the
  * object pointed to by this iterator will be last in the prioritization list
- * @param num_warps_to_add: The number of warps you want the scheudler to pick
- * between this cycle. Normally, this will be all the warps availible on the
+ * @param num_warps_to_add: The number of warps you want the scheduler to pick
+ * between this cycle. Normally, this will be all the warps available on the
  * core, i.e. m_supervised_warps.size(). However, a more sophisticated scheduler
  * may wish to limit this number. If the number if < m_supervised_warps.size(),
  * then only the warps with highest RR priority will be placed in the
@@ -1652,7 +1657,7 @@ void scheduler_unit::cycle() {
                     "%llu pI->op == {LOAD, STORE, MEM_BARRIER, TENSOR} issued++ = %u\n", 
                     m_shader->get_gpu()->gpu_sim_cycle + m_shader->get_gpu()->gpu_tot_sim_cycle,
                     issued);
-                }                   
+                }
               } else {
                 m_stats->issue_fails_due_to_mem_resource[m_shader->get_sid()][m_id]++;
               }
@@ -2401,6 +2406,11 @@ void shader_core_ctx::warp_inst_complete(const warp_inst_t &inst) {
 
   m_stats->m_num_sim_winsn[m_sid]++;
   m_gpu->gpu_sim_insn += inst.active_count();
+
+  if (DTRACE(SIM_INSNS)) {
+    fprintf(Trace::out, "%s m_gpu->gpu_sim_insn:%llu += inst.active_count:%u\n",
+      __func__, m_gpu->gpu_sim_insn, inst.active_count());
+  }
   // Optional trace: report cumulative executed instruction count
   // Enabled by: -trace_enabled 1 -trace_components INSN_COUNT [and optional sampling]
   {

@@ -340,12 +340,10 @@ class shd_warp_t {
   // Ni: LDGDEPBAR barrier support
  public:
   unsigned int m_ldgdepbar_id;  // LDGDEPBAR barrier ID
-  std::vector<std::vector<warp_inst_t>>
-      m_ldgdepbar_buf;  // LDGDEPBAR barrier buffer
+  std::vector<std::vector<warp_inst_t>> m_ldgdepbar_buf; // LDGDEPBAR barrier buffer
   unsigned int m_depbar_start_id;
   unsigned int m_depbar_group;
-  bool m_waiting_ldgsts;  // Ni: Whether the warp is waiting for the LDGSTS
-                          // instrs to finish
+  bool m_waiting_ldgsts;  // Ni: Whether the warp is waiting for the LDGSTS instrs to finish
 };
 
 inline unsigned hw_tid_from_wid(unsigned wid, unsigned warp_size, unsigned i) {
@@ -367,13 +365,13 @@ class shader_core_config;
 class shader_core_stats;
 
 enum scheduler_prioritization_type {
-  SCHEDULER_PRIORITIZATION_LRR = 0,   // Loose Round Robin
-  SCHEDULER_PRIORITIZATION_SRR,       // Strict Round Robin
+  SCHEDULER_PRIORITIZATION_LRR = 0,   // Loose Round Robin  (two_level_active_scheduler)
+  SCHEDULER_PRIORITIZATION_SRR,       // Strict Round Robin (two_level_active_scheduler)
   SCHEDULER_PRIORITIZATION_GTO,       // Greedy Then Oldest
-  SCHEDULER_PRIORITIZATION_GTLRR,     // Greedy Then Loose Round Robin
-  SCHEDULER_PRIORITIZATION_GTY,       // Greedy Then Youngest
+  SCHEDULER_PRIORITIZATION_GTLRR,     // Greedy Then Loose Round Robin (no-use)
+  SCHEDULER_PRIORITIZATION_GTY,       // Greedy Then Youngest (no-use)
   SCHEDULER_PRIORITIZATION_OLDEST,    // Oldest First
-  SCHEDULER_PRIORITIZATION_YOUNGEST,  // Youngest First
+  SCHEDULER_PRIORITIZATION_YOUNGEST,  // Youngest First (no-use)
 };
 
 // Each of these corresponds to a string value in the gpgpsim.config file
@@ -546,9 +544,12 @@ class gto_scheduler : public scheduler_unit {
  public:
   gto_scheduler(shader_core_stats *stats, shader_core_ctx *shader,
                 Scoreboard *scoreboard, simt_stack **simt,
-                std::vector<shd_warp_t *> *warp, register_set *sp_out,
-                register_set *dp_out, register_set *sfu_out,
-                register_set *int_out, register_set *tensor_core_out,
+                std::vector<shd_warp_t *> *warp, 
+                register_set *sp_out,
+                register_set *dp_out, 
+                register_set *sfu_out,
+                register_set *int_out, 
+                register_set *tensor_core_out,
                 std::vector<register_set *> &spec_cores_out,
                 register_set *mem_out, int id)
       : scheduler_unit(stats, shader, scoreboard, simt, warp, sp_out, dp_out,
@@ -565,9 +566,12 @@ class oldest_scheduler : public scheduler_unit {
  public:
   oldest_scheduler(shader_core_stats *stats, shader_core_ctx *shader,
                    Scoreboard *scoreboard, simt_stack **simt,
-                   std::vector<shd_warp_t *> *warp, register_set *sp_out,
-                   register_set *dp_out, register_set *sfu_out,
-                   register_set *int_out, register_set *tensor_core_out,
+                   std::vector<shd_warp_t *> *warp, 
+                   register_set *sp_out,
+                   register_set *dp_out, 
+                   register_set *sfu_out,
+                   register_set *int_out, 
+                   register_set *tensor_core_out,
                    std::vector<register_set *> &spec_cores_out,
                    register_set *mem_out, int id)
       : scheduler_unit(stats, shader, scoreboard, simt, warp, sp_out, dp_out,
@@ -1914,6 +1918,8 @@ struct shader_core_stats_pod {
   unsigned **l1d_thrash;
   unsigned **issued_warp_insts;
   unsigned ***warp_interfere;
+  unsigned ***l1d_warp_interfere;
+  unsigned ***l2_warp_interfere;
   
   unsigned **issue_fails_due_to_mem_resource;
   unsigned **issue_fails_due_to_int_pipe_inavailable;
@@ -2061,7 +2067,10 @@ class shader_core_stats : public shader_core_stats_pod {
 
     l1d_thrash        = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
     issued_warp_insts = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
-    warp_interfere = (unsigned ***)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned **));
+
+    warp_interfere     = (unsigned ***)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned **));
+    l1d_warp_interfere = (unsigned ***)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned **));
+    l2_warp_interfere  = (unsigned ***)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned **));
 
     issue_fails_due_to_mem_resource                = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
     issue_fails_due_to_int_pipe_inavailable        = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
@@ -2082,8 +2091,12 @@ class shader_core_stats : public shader_core_stats_pod {
       issue_fails_due_to_tensorcore_pipe_inavailable[core] = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
 
       warp_interfere[core] = (unsigned **)malloc(config->max_warps_per_shader * sizeof(unsigned *));
+      l1d_warp_interfere[core] = (unsigned **)malloc(config->max_warps_per_shader * sizeof(unsigned *));
+      l2_warp_interfere[core]  = (unsigned **)malloc(config->max_warps_per_shader * sizeof(unsigned *));
       for (unsigned interfere = 0; interfere < config->max_warps_per_shader; interfere++) {
         warp_interfere[core][interfere] = (unsigned *)calloc(config->max_warps_per_shader, sizeof(unsigned));
+        l1d_warp_interfere[core][interfere] = (unsigned *)calloc(config->max_warps_per_shader, sizeof(unsigned));
+        l2_warp_interfere[core][interfere]  = (unsigned *)calloc(config->max_warps_per_shader, sizeof(unsigned));
       }
     }
 

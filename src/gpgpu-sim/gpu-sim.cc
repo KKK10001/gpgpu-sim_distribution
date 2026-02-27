@@ -1383,12 +1383,17 @@ void gpgpu_sim::update_stats() {
   gpu_tot_sim_cycle_partition_util += gpu_sim_cycle_partition_util;
   gpu_tot_occupancy += gpu_occupancy;
 
+  if (DTRACE(SIM_INSNS)) {
+    fprintf(Trace::out, "%s gpu_tot_sim_insn:%llu += gpu_sim_insn:%llu (reset->0)\n",
+      __func__, gpu_tot_sim_insn, gpu_sim_insn);
+  }
+
   gpu_sim_cycle = 0;
   partition_reqs_in_parallel = 0;
   partition_replys_in_parallel = 0;
   partition_reqs_in_parallel_util = 0;
   gpu_sim_cycle_partition_util = 0;
-  gpu_sim_insn = 0;
+  gpu_sim_insn = 0; // Reset
   m_total_cta_launched = 0;
   gpu_completed_cta = 0;
   gpu_occupancy = occupancy_stats();
@@ -1630,6 +1635,21 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
   printf("gpu_tot_occupancy = %.4f%% \n",
          (gpu_occupancy + gpu_tot_occupancy).get_occ_fraction() * 100);
 
+  if (DTRACE(SIM_INSNS)) {
+    fprintf(Trace::out, "%s gpu_ipc = %12.4f = "
+      "(gpu_sim_insn:%llu / gpu_sim_cycle:%llu)\n",
+      __func__, (float)gpu_sim_insn / gpu_sim_cycle, 
+      gpu_sim_insn, gpu_sim_cycle); 
+    fprintf(Trace::out, "%s gpu_tot_ipc = %12.4f = "
+      "(gpu_tot_sim_insn:%llu + gpu_sim_insn:%llu) / "
+      "(gpu_tot_sim_cycle:%llu + gpu_sim_cycle:%llu)\n",
+      __func__, 
+      (float)(gpu_tot_sim_insn + gpu_sim_insn) /
+      (gpu_tot_sim_cycle + gpu_sim_cycle), 
+      gpu_tot_sim_insn, gpu_sim_insn, 
+      gpu_tot_sim_cycle, gpu_sim_cycle);
+  }
+
   // shader_print_cache_stats(stdout);
   unsigned total_issue_fails_due_to_mem_resource                = 0;
   unsigned total_issue_fails_due_to_int_pipe_inavailable        = 0;
@@ -1661,12 +1681,16 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
   }  
 
   std::vector<SORTED_WARP_INTERFERE_INFO> v_sorted_warp_interfere;
+  std::vector<SORTED_WARP_INTERFERE_INFO> v_l1d_sorted_warp_interfere;
+  std::vector<SORTED_WARP_INTERFERE_INFO> v_l2_sorted_warp_interfere;
   std::vector<SORTED_WARP_INTERFERE_INFO> v_warp_interfere_below_5;
   std::vector<SORTED_WARP_INTERFERE_INFO> v_warp_interfere_5_10;
   std::vector<SORTED_WARP_INTERFERE_INFO> v_warp_interfere_10_20;
   std::vector<SORTED_WARP_INTERFERE_INFO> v_warp_interfere_20_30;
   std::vector<SORTED_WARP_INTERFERE_INFO> v_warp_interfere_exceed_30;
   std::map<unsigned, unsigned> per_core_warp_interferences;
+  std::map<unsigned, unsigned> per_core_wi_on_l1d;
+  std::map<unsigned, unsigned> per_core_wi_on_l2;
 
   // -gpgpu_n_clusters = 1
   // -gpgpu_n_cores_per_cluster = 4 ---> n_simt_cores_per_cluster = 4
@@ -1737,8 +1761,15 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
             }
 
             per_core_warp_interferences[sid] += m_shader_stats->warp_interfere[sid][interfered][interfering];
+            per_core_wi_on_l1d[sid] += m_shader_stats->l1d_warp_interfere[sid][interfered][interfering];
+            per_core_wi_on_l2[sid]  += m_shader_stats->l2_warp_interfere[sid][interfered][interfering];
+
             v_sorted_warp_interfere.push_back(
               {sid, interfered, interfering, m_shader_stats->warp_interfere[sid][interfered][interfering]});
+            v_l1d_sorted_warp_interfere.push_back(
+              {sid, interfered, interfering, m_shader_stats->l1d_warp_interfere[sid][interfered][interfering]});
+            v_l2_sorted_warp_interfere.push_back(
+              {sid, interfered, interfering, m_shader_stats->l2_warp_interfere[sid][interfered][interfering]});
           } // if (interfering != interfered) {
         }
       }
@@ -1818,16 +1849,22 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
   }
 
   unsigned total_warp_interferences = 0;
+  unsigned total_wi_on_l1d = 0;
+  unsigned total_wi_on_l2  = 0;
   for (unsigned cluster_id = 0; cluster_id < m_shader_config->n_simt_clusters; cluster_id++) {
     for (unsigned cid = 0; cid < m_shader_config->n_simt_cores_per_cluster; cid++) {
       unsigned sid = m_shader_config->cid_to_sid(cid, cluster_id);
       total_warp_interferences += per_core_warp_interferences[sid];
+      total_wi_on_l1d += per_core_wi_on_l1d[sid];
+      total_wi_on_l2  += per_core_wi_on_l2[sid];
       if (per_core_warp_interferences[sid]) {
         printf("per_core_warp_interferences[sid:%u] = %u\n", sid, per_core_warp_interferences[sid]);
       }
     }  
   }
   printf("total_warp_interferences = %u\n", total_warp_interferences);
+  printf("total_wi_on_l1d = %u\n", total_wi_on_l1d);
+  printf("total_wi_on_l2  = %u\n", total_wi_on_l2);
   
   if (!v_sorted_warp_interfere.empty()) {
     printf("Distribution of warp_interference is:\n");
@@ -2092,7 +2129,7 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
   core_cache_stats.print_avg_core_cache_miss_served_cycles(stdout, streamID);  
 
   printf("\nTotal_core_cache_fail_stats:\n");
-  core_cache_stats.print_fail_stats(stdout, streamID, "Total_core_cache_fail_stats_breakdown");
+  core_cache_stats.print_fail_stats(stdout, streamID, "breakdown");
   printf("\nTotal_core_cache_mshr_stats:\n");
   core_cache_stats.print_mshr_stats(stdout, streamID, "core_cache_mshr_stats");
   shader_print_scheduler_stat(stdout, false);

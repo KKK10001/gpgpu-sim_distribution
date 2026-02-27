@@ -2394,10 +2394,11 @@ class baseline_cache : public cache_t {
 
   /// Checks whether this request can be handled on this cycle. num_miss equals
   /// max # of misses to be handled on this cycle
-  bool miss_queue_full(unsigned num_miss) {
+  bool miss_queue_full(unsigned num_miss, std::string caller = nullptr) {
     if (DTRACE(MEM_STALL_GLOBAL)) {
       std::string cache_name = m_is_l1d ? "L1D" : (m_is_l2 ? "L2" : "other L1");
-      fprintf(Trace::out, "miss_queue_full at %s\n", cache_name.c_str());
+      fprintf(Trace::out, "Inside %s, miss_queue_full at %s\n", 
+        caller.c_str(), cache_name.c_str());
     }
     return ((m_miss_queue.size() + num_miss) >= m_config.m_miss_queue_size);
   }
