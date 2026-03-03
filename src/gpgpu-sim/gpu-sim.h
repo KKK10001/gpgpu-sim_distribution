@@ -617,7 +617,8 @@ struct SORTED_WARP_INTERFERE_INFO {
 
   void print() const {
     if (interferes) {
-      printf("warp_interfere[sid:%u][warp:%u][warp:%u] = %u\n", 
+      assert(interfered_id != interfering_id);
+      printf("inter_warp_interfere[sid:%u][warp:%u][warp:%u] = %u\n", 
         core_id, interfered_id, interfering_id, interferes);
     }
   }

@@ -57,6 +57,7 @@ class mem_fetch {
   friend class gpgpu_sim;
   friend class baseline_cache;
   friend class tag_array;
+  friend class ldst_unit;
  public:
   mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
             unsigned long long streamID, unsigned ctrl_size, unsigned wid,
@@ -64,7 +65,7 @@ class mem_fetch {
             unsigned long long cycle, mem_fetch *original_mf = NULL,
             mem_fetch *original_wr_mf = NULL);
   ~mem_fetch();
-
+  
   void set_status(enum mem_fetch_status status, unsigned long long cycle);
   void set_reply() {
     assert(m_access.get_type() != L1_WRBK_ACC &&
@@ -172,6 +173,8 @@ class mem_fetch {
   unsigned m_tpc;
   unsigned m_wid;
 
+  bool m_bypass_l1d;
+
   // where is this request now?
   enum mem_fetch_status m_status;
   unsigned long long m_status_change; // no-use var.
@@ -208,12 +211,15 @@ class mem_fetch {
   const memory_config *m_mem_config;
   unsigned icnt_flit_size;
 
-  mem_fetch
-      *original_mf;  // this pointer is set up when a request is divided into
-                     // sector requests at L2 cache (if the req size > L2 sector
-                     // size), so the pointer refers to the original request
-  mem_fetch *original_wr_mf;  // this pointer refers to the original write req,
-                              // when fetch-on-write policy is used
+  // this pointer is set up when a request is divided into
+  // sector requests at L2 cache (if the req size > L2 sector
+  // size), so the pointer refers to the original request
+  mem_fetch *original_mf;  
+                     
+  // this pointer refers to the original write req,
+  // when fetch-on-write policy is used  
+  mem_fetch *original_wr_mf;  
+                              
   unsigned m_bank; // hold the bank_id from L1D request
   unsigned long long m_time; // hold the time when *mf being created from l1_latency_queue
 };

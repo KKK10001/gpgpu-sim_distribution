@@ -209,6 +209,8 @@ struct cache_block_t {
     m_block_addr = 0;
     m_owner = (unsigned) - 1;
     m_was_recorded_in_mshr = false;
+    m_n_reused = 0;
+    m_n_rereferenced = 0;
   }
 
   virtual void allocate(new_addr_type tag, new_addr_type block_addr,
@@ -224,10 +226,11 @@ struct cache_block_t {
   virtual bool is_reserved_line() = 0;
   virtual bool is_modified_line() = 0;
 
-  virtual bool was_recorded_in_mshr() { return m_was_recorded_in_mshr; }
   virtual void set_recorded_in_mshr() {
     m_was_recorded_in_mshr = true;
   }
+  virtual unsigned rereferenced_times() { return m_n_rereferenced; }
+  virtual bool was_recorded_in_mshr() { return m_was_recorded_in_mshr; }
 
   virtual enum cache_block_state get_status(
       mem_access_sector_mask_t sector_mask) = 0;
@@ -257,6 +260,8 @@ struct cache_block_t {
   virtual unsigned long long get_last_access_time() = 0;
   virtual void set_last_fill_time(unsigned long long time) = 0;
   virtual unsigned long long get_last_fill_time() = 0;
+  virtual unsigned long long get_last_evict_time() = 0;
+  virtual unsigned long long get_evict_gap() = 0;
   virtual void set_last_warp_id(unsigned warp_id) = 0;
   virtual unsigned get_last_warp_id() = 0;
   virtual void set_last_core_id(unsigned core_id) = 0;
@@ -288,6 +293,8 @@ struct cache_block_t {
   new_addr_type m_tag;
   new_addr_type m_block_addr;
   unsigned m_owner; // warp_id  
+  unsigned m_n_reused;
+  unsigned m_n_rereferenced;
   bool m_was_recorded_in_mshr; // "was" means that the line might be invalid now
 };
 
@@ -303,6 +310,7 @@ struct line_cache_block : public cache_block_t {
 
     m_fill_time = 0;
     m_last_fill_time = 0;
+    m_last_evict_time = 0;
     m_last_warp_id = (unsigned) - 1;
     m_last_core_id = (unsigned) - 1;
     m_rrpv     = get_max_rrpv();
@@ -406,6 +414,10 @@ struct line_cache_block : public cache_block_t {
   virtual unsigned long long get_last_fill_time() {
     return m_last_fill_time;
   }
+  virtual unsigned long long get_last_evict_time() {
+    return m_last_evict_time;
+  }
+
   virtual void set_last_warp_id(unsigned warp_id) {
     m_last_warp_id = warp_id;
   }
@@ -435,6 +447,8 @@ struct line_cache_block : public cache_block_t {
   virtual unsigned get_total_hits() {
     return m_total_hits;
   }
+
+  virtual unsigned long long get_evict_gap() { return m_evict_gap; }
 
   virtual void set_rrpv(unsigned rrpv) { m_rrpv = rrpv; }
   virtual unsigned get_rrpv() { return m_rrpv; }
@@ -483,6 +497,7 @@ struct line_cache_block : public cache_block_t {
   unsigned long long m_reref_gap;
   unsigned long long m_last_access_time;
   unsigned long long m_last_fill_time;
+  unsigned long long m_last_evict_time;
   unsigned m_last_warp_id;
   unsigned m_last_core_id;
  
@@ -491,7 +506,7 @@ struct line_cache_block : public cache_block_t {
   unsigned m_total_accesses;  
   unsigned m_total_hits;
   unsigned m_total_evictions;
-    
+  unsigned long long m_evict_gap;
   unsigned m_rrpv;
   unsigned m_max_rrpv;
   char* m_cache_name;
@@ -521,6 +536,7 @@ struct sector_cache_block : public cache_block_t {
     m_line_alloc_time = 0;
     m_line_last_access_time = 0;
     m_line_last_fill_time   = 0;
+    m_line_last_evict_time  = 0;
     m_last_warp_id          = (unsigned) - 1;
     m_last_core_id          = (unsigned) - 1;
     m_total_evictions       = 0;
@@ -596,7 +612,7 @@ struct sector_cache_block : public cache_block_t {
 
     // set line stats
     m_line_last_access_time = time;
-    m_line_last_fill_time   = time; 
+    m_line_last_fill_time   = time;
     m_rrpv = (get_max_rrpv() >> 1) + 1;
     
     if (DTRACE(LINE_STATUS_CHANGE)) {
@@ -752,6 +768,9 @@ struct sector_cache_block : public cache_block_t {
   virtual unsigned long long get_last_fill_time() {
     return m_line_last_fill_time;
   }
+  virtual unsigned long long get_last_evict_time() {
+    return m_line_last_evict_time;
+  }
 
   virtual void set_last_warp_id(unsigned warp_id) {
     m_last_warp_id = warp_id;
@@ -783,8 +802,10 @@ struct sector_cache_block : public cache_block_t {
     return m_total_hits;
   }
 
+  virtual unsigned long long get_evict_gap() { return m_evict_gap; }
+
   virtual void set_rrpv(unsigned rrpv) { m_rrpv = rrpv; }
-  virtual unsigned get_rrpv() { return m_rrpv; }
+  virtual unsigned get_rrpv() { return m_rrpv; }  
   virtual void set_max_rrpv(unsigned rrpv) { m_max_rrpv = rrpv; }
   virtual unsigned get_max_rrpv() { return m_max_rrpv; }  
   virtual void set_cache_name(char* cache_name) { m_cache_name = cache_name; }
@@ -875,6 +896,7 @@ struct sector_cache_block : public cache_block_t {
   unsigned long long m_reref_gap;
   unsigned long long m_line_last_access_time;
   unsigned long long m_line_last_fill_time;
+  unsigned long long m_line_last_evict_time;
   unsigned m_last_warp_id;
   unsigned m_last_core_id;  
   unsigned m_total_accesses;
@@ -882,6 +904,7 @@ struct sector_cache_block : public cache_block_t {
   unsigned m_total_evictions;
   // Static Re-reference Interval Prediction (SRRIP) related control info.
   unsigned m_rrpv;
+  unsigned long long m_evict_gap;
   unsigned m_max_rrpv;
   char* m_cache_name;
   
@@ -1521,6 +1544,8 @@ struct LINE_RECENCY {
   unsigned long long reref_gap;
   unsigned long long last_access_time;
   unsigned long long last_fill_time;
+  unsigned long long last_evict_time;
+  unsigned long long evict_gap;
   unsigned rrpv;
   unsigned max_rrpv;
   unsigned total_hits;
@@ -1534,6 +1559,8 @@ struct LINE_RECENCY {
     unsigned long long reref_gap_,
     unsigned long long last_access_time_,
     unsigned long long last_fill_time_,
+    unsigned long long last_evict_time_,
+    unsigned long long evict_gap_,
     unsigned rrpv_,    
     unsigned max_rrpv_,
     unsigned total_hits_,
@@ -1547,6 +1574,8 @@ struct LINE_RECENCY {
   reref_gap(reref_gap_),
   last_access_time(last_access_time_),
   last_fill_time(last_fill_time_),
+  last_evict_time(last_evict_time_),
+  evict_gap(evict_gap_),
   rrpv(rrpv_),
   max_rrpv(max_rrpv_),
   total_hits(total_hits_),
@@ -1562,6 +1591,8 @@ struct LINE_RECENCY {
     reref_gap        = (unsigned long long) - 1;
     last_access_time = (unsigned long long) - 1;
     last_fill_time   = (unsigned long long) - 1;
+    last_evict_time  = (unsigned long long) - 1;
+    evict_gap        = (unsigned long long) - 1;
     rrpv                   = (unsigned) - 1;
     max_rrpv               = (unsigned) - 1;
     total_hits             = (unsigned) - 1;
@@ -1574,20 +1605,14 @@ struct LINE_RECENCY {
 
 struct LINE_LOCALITY
 {
-  unsigned total_hits;
-  unsigned total_fills;
+  unsigned core_id;
+  unsigned long long addr;
   unsigned total_evictions;
-  float thrash_dist;
   LINE_LOCALITY() : 
-    total_hits(0), total_fills(0), total_evictions(0), thrash_dist(0.0f) {}
-  LINE_LOCALITY(unsigned total_hits_, unsigned total_fills_, unsigned total_evictions_) :
-    total_hits(total_hits_),
-    total_fills(total_fills_),
-    total_evictions(total_evictions_),
-    thrash_dist(total_evictions_ / (float)total_hits_) {}
-  void updateThrash() {
-    thrash_dist = total_evictions / (float)total_hits;
-  }
+    core_id((unsigned) - 1), addr((unsigned long long) - 1), total_evictions(0) {}
+  LINE_LOCALITY(
+    unsigned core_id_, unsigned long long addr_, unsigned total_evictions_) :
+    core_id(core_id_), addr(addr_), total_evictions(total_evictions_) {}
 };
 
 class tag_array {
@@ -1635,7 +1660,8 @@ class tag_array {
     cache_block_t* line, unsigned long long& valid_timestamp, 
     unsigned& valid_line, const unsigned& index);
 
-  void warp_interfere_awared_pick(
+  void warp_interfere_aware_pick(
+    unsigned long long time,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
@@ -1683,7 +1709,7 @@ class tag_array {
                                   new_addr_type addr, unsigned &idx,
                                   mem_fetch *mf, bool is_write,
                                   unsigned long long time,
-                                  bool& got_warp_interfere_info, 
+                                  bool& inter_warp_has_interference, 
                                   WARP_INTERFERE_RECORD& warp_interfere_record,
                                   bool probe_mode = false);
   enum cache_request_status probe(const std::string& caller,
@@ -1691,7 +1717,7 @@ class tag_array {
                                   mem_access_sector_mask_t mask, bool is_write,
                                   unsigned long long time,
                                   bool probe_mode,
-                                  bool& got_warp_interfere_info, 
+                                  bool& inter_warp_has_interference, 
                                   WARP_INTERFERE_RECORD& warp_interfere_record,
                                   mem_fetch *mf = NULL);
   enum cache_request_status access(new_addr_type addr, unsigned long long time,
@@ -1778,7 +1804,11 @@ class tag_array {
   std::vector<std::set<new_addr_type>> m_l1d_unique_lines;
   std::vector<std::vector<std::pair<new_addr_type, unsigned long long>>> m_reref_gap;  
   std::vector<unsigned long long> m_avg_reref_gap;
-  // std::vector<std::map<new_addr_type, LINE_LOCALITY>> m_lines_locality;
+  std::vector<unsigned> m_l1d_max_evicts;
+  std::vector<unsigned> m_l1d_avg_evicts;
+  std::map<
+    std::pair<unsigned /* sid */, new_addr_type>, 
+    unsigned /* evictions */> m_l1d_lines_locality;
 };
 
 class mshr_table {
@@ -2193,8 +2223,8 @@ class baseline_cache : public cache_t {
         m_gpu(gpu),
         m_bandwidth_management(config) {
     // for debug
-    printf("baseline_cache {mshrs_entries = %u, mshr_max_merge = %u}\n", 
-      config.m_mshr_entries, config.m_mshr_max_merge);
+    printf("baseline_cache %s {mshrs_entries = %u, mshr_max_merge = %u}\n", 
+      config.get_cache_name(), config.m_mshr_entries, config.m_mshr_max_merge);
 
     init(name, config, memport, status);
   }
@@ -2395,7 +2425,7 @@ class baseline_cache : public cache_t {
   /// Checks whether this request can be handled on this cycle. num_miss equals
   /// max # of misses to be handled on this cycle
   bool miss_queue_full(unsigned num_miss, std::string caller = nullptr) {
-    if (DTRACE(MEM_STALL_GLOBAL)) {
+    if (DTRACE(CACHE_STALLED)) {
       std::string cache_name = m_is_l1d ? "L1D" : (m_is_l2 ? "L2" : "other L1");
       fprintf(Trace::out, "Inside %s, miss_queue_full at %s\n", 
         caller.c_str(), cache_name.c_str());

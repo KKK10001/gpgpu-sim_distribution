@@ -54,6 +54,7 @@ mem_fetch::mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
   m_sid = sid;
   m_tpc = tpc;
   m_wid = wid;
+  m_bypass_l1d = false;
 
   // 2/13 debug
   if (DTRACE(DEBUG_SINGLE_MF)) {

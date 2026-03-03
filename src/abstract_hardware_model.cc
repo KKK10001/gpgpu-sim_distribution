@@ -86,10 +86,9 @@ void warp_inst_t::issue(const active_mask_t &mask, unsigned warp_id,
   m_empty = false;
   m_scheduler_id = sch_id;
 
-  if (DTRACE(WARP_ISSUE) || DTRACE(WARP_SCHEDULER) || DTRACE(WARP_ID)) {
-    fprintf(Trace::out, "%llu warp_inst_t::issue m_warp_id = %u. "
-      "WARP[%u] issued, then m_empty = false\n", 
-      cycle, m_warp_id, dynamic_warp_id);
+  if (DTRACE(WARP_SCHEDULER)) {
+    fprintf(Trace::out, "%llu Scheduler[%u] scheduled WARP[%u] to issue\n",
+      cycle, m_scheduler_id, m_warp_id);
   }
 }
 
@@ -1219,8 +1218,7 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
 
   simt_mask_t top_active_mask = m_stack.back().m_active_mask;
   address_type top_recvg_pc = m_stack.back().m_recvg_pc;
-  address_type top_pc =
-      m_stack.back().m_pc;  // the pc of the instruction just executed
+  address_type top_pc = m_stack.back().m_pc; // the pc of the instruction just executed
   stack_entry_type top_type = m_stack.back().m_type;
   assert(top_pc == next_inst_pc);
   assert(top_active_mask.any());

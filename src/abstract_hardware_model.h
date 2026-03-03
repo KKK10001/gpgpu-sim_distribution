@@ -1060,8 +1060,7 @@ class inst_t {
 
   types_of_operands oprnd_type;  // code (uarch visible) identify if the
                                  // operation is an interger or a floating point
-  special_ops
-      sp_op;  // code (uarch visible) identify if int_alu, fp_alu, int_mul ....
+  special_ops sp_op; // code (uarch visible) identify if int_alu, fp_alu, int_mul ....
   operation_pipeline op_pipe;  // code (uarch visible) identify the pipeline of
                                // the operation (SP, SFU or MEM)
   mem_operation mem_op;        // code (uarch visible) identify memory type

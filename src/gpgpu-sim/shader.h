@@ -1915,13 +1915,19 @@ struct shader_core_stats_pod {
   unsigned gpgpu_n_stall_shd_mem;
   unsigned *single_issue_nums;
   unsigned *dual_issue_nums;
-  unsigned **l1d_thrash;
+  unsigned **m_l1d_thrash;
+  unsigned *m_l1d_victims;
+  unsigned *m_l1d_max_evicts;
+  unsigned *m_l1d_avg_evicts;
+  unsigned *m_l1d_repl_cands;
+  unsigned *m_l1d_lines_recency;
+  unsigned l2_victims;  
   unsigned **issued_warp_insts;
-  unsigned ***warp_interfere;
-  unsigned ***l1d_warp_interfere;
-  unsigned ***l2_warp_interfere;
+  unsigned **intra_warp_interfere;
+  unsigned ***inter_warp_interfere;  
   
   unsigned **issue_fails_due_to_mem_resource;
+  unsigned **continuous_two_mem_issue_fails;
   unsigned **issue_fails_due_to_int_pipe_inavailable;
   unsigned **issue_fails_due_to_sp_pipe_inavailable;
   unsigned **issue_fails_due_to_dp_pipe_inavailable;
@@ -2065,14 +2071,19 @@ class shader_core_stats : public shader_core_stats_pod {
     dual_issue_nums =
         (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
 
-    l1d_thrash        = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
+    m_l1d_victims    = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+    m_l1d_max_evicts = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+    m_l1d_avg_evicts = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+    m_l1d_repl_cands = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));    
+
+    m_l1d_thrash = (unsigned**)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned));
     issued_warp_insts = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
 
-    warp_interfere     = (unsigned ***)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned **));
-    l1d_warp_interfere = (unsigned ***)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned **));
-    l2_warp_interfere  = (unsigned ***)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned **));
+    intra_warp_interfere = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
+    inter_warp_interfere = (unsigned ***)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned **));
 
     issue_fails_due_to_mem_resource                = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
+    continuous_two_mem_issue_fails                 = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
     issue_fails_due_to_int_pipe_inavailable        = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
     issue_fails_due_to_sp_pipe_inavailable         = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
     issue_fails_due_to_dp_pipe_inavailable         = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
@@ -2080,9 +2091,10 @@ class shader_core_stats : public shader_core_stats_pod {
     issue_fails_due_to_spec_pipe_inavailable       = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
     issue_fails_due_to_tensorcore_pipe_inavailable = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));    
     for (unsigned core = 0; core < config->n_simt_cores_per_cluster; core++) {      
-      l1d_thrash[core] = (unsigned *)calloc(2, sizeof(unsigned)); // {[0,100), [100, Inf)}
+      m_l1d_thrash[core] = (unsigned *)calloc(2, sizeof(unsigned)); // {[0,100), [100, Inf)}
       issued_warp_insts[core] = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));      
       issue_fails_due_to_mem_resource[core]                = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+      continuous_two_mem_issue_fails[core]                 = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
       issue_fails_due_to_int_pipe_inavailable[core]        = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
       issue_fails_due_to_sp_pipe_inavailable[core]         = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
       issue_fails_due_to_dp_pipe_inavailable[core]         = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
@@ -2090,18 +2102,15 @@ class shader_core_stats : public shader_core_stats_pod {
       issue_fails_due_to_spec_pipe_inavailable[core]       = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
       issue_fails_due_to_tensorcore_pipe_inavailable[core] = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
 
-      warp_interfere[core] = (unsigned **)malloc(config->max_warps_per_shader * sizeof(unsigned *));
-      l1d_warp_interfere[core] = (unsigned **)malloc(config->max_warps_per_shader * sizeof(unsigned *));
-      l2_warp_interfere[core]  = (unsigned **)malloc(config->max_warps_per_shader * sizeof(unsigned *));
-      for (unsigned interfere = 0; interfere < config->max_warps_per_shader; interfere++) {
-        warp_interfere[core][interfere] = (unsigned *)calloc(config->max_warps_per_shader, sizeof(unsigned));
-        l1d_warp_interfere[core][interfere] = (unsigned *)calloc(config->max_warps_per_shader, sizeof(unsigned));
-        l2_warp_interfere[core][interfere]  = (unsigned *)calloc(config->max_warps_per_shader, sizeof(unsigned));
+      intra_warp_interfere[core] = (unsigned*)calloc(config->max_warps_per_shader, sizeof(unsigned));
+      inter_warp_interfere[core] = (unsigned **)malloc(config->max_warps_per_shader * sizeof(unsigned *));
+      for (unsigned interfered = 0; interfered < config->max_warps_per_shader; interfered++) {
+        inter_warp_interfere[core][interfered] = (unsigned *)calloc(config->max_warps_per_shader - 1, sizeof(unsigned));
       }
     }
 
-    ibuf_insts        = (unsigned *)calloc(config->max_warps_per_shader, sizeof(unsigned));
-    ibuf_valid_insts  = (unsigned *)calloc(config->max_warps_per_shader, sizeof(unsigned));
+    ibuf_insts       = (unsigned *)calloc(config->max_warps_per_shader, sizeof(unsigned));
+    ibuf_valid_insts = (unsigned *)calloc(config->max_warps_per_shader, sizeof(unsigned));
 
     ctas_completed = 0;
     n_simt_to_mem = (long *)calloc(config->num_shader(), sizeof(long));
@@ -2679,7 +2688,7 @@ class shader_core_ctx : public core_t {
                           unsigned sch_id);
 
   void create_front_pipeline();
-  void create_schedulers();
+  void create_schedulers(unsigned sid);
   void create_exec_pipeline();
 
   // pure virtual methods implemented based on the current execution mode
@@ -2828,7 +2837,7 @@ class exec_shader_core_ctx : public shader_core_ctx {
                         stats) {
     create_front_pipeline();
     create_shd_warp();
-    create_schedulers();
+    create_schedulers(shader_id);
     create_exec_pipeline();
   }
 
