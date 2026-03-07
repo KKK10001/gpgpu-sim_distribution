@@ -1694,6 +1694,7 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
   unsigned l1d_max_evictions = 0;
   unsigned l1d_avg_evictions = m_shader_stats->m_l1d_avg_evicts[0];
   unsigned l1d_repl_candidates = 0;
+  unsigned n_l1d_trashed_lines = 0;
   
   // -gpgpu_n_clusters = 1
   // -gpgpu_n_cores_per_cluster = 4 ---> n_simt_cores_per_cluster = 4
@@ -1734,6 +1735,7 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
       l1d_repl_candidates += m_shader_stats->m_l1d_repl_cands[sid];
       l1d_max_evictions   += m_shader_stats->m_l1d_max_evicts[sid];
       l1d_avg_evictions = (l1d_avg_evictions + m_shader_stats->m_l1d_avg_evicts[sid]) >> 1;
+      n_l1d_trashed_lines += m_shader_stats->m_n_l1d_trashed_lines[sid];
 
       // m_shader_stats->m_l1d_lines_recency[sid]
 
@@ -1786,8 +1788,8 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
       }
 
       // Print cache locality related stats      
-      printf("m_unique_cachelines[sid:%u] = %u\n", 
-        sid, m_shader_stats->m_unique_cachelines[sid]);
+      // printf("m_unique_cachelines[sid:%u] = %u\n", 
+      //   sid, m_shader_stats->m_unique_cachelines[sid]);
 
       for (unsigned scheduler_id = 0; scheduler_id < m_shader_config->gpgpu_num_sched_per_core; scheduler_id++) {
         // Theoretically, per-cycle max issued_warp_insts = 
@@ -1862,6 +1864,7 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
 
   printf("avg_l1d_max_evictions = %f\n", l1d_max_evictions / (float)m_shader_config->num_shader());
   printf("avg_l1d_evictions = %u\n", l1d_avg_evictions);
+  printf("n_l1d_trashed_lines = %u\n", n_l1d_trashed_lines);
 
   unsigned total_inter_warp_interferences = 0;
   unsigned total_intra_warp_interferences = 0;
@@ -2733,7 +2736,7 @@ void gpgpu_sim::cycle() {
         mem_fetch *mf = (mem_fetch *)icnt_pop(m_shader_config->mem2device(i));        
         m_memory_sub_partition[i]->push(mf, gpu_sim_cycle + gpu_tot_sim_cycle);
         if (mf) {
-          mf->set_sub_partition(i); // 1-9
+          mf->set_sub_partition(i); // mf does not carry sub_id by default
           partiton_reqs_in_parallel_per_cycle++;
           mf_monitor = mf;
 

@@ -933,9 +933,23 @@ class mem_access_t {
 class mem_fetch;
 
 class mem_fetch_interface {
- public:
-  virtual bool full(unsigned size, bool write) const = 0;
-  virtual void push(mem_fetch *mf) = 0;
+  friend class baseline_cache;
+  public:
+    mem_fetch_interface() {
+      m_if_name     = "mem_fetch_interface";
+      m_push_q_name = "xxx";
+    }
+    virtual bool full(unsigned size, bool write) const = 0;
+    virtual void push(mem_fetch *mf) = 0;
+    std::string get_if_name() { return m_if_name; }
+    std::string get_push_q_name() { return m_push_q_name; }
+  protected:
+    void set_if_name(std::string if_name) {
+      m_if_name = if_name;
+    }
+  private:
+    std::string m_if_name;
+    std::string m_push_q_name;
 };
 
 class mem_fetch_allocator {
@@ -1337,8 +1351,11 @@ class warp_inst_t : public inst_t {
   bool m_is_ldgsts;
   bool m_is_ldgdepbar;
   bool m_is_depbar;
-
   unsigned int m_depbar_group_no;
+
+  std::list<mem_access_t> get_access_q() {
+    return m_accessq;
+  }
 };
 
 void move_warp(warp_inst_t *&dst, warp_inst_t *&src);

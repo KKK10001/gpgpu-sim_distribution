@@ -985,12 +985,12 @@ class cache_config {
             &m_rrpv_bits, &m_combined_srrip_lru, &m_srrip_up);
 
     [[maybe_unused]] int ntok_rep_enhance = 
-      sscanf(rep_enhance_config, "%c,%c", 
-        &m_fill_time_ascend, &m_warp_interfere_aware);
+      sscanf(rep_enhance_config, "%c,%c,%c", 
+        &m_fill_time_ascend, &m_warp_interfere_aware, &m_bypass_low_loc_lines);
     fprintf(Trace::out, 
       "----------- %s rep_enhance_config is below -----------\n "
-      "m_fill_time_ascend = %c m_warp_interfere_aware = %c\n",
-      cache_name, m_fill_time_ascend, m_warp_interfere_aware);
+      "m_fill_time_ascend = %c m_warp_interfere_aware = %c m_bypass_low_loc_lines = %c\n",
+      cache_name, m_fill_time_ascend, m_warp_interfere_aware, m_bypass_low_loc_lines);
 
     fprintf(Trace::out, 
       "----------- %s srrip_config is below -----------\n "
@@ -1130,7 +1130,7 @@ class cache_config {
 
       (2) We also set the MSHRs to be equal to max
       allocated cache lines. This is possible by moving TAG to be shared
-      between cache line and MSHR enrty (i.e. for each cache line, there is
+      between cache line and MSHR entry (i.e. for each cache line, there is
       an MSHR rntey associated with it). This is the easiest think we can
       think of to model (mimic) L1 streaming cache in Pascal and Volta
 
@@ -1288,6 +1288,8 @@ class cache_config {
       );
     }
   }
+  char bypass_low_loc_lines() const { return m_bypass_low_loc_lines; }
+
   bool disabled() const { return m_disabled; }
   unsigned get_line_sz() const {
     assert(m_valid);
@@ -1433,6 +1435,7 @@ class cache_config {
   char m_mshr_corr_repl;
   char m_fill_time_ascend;
   char m_warp_interfere_aware;
+  char m_bypass_low_loc_lines;
 
   enum srrip_update_policy_t m_srrip_update_policy;
   unsigned m_rrpv_bits;
@@ -1606,13 +1609,28 @@ struct LINE_RECENCY {
 struct LINE_LOCALITY
 {
   unsigned core_id;
-  unsigned long long addr;
+  new_addr_type addr;
   unsigned total_evictions;
   LINE_LOCALITY() : 
-    core_id((unsigned) - 1), addr((unsigned long long) - 1), total_evictions(0) {}
+    core_id((unsigned) - 1), addr((new_addr_type) - 1), total_evictions(0) {}
   LINE_LOCALITY(
-    unsigned core_id_, unsigned long long addr_, unsigned total_evictions_) :
+    unsigned core_id_, new_addr_type addr_, unsigned total_evictions_) :
     core_id(core_id_), addr(addr_), total_evictions(total_evictions_) {}
+};
+struct REQ_PKT
+{
+  unsigned core_id;
+  new_addr_type addr;
+  REQ_PKT() : core_id((unsigned) - 1), addr((new_addr_type) - 1) {}
+  REQ_PKT(unsigned core_id_, new_addr_type addr_) :
+    core_id(core_id_), addr(addr_) {}
+
+  bool operator<(const REQ_PKT& o) const {
+    if (core_id != o.core_id) {
+      return core_id < o.core_id;
+    }
+    return addr < o.addr;
+  }
 };
 
 class tag_array {
@@ -1625,6 +1643,10 @@ class tag_array {
 
   std::vector<std::set<new_addr_type>> get_l1d_unique_lines() {
     return m_l1d_unique_lines;
+  }
+
+  const std::set<REQ_PKT>& get_trashed_pkts() const {
+    return m_trashed_reqs;
   }
 
   static bool cmpForSmallerTimestamp(
@@ -1798,6 +1820,8 @@ class tag_array {
 
   bool is_used;  // a flag if the whole cache has ever been accessed before
 
+  std::set<REQ_PKT> m_trashed_reqs;
+
   typedef tr1_hash_map<new_addr_type, unsigned> line_table;
   line_table pending_lines;
   line_table lines_locality;
@@ -1807,8 +1831,9 @@ class tag_array {
   std::vector<unsigned> m_l1d_max_evicts;
   std::vector<unsigned> m_l1d_avg_evicts;
   std::map<
-    std::pair<unsigned /* sid */, new_addr_type>, 
-    unsigned /* evictions */> m_l1d_lines_locality;
+    std::pair<unsigned /* sid */, new_addr_type>, unsigned /* evictions */> 
+    m_l1d_lines_evictions;
+  std::set<new_addr_type> m_l1d_trashed_lines;
 };
 
 class mshr_table {
@@ -2312,8 +2337,7 @@ class baseline_cache : public cache_t {
   void invalidate() { m_tag_array->invalidate(); }
   void print(FILE *fp, unsigned &accesses, unsigned &misses) const;
   void display_state(FILE *fp) const;
-  virtual void dumpCacheEvent(
-    unsigned long long time, const char* stage, const char* event, mem_fetch *mf);
+  virtual void dumpCacheEvent(unsigned long long time, const char* stage, const char* event, mem_fetch *mf);
   virtual void dumpMSHREvent(unsigned long long time, mem_fetch *mf, new_addr_type mshr_addr, bool is_new_entry);
   virtual void dumpMissQueue(unsigned long long time, const char* stage, const char* event, mem_fetch *mf);
 
@@ -2591,8 +2615,9 @@ class data_cache : public baseline_cache {
 
   // Functions for data cache access
   /// Sends write request to lower level memory (write or writeback)
-  void send_write_request(mem_fetch *mf, cache_event request, unsigned long long time,
-                          std::list<cache_event> &events);
+  void send_write_request(
+    std::string caller, mem_fetch *mf, 
+    cache_event request, unsigned long long time, std::list<cache_event> &events);
   void update_m_readable(mem_fetch *mf, unsigned cache_index);
   // Member Function pointers - Set by configuration options
   // to the functions below each grouping

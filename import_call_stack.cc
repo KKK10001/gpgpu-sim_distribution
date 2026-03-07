@@ -296,3 +296,33 @@ libcudart.so!gpgpu_sim::cycle(gpgpu_sim * const this) (\home\hjs\dev\accel-sim\a
 accel_sim_framework::simulate(accel_sim_framework * const this) (\home\hjs\dev\accel-sim\accel-sim-framework\gpu-simulator\accel-sim.cc:165)
 accel_sim_framework::simulation_loop(accel_sim_framework * const this) (\home\hjs\dev\accel-sim\accel-sim-framework\gpu-simulator\accel-sim.cc:75)
 main(int argc, const char ** argv) (\home\hjs\dev\accel-sim\accel-sim-framework\gpu-simulator\main.cc:30)
+
+Shader发出的请求固定进入l1_latency_queue，即使是bypassL1D的配置，也没有直接绕过l1_latency_queue的做法
+因此，要实现bypass L1D，实际上是将从l1_latency_queue中pop得到的mem_fetch* mf直接送入m_icnt_l2_queue
+libcudart.so!ldst_unit::process_memory_access_queue_l1cache(ldst_unit * const this, l1_cache * cache, warp_inst_t & inst) (\home\hjs\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\shader.cc:2715)
+libcudart.so!ldst_unit::memory_cycle(ldst_unit * const this, warp_inst_t & inst, mem_stage_stall_type & stall_reason, mem_stage_access_type & access_type) (\home\hjs\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\shader.cc:3077)
+libcudart.so!ldst_unit::cycle(ldst_unit * const this) (\home\hjs\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\shader.cc:3802)
+libcudart.so!shader_core_ctx::execute(shader_core_ctx * const this) (\home\hjs\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\shader.cc:2291)
+libcudart.so!shader_core_ctx::cycle(shader_core_ctx * const this) (\home\hjs\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\shader.cc:4627)
+libcudart.so!simt_core_cluster::core_cycle(simt_core_cluster * const this) (\home\hjs\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\shader.cc:5535)
+libcudart.so!gpgpu_sim::cycle(gpgpu_sim * const this) (\home\hjs\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\gpu-sim.cc:2790)
+accel_sim_framework::simulate(accel_sim_framework * const this) (\home\hjs\dev\accel-sim\accel-sim-framework\gpu-simulator\accel-sim.cc:165)
+accel_sim_framework::simulation_loop(accel_sim_framework * const this) (\home\hjs\dev\accel-sim\accel-sim-framework\gpu-simulator\accel-sim.cc:75)
+main(int argc, const char ** argv) (\home\hjs\dev\accel-sim\accel-sim-framework\gpu-simulator\main.cc:30)
+
+// I. m_response_fifo
+m_response_fifo.push_back(mf);    
+m_resp_fifo_inputs++;
+libcudart.so!simt_core_cluster::icnt_cycle(simt_core_cluster * const this) (\home\hjs\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\shader.cc:5881)
+libcudart.so!gpgpu_sim::cycle(gpgpu_sim * const this) (\home\hjs\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\gpu-sim.cc:2668)
+accel_sim_framework::simulate(accel_sim_framework * const this) (\home\hjs\dev\accel-sim\accel-sim-framework\gpu-simulator\accel-sim.cc:165)
+accel_sim_framework::simulation_loop(accel_sim_framework * const this) (\home\hjs\dev\accel-sim\accel-sim-framework\gpu-simulator\accel-sim.cc:75)
+main(int argc, const char ** argv) (\home\hjs\dev\accel-sim\accel-sim-framework\gpu-simulator\main.cc:30)
+// II. m_response_fifo
+libcudart.so!ldst_unit::fill(ldst_unit * const this, mem_fetch * mf) (\home\hjs\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\shader.cc:3121)
+libcudart.so!shader_core_ctx::accept_ldst_unit_response(shader_core_ctx * const this, mem_fetch * mf) (\home\hjs\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\shader.cc:5028)
+libcudart.so!simt_core_cluster::icnt_cycle(simt_core_cluster * const this) (\home\hjs\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\shader.cc:5847)
+libcudart.so!gpgpu_sim::cycle(gpgpu_sim * const this) (\home\hjs\dev\accel-sim\accel-sim-framework\gpu-simulator\gpgpu-sim\src\gpgpu-sim\gpu-sim.cc:2668)
+accel_sim_framework::simulate(accel_sim_framework * const this) (\home\hjs\dev\accel-sim\accel-sim-framework\gpu-simulator\accel-sim.cc:165)
+accel_sim_framework::simulation_loop(accel_sim_framework * const this) (\home\hjs\dev\accel-sim\accel-sim-framework\gpu-simulator\accel-sim.cc:75)
+main(int argc, const char ** argv) (\home\hjs\dev\accel-sim\accel-sim-framework\gpu-simulator\main.cc:30)

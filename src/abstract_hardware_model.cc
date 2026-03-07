@@ -741,8 +741,8 @@ void warp_inst_t::memory_coalescing_arch(bool is_write,
       new_addr_type addr = t->first;
       const transaction_info &info = t->second;
 
-      memory_coalescing_arch_reduce_and_send(is_write, access_type, info, addr,
-                                             segment_size);
+      memory_coalescing_arch_reduce_and_send(
+        is_write, access_type, info, addr, segment_size);
     }
   }
 }

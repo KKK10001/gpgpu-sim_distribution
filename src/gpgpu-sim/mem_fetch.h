@@ -52,6 +52,7 @@ enum mf_type {
 #undef MF_TUP_END
 
 class memory_config;
+
 class mem_fetch {
   friend class memory_sub_partition;
   friend class gpgpu_sim;
@@ -66,6 +67,9 @@ class mem_fetch {
             mem_fetch *original_wr_mf = NULL);
   ~mem_fetch();
   
+  void set_l1d_bypass_noalloc(bool v) { m_l1d_bypass_noalloc = v; }
+  bool get_l1d_bypass_noalloc() const { return m_l1d_bypass_noalloc; }
+
   void set_status(enum mem_fetch_status status, unsigned long long cycle);
   void set_reply() {
     assert(m_access.get_type() != L1_WRBK_ACC &&
@@ -104,6 +108,10 @@ class mem_fetch {
   unsigned get_sid() const { return m_sid; }
   unsigned get_tpc() const { return m_tpc; }
   unsigned get_wid() const { return m_wid; }
+  
+  // for debug
+  // void inc_
+
   bool istexture() const;
   bool isconst() const;
   enum mf_type get_type() const { return m_type; }
@@ -173,8 +181,6 @@ class mem_fetch {
   unsigned m_tpc;
   unsigned m_wid;
 
-  bool m_bypass_l1d;
-
   // where is this request now?
   enum mem_fetch_status m_status;
   unsigned long long m_status_change; // no-use var.
@@ -222,6 +228,7 @@ class mem_fetch {
                               
   unsigned m_bank; // hold the bank_id from L1D request
   unsigned long long m_time; // hold the time when *mf being created from l1_latency_queue
+  bool m_l1d_bypass_noalloc = false;
 };
 
 #endif

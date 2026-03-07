@@ -2555,7 +2555,7 @@ mem_stage_stall_type ldst_unit::process_cache_access(
     enum cache_request_status status) {
   mem_stage_stall_type result = NO_RC_FAIL;
   bool write_sent = was_write_sent(events);
-  bool read_sent = was_read_sent(events);
+  bool read_sent  = was_read_sent(events);
   // Record causal tag for load operations (pending longop chain)
   if (inst.is_load()) {
     for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
@@ -2584,6 +2584,7 @@ mem_stage_stall_type ldst_unit::process_cache_access(
   if (status == HIT) {
     assert(!read_sent);
     inst.accessq_pop_back();
+
     if (inst.is_load()) {
       for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++)
         if (inst.out[r] > 0) m_pending_writes[inst.warp_id()][inst.out[r]]--;
@@ -2606,7 +2607,7 @@ mem_stage_stall_type ldst_unit::process_cache_access(
     assert(status == MISS || status == HIT_RESERVED);
     // inst.clear_active( access.get_warp_mask() ); // threads in mf writeback
     // when mf returns
-    inst.accessq_pop_back();
+    inst.accessq_pop_back(); 
   }
   if (!inst.accessq_empty() && result == NO_RC_FAIL) result = COAL_STALL;
   return result;
@@ -2656,12 +2657,11 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
 
       if (inst.accessq_empty()) {
         return result;
-      }
+      }      
 
-      mem_fetch *mf = m_mf_allocator->alloc(inst, inst.accessq_back(), time);
+      mem_fetch *mf = m_mf_allocator->alloc(inst, inst.accessq_back(), time); // inst->mf
       unsigned bank_id = m_config->m_L1D_config.set_bank(mf->get_addr());
       assert(bank_id < m_config->m_L1D_config.l1_banks);
-
       assert(mf);
       if (DTRACE(L1D_ACCESS_ENTRY)) {
         const char* attr = inst.is_load() ? "ld" : inst.is_store() ? "st" : "!mem";
@@ -2670,23 +2670,47 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
       }
 
       if ((l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1]) == NULL) {
+        // if (m_config->m_L1D_config.bypass_low_loc_lines() == 'T') {
+        //   auto trashed_addresses = m_L1D->m_tag_array->get_trashed_pkts();
+        //   REQ_PKT req_pkt(mf->get_sid(), mf->get_addr());
+        //   auto it = trashed_addresses.find(req_pkt);          
+        //   if (it == trashed_addresses.end()) { // Only allow non-trashing mf enter l1_lat_q
+        //     l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1] = mf;
+        //   } else {
+        //     bool write_sent = inst.is_store() ? true : false;
+        //     bool read_sent  = inst.is_load() ? true : false;
+        //     set_reply_and_ack_for_miss(mf, false, write_sent, read_sent);
+        //     if (mf->get_inst().is_store()) {
+        //       unsigned inc_ack = (m_config->m_L1D_config.get_mshr_type() == SECTOR_ASSOC)
+        //                             ? (mf->get_data_size() / SECTOR_SIZE)
+        //                             : 1;
+        //       for (unsigned i = 0; i < inc_ack; ++i) {
+        //         m_core->inc_store_req(inst.warp_id());
+        //       }
+        //     }
+        //     inst.accessq_pop_back(); // When comment, dec_store_req() would assert
+        //     continue;                // When comment, dec_store_req() would assert
+        //   }
+        // } else {
+        //   l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1] = mf;
+        // }
+        l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1] = mf; // default
 
-        // 3/3
-        if (mf->m_bypass_l1d) {
-          if (DTRACE(L1D_BYPASS_CAND)) {
-            fprintf(Trace::out, "%llu Hit l1d bypass candidate <sid:%u, addr:%#llx>\n",
-              time, mf->get_sid(), mf->get_addr());
-          }
+        if (DTRACE(CACHE_EVENT)) {
+          std::string event = "Inserted mf into l1_lat_q[bank:";
+          event += std::to_string(bank_id) + "][";
+          event += std::to_string(m_config->m_L1D_config.l1_latency - 1) + "]";
+          m_L1D->dumpCacheEvent(
+            time, "ldst_unit::process_memory_access_queue_l1cache", 
+            event.c_str(), mf);
         }
 
-        l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1] = mf;
         // Tag chain for enqueued L1D access (latency modeled)
         if (mf->get_inst().is_load()) {
           for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
             int reg_id = mf->get_inst().out[r];
             if (reg_id > 0) {
-              // 3/2 for debug
-              assert(mf->get_inst().warp_id() == mf->get_wid());
+              assert(mf->get_inst().warp_id() == mf->get_wid()); // newly added for check
               m_pending_longop_chain[std::make_pair(mf->get_inst().warp_id(), reg_id)] = "L1D:ENQUEUE";
             }
           }
@@ -2701,7 +2725,6 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
             m_core->inc_store_req(inst.warp_id());
           }            
         }
-
         inst.accessq_pop_back();
       } else {
         result = BK_CONF;
@@ -2710,13 +2733,14 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
         break;  // do not try again, just break from the loop and try the next
                 // cycle
       }
-    }
+    } // for (unsigned int j = 0; j < m_config->m_L1D_config.l1_banks; j++) {
     if (!inst.accessq_empty() && result != BK_CONF) {
       result = COAL_STALL;
     }
 
     return result;
-  } else {
+  } // if (m_config->m_L1D_config.l1_latency > 0) { 
+  else {
     mem_fetch *mf = m_mf_allocator->alloc(inst, inst.accessq_back(), time);
     std::list<cache_event> events;
     enum cache_request_status status = cache->access(mf->get_addr(), mf, time, events);
@@ -2733,6 +2757,29 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
   }
 }
 
+void ldst_unit::set_reply_and_ack_for_miss(
+  mem_fetch* mf_next, bool was_wr_alloc_sent, bool write_sent, bool read_sent) 
+{
+  if (m_config->m_L1D_config.get_write_policy() != WRITE_THROUGH &&
+      mf_next->get_inst().is_store() &&
+      (m_config->m_L1D_config.get_write_allocate_policy() == FETCH_ON_WRITE ||
+        m_config->m_L1D_config.get_write_allocate_policy() == LAZY_FETCH_ON_READ) &&
+      !was_wr_alloc_sent) {
+    unsigned dec_ack =
+        (m_config->m_L1D_config.get_mshr_type() == SECTOR_ASSOC)
+            ? (mf_next->get_data_size() / SECTOR_SIZE)
+            : 1;
+    mf_next->set_reply();
+    for (unsigned i = 0; i < dec_ack; ++i) { 
+      m_core->store_ack(mf_next);
+    }
+
+    if (!write_sent && !read_sent) { 
+      delete mf_next;
+    }
+  } // Inside status == MISS
+}
+
 void ldst_unit::L1_latency_queue_cycle() {
   unsigned long long time = m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle;
   for (unsigned int bank_id = 0; bank_id < m_config->m_L1D_config.l1_banks; bank_id++) {    
@@ -2741,10 +2788,51 @@ void ldst_unit::L1_latency_queue_cycle() {
       std::list<cache_event> events;
       mf_next->setBankID(bank_id);
       mf_next->setTime(time);
-      enum cache_request_status status = m_L1D->access(mf_next->get_addr(), mf_next, time, events);
 
-      bool write_sent = was_write_sent(events);
-      bool read_sent = was_read_sent(events);
+      if (DTRACE(CACHE_EVENT)) {
+        std::string event = "Got mf at l1_latency_queue[bank:";
+        event += std::to_string(bank_id) + "][0]";
+        m_L1D->dumpCacheEvent(time, "ldst_unit::L1_latency_queue_cycle", 
+          event.c_str(), mf_next);
+      }
+
+      if (DTRACE(L1_LAT_Q_POP)) {
+        fprintf(Trace::out, "%llu ldst_unit::%s "
+          "got REQ_PKT<sid:%u, addr:%#llx> from l1_lat_q[bank:%u][0]\n",
+          time, __func__, mf_next->get_sid(), mf_next->get_addr(), bank_id
+          );
+      }
+
+      bool write_sent = false;
+      bool read_sent  = false;
+      enum cache_request_status status = m_L1D->access(mf_next->get_addr(), mf_next, time, events);
+      // enum cache_request_status status = cache_request_status::MISS;
+      // if (m_config.m_bypass_low_loc_lines == 'T') {
+      //   const bool wa = false;        
+      //   assert(status == cache_request_status::MISS);
+      //   if (!wa) {
+      //     events.push_back(cache_event(READ_REQUEST_SENT));
+      //   }
+      //   return;
+      // } else {
+      //   status = m_L1D->access(mf_next->get_addr(), mf_next, time, events);
+      // }
+
+      write_sent = was_write_sent(events);
+      read_sent  = was_read_sent(events);
+
+      // When bypassing L1D trashed_pkts, "WRITE_REQUEST_SENT" is sent in advance
+      // for request with is_write()
+      // assert(!write_sent);
+
+      if (read_sent) {
+        if (DTRACE(CACHE_EVENT)) {
+          m_L1D->dumpCacheEvent(time, 
+            "ldst_unit::L1_latency_queue_cycle",
+            "READ_REQUEST_SENT has been sent to L2", 
+            mf_next);
+        }
+      }
 
       if (status == HIT) {
         if (mf_next->get_access_type() == GLOBAL_ACC_W) {
@@ -2808,118 +2896,75 @@ void ldst_unit::L1_latency_queue_cycle() {
         } // if (mf_next->get_inst().is_load()) {
 
         // For write hit in WB policy
+        // Inside status == HIT
         if (mf_next->get_inst().is_store() && !write_sent) {
           unsigned dec_ack =
-              (m_config->m_L1D_config.get_mshr_type() == SECTOR_ASSOC)
-                  ? (mf_next->get_data_size() / SECTOR_SIZE)
-                  : 1;
+            (m_config->m_L1D_config.get_mshr_type() == SECTOR_ASSOC)
+                ? (mf_next->get_data_size() / SECTOR_SIZE)
+                : 1;
 
           mf_next->set_reply();
 
-          for (unsigned i = 0; i < dec_ack; ++i) m_core->store_ack(mf_next);
-        }
-
-        if (!write_sent) delete mf_next;
-
+          for (unsigned i = 0; i < dec_ack; ++i) {
+            m_core->store_ack(mf_next);
+          }
+        } // Inside status == HIT
+        if (!write_sent) { delete mf_next; }
       } else if (status == RESERVATION_FAIL) {
         assert(!read_sent);
         assert(!write_sent);
       } else {
-        assert(status == MISS || status == SECTOR_MISS || status == HIT_RESERVED);        
+        assert(status == MISS || status == SECTOR_MISS || status == HIT_RESERVED);
         
         if (DTRACE(CACHE_EVENT)) {
-          m_L1D->dumpCacheEvent(time, "Finished m_L1D->access", 
-            cache_request_status_str(cache_request_status(status)), mf_next);
+          m_L1D->dumpCacheEvent(time, 
+            "ldst_unit::L1_latency_queue_cycle",
+            "Finished m_L1D->access", 
+            mf_next);
         }
 
-        l1_latency_queue[bank_id][0] = NULL;
-        if (m_config->m_L1D_config.get_write_policy() != WRITE_THROUGH &&
-            mf_next->get_inst().is_store() &&
-            (m_config->m_L1D_config.get_write_allocate_policy() == FETCH_ON_WRITE ||
-             m_config->m_L1D_config.get_write_allocate_policy() == LAZY_FETCH_ON_READ) &&
-            !was_writeallocate_sent(events)) {
-          unsigned dec_ack =
-              (m_config->m_L1D_config.get_mshr_type() == SECTOR_ASSOC)
-                  ? (mf_next->get_data_size() / SECTOR_SIZE)
-                  : 1;
-          mf_next->set_reply();
-          for (unsigned i = 0; i < dec_ack; ++i) { 
-            m_core->store_ack(mf_next);
-          }
+        l1_latency_queue[bank_id][0] = NULL; // Remove *mf from head of l1_latency_queue
 
-          if (DTRACE(L1D_ACCESS)) {
-            fprintf(Trace::out,
-                    "%llu: set WRITE_ACK for L1D %s (wp:%s wap:%s) on pc:%#llx addr:%#llx\n",
-                    m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
-                    cache_request_status_str(status),
-                    write_policy_str(m_config->m_L1D_config.get_write_policy()),
-                    write_allocate_policy_str(m_config->m_L1D_config.get_write_allocate_policy()),
-                    mf_next->get_inst().pc,
-                    mf_next->get_addr()
-                  );
-          }
+        // if (m_config->m_L1D_config.get_write_policy() != WRITE_THROUGH &&
+        //     mf_next->get_inst().is_store() &&
+        //     (m_config->m_L1D_config.get_write_allocate_policy() == FETCH_ON_WRITE ||
+        //      m_config->m_L1D_config.get_write_allocate_policy() == LAZY_FETCH_ON_READ) &&
+        //     !was_writeallocate_sent(events)) {
+        //   unsigned dec_ack =
+        //       (m_config->m_L1D_config.get_mshr_type() == SECTOR_ASSOC)
+        //           ? (mf_next->get_data_size() / SECTOR_SIZE)
+        //           : 1;
+        //   mf_next->set_reply();
+        //   for (unsigned i = 0; i < dec_ack; ++i) { 
+        //     m_core->store_ack(mf_next);
+        //   }
 
-          if (!write_sent && !read_sent) { 
-            delete mf_next;
-          }
-        }
-      }
-    } else {
-      if (DTRACE(L1D_ACCESS)) {
-        fprintf(Trace::out, "%llu l1_latency_queue[bank:%u][0] is NULL\n", time, bank_id);
-        fprintf(Trace::out, "%llu l1_latency_queue[bank:%u][0] is NULL\n", time, bank_id);
-      }
-    }
-
-    if (DTRACE(L1D_ACCESS)) {
-      std::vector<std::pair<unsigned, mem_fetch*>> pending_accesses;
-      for (unsigned stage = 0; stage <= m_config->m_L1D_config.l1_latency - 1; ++stage) {
-        if (l1_latency_queue[bank_id][stage] != NULL) {
-          mem_fetch* mf = l1_latency_queue[bank_id][stage];
-          pending_accesses.push_back(std::make_pair(stage, mf));
-        }
-      }
-      if (pending_accesses.size()) {
-        fprintf(Trace::out, "%llu: Before squeezing, l1_lat_q[bank:%u][%u] holds: {",
-          m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, bank_id, m_config->m_L1D_config.l1_latency);
-        for (unsigned idx = 0; idx < pending_accesses.size(); ++idx) {
-          std::string tail_sym = idx == pending_accesses.size() - 1 ? "" : ", ";
-          fprintf(Trace::out, "<stage:%u pc:%#llx addr:%#llx>%s", 
-            pending_accesses[idx].first,
-            pending_accesses[idx].second->get_inst().pc,
-            pending_accesses[idx].second->get_addr(), tail_sym.c_str());
-        }
-        fprintf(Trace::out, "}\n");
-      }
-    } // if (DTRACE(L1D_ACCESS))
+        //   if (!write_sent && !read_sent) { 
+        //     delete mf_next;
+        //   }
+        // } // Inside status == MISS
+        bool was_wr_alloc_sent = was_writeallocate_sent(events);
+        set_reply_and_ack_for_miss(mf_next, was_wr_alloc_sent, write_sent, read_sent);
+      } // assert(status == MISS || status == SECTOR_MISS || status == HIT_RESERVED);
+    } // if ((l1_latency_queue[bank_id][0]) != NULL) -> Delay finishes
 
     // squeezing bubbles
     for (unsigned stage = 0; stage < m_config->m_L1D_config.l1_latency - 1; ++stage) {
       if (l1_latency_queue[bank_id][stage] == NULL) {
         l1_latency_queue[bank_id][stage] = l1_latency_queue[bank_id][stage + 1];
         l1_latency_queue[bank_id][stage + 1] = NULL;
-      }
-    }
 
-    if (DTRACE(L1D_ACCESS)) {
-      std::vector<std::pair<unsigned, mem_fetch*>> pending_accesses;
-      for (unsigned stage = 0; stage <= m_config->m_L1D_config.l1_latency - 1; ++stage) {
-        if (l1_latency_queue[bank_id][stage] != NULL) {
+        if (DTRACE(CACHE_EVENT)) {
           mem_fetch* mf = l1_latency_queue[bank_id][stage];
-          pending_accesses.push_back(std::make_pair(stage, mf));
+          if (mf) {
+            std::string event = "l1_lat_q[bank:";
+            event += std::to_string(bank_id) + "][";
+            event += std::to_string(stage) + "] = l1_lat_q[bank:";
+            event += std::to_string(bank_id) + "][" + std::to_string(stage + 1) + "]";
+            m_L1D->dumpCacheEvent(time, 
+              "ldst_unit::L1_latency_queue_cycle", event.c_str(), mf);
+          }
         }
-      }
-      if (pending_accesses.size()) {
-        fprintf(Trace::out, "%llu: After squeezing, l1_lat_q[bank:%u][%u] holds: {",
-          m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, bank_id, m_config->m_L1D_config.l1_latency);
-        for (unsigned idx = 0; idx < pending_accesses.size(); ++idx) {
-          std::string tail_sym = idx == pending_accesses.size() - 1 ? "" : ", ";
-          fprintf(Trace::out, "<stage:%u pc:%#llx addr:%#llx>%s", 
-            pending_accesses[idx].first,
-            pending_accesses[idx].second->get_inst().pc,
-            pending_accesses[idx].second->get_addr(), tail_sym.c_str());
-        }
-        fprintf(Trace::out, "}\n");
       }
     }
   } // for (unsigned int bank_id = 0; bank_id < m_config->m_L1D_config.l1_banks; bank_id++) 
@@ -2982,19 +3027,19 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
 
   mem_stage_stall_type stall_cond = NO_RC_FAIL;
   [[maybe_unused]] const mem_access_t &access = inst.accessq_back();
-
+  
   bool bypassL1D = false;
   if (CACHE_GLOBAL == inst.cache_op || (m_L1D == NULL)) {
     bypassL1D = true;
   } else if (inst.space.is_global()) {  // global memory access
     // skip L1 cache if the option is enabled
-    if (m_core->get_config()->gmem_skip_L1D && (CACHE_L1 != inst.cache_op))
+    if (m_core->get_config()->gmem_skip_L1D && (CACHE_L1 != inst.cache_op)) {
       bypassL1D = true;
+    }
   }
   if (bypassL1D) {
     // bypass L1 cache
-    unsigned control_size =
-        inst.is_store() ? WRITE_PACKET_SIZE : READ_PACKET_SIZE;
+    unsigned control_size = inst.is_store() ? WRITE_PACKET_SIZE : READ_PACKET_SIZE;
     for (unsigned i = 0; i < m_config->m_L1D_config.l1_banks; i++) {
       if (inst.accessq_empty()) {
         break;
@@ -3022,7 +3067,7 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
         mem_fetch *mf = m_mf_allocator->alloc(inst, access, time);
 
         m_icnt->push(mf);
-        inst.accessq_pop_back();
+        inst.accessq_pop_back();      
         // inst.clear_active( access.get_warp_mask() );
         if (inst.is_load()) {
           for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
@@ -3035,7 +3080,8 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
         }          
       }
     }
-  } else {
+  } // if (bypassL1D)  
+  else {
     assert(CACHE_UNDEFINED != inst.cache_op);
     stall_cond = process_memory_access_queue_l1cache(m_L1D, inst);
   }
@@ -3056,11 +3102,29 @@ bool ldst_unit::response_buffer_full() const {
   return m_response_fifo.size() >= m_config->ldst_unit_response_queue_size;
 }
 
-void ldst_unit::fill(mem_fetch *mf) {
-  mf->set_status(
-      IN_SHADER_LDST_RESPONSE_FIFO,
-      m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle);
+void ldst_unit::fill(mem_fetch *mf, unsigned cid) {
+  unsigned long long time = 
+    m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle;
+
+  assert(mf); // protect
+
+  mf->set_status(IN_SHADER_LDST_RESPONSE_FIFO, time);
   m_response_fifo.push_back(mf);
+  m_resp_fifo_inputs++;
+
+  if (DTRACE(CACHE_Q_SIZE)) {
+    fprintf(Trace::out, "cid = %u LSU m_resp_fifo_inputs++ = %u\n", cid, m_resp_fifo_inputs);
+  }
+  if (DTRACE(RESP_PKT)) {
+    std::string cache_name = m_L1D ? "L1D" : "xx";
+    fprintf(Trace::out, "%llu %s m_response_fifo push mf with addr: %#llx "
+      "m_resp_fifo_inputs++ = %u\n", 
+      time, cache_name.c_str(), mf->get_addr(), m_resp_fifo_inputs);
+  }
+
+  if (DTRACE(CACHE_EVENT)) {
+    m_L1D->dumpCacheEvent(time, "ldst_unit::fill", "m_response_fifo.push_back(mf)", mf);
+  }  
 }
 
 void ldst_unit::flush() {
@@ -3351,14 +3415,14 @@ void ldst_unit::init(mem_fetch_interface *icnt,
                               IN_L1C_MISS_QUEUE, OTHER_GPU_CACHE, m_gpu);
   m_L1D = NULL;
   m_mem_rc = NO_RC_FAIL;
-  m_num_writeback_clients =
-      5;  // = shared memory, global/local (uncached), L1D, L1T, L1C
+  m_num_writeback_clients = 5; // = shared memory, global/local (uncached), L1D, L1T, L1C
   m_writeback_arb = 0;
   m_next_global = NULL;
   m_last_inst_gpu_sim_cycle = 0;
   m_last_inst_gpu_tot_sim_cycle = 0;
 }
 
+// Actually used 
 ldst_unit::ldst_unit(mem_fetch_interface *icnt,
                      shader_core_mem_fetch_allocator *mf_allocator,
                      shader_core_ctx *core, opndcoll_rfu_t *operand_collector,
@@ -3368,9 +3432,45 @@ ldst_unit::ldst_unit(mem_fetch_interface *icnt,
     : pipelined_simd_unit(NULL, config, config->smem_latency, core, 0),      
       m_gpu(gpu),
       m_next_wb(config) {
+
+  m_recorded_trashed_pkts.insert(REQ_PKT(0, 0x7f7091709be0));
+  m_recorded_trashed_pkts.insert(REQ_PKT(0, 0x7f709174c9e0));
+  m_recorded_trashed_pkts.insert(REQ_PKT(0, 0x7f709174fd60));
+  m_recorded_trashed_pkts.insert(REQ_PKT(0, 0x7f709174fde0));
+  m_recorded_trashed_pkts.insert(REQ_PKT(0, 0x7f7091754260));
+  m_recorded_trashed_pkts.insert(REQ_PKT(0, 0x7f709175b5c0));
+  m_recorded_trashed_pkts.insert(REQ_PKT(0, 0x7f709175b5e0));
+  m_recorded_trashed_pkts.insert(REQ_PKT(0, 0x7f709175be60));
+  m_recorded_trashed_pkts.insert(REQ_PKT(1, 0x7f7091700440));
+  m_recorded_trashed_pkts.insert(REQ_PKT(1, 0x7f7091702960));
+  m_recorded_trashed_pkts.insert(REQ_PKT(1, 0x7f70917031c0));
+  m_recorded_trashed_pkts.insert(REQ_PKT(1, 0x7f7091703c60));
+  m_recorded_trashed_pkts.insert(REQ_PKT(1, 0x7f7091765ea0));
+  m_recorded_trashed_pkts.insert(REQ_PKT(1, 0x7f7091765ec0));
+  m_recorded_trashed_pkts.insert(REQ_PKT(1, 0x7f709176f6c0));
+  m_recorded_trashed_pkts.insert(REQ_PKT(1, 0x7f709176f6e0));
+  m_recorded_trashed_pkts.insert(REQ_PKT(1, 0x7f70917888c0));
+  m_recorded_trashed_pkts.insert(REQ_PKT(1, 0x7f709178dde0));
+  m_recorded_trashed_pkts.insert(REQ_PKT(2, 0x7f7091704e60));
+  m_recorded_trashed_pkts.insert(REQ_PKT(2, 0x7f7091708260));
+  m_recorded_trashed_pkts.insert(REQ_PKT(2, 0x7f7091709360));
+  m_recorded_trashed_pkts.insert(REQ_PKT(2, 0x7f7091753860));
+  m_recorded_trashed_pkts.insert(REQ_PKT(2, 0x7f709175cfc0));
+  m_recorded_trashed_pkts.insert(REQ_PKT(2, 0x7f709176f960));
+  m_recorded_trashed_pkts.insert(REQ_PKT(2, 0x7f7091772140));
+  m_recorded_trashed_pkts.insert(REQ_PKT(2, 0x7f7091772160));
+  m_recorded_trashed_pkts.insert(REQ_PKT(2, 0x7f7091772c60));
+  m_recorded_trashed_pkts.insert(REQ_PKT(3, 0x7f70917004c0));
+  m_recorded_trashed_pkts.insert(REQ_PKT(3, 0x7f70917165e0));
+  m_recorded_trashed_pkts.insert(REQ_PKT(3, 0x7f709171f540));
+  m_recorded_trashed_pkts.insert(REQ_PKT(3, 0x7f7091736340));
+  m_recorded_trashed_pkts.insert(REQ_PKT(3, 0x7f7091736360));
+  m_recorded_trashed_pkts.insert(REQ_PKT(3, 0x7f7091761240));
+  m_recorded_trashed_pkts.insert(REQ_PKT(3, 0x7f7091764f60));
+
   assert(config->smem_latency > 1);
   init(icnt, mf_allocator, core, operand_collector, scoreboard, config,
-       mem_config, stats, sid, tpc);
+       mem_config, stats, sid, tpc); // m_L1D = NULL;
   if (!m_config->m_L1D_config.disabled()) {
     char L1D_name[STRSIZE];
     snprintf(L1D_name, STRSIZE, "L1D_%03d", m_sid);
@@ -3388,8 +3488,10 @@ ldst_unit::ldst_unit(mem_fetch_interface *icnt,
   }
   m_name = "MEM ";
   m_cnt_l1d_run_cycles = 0;
+  m_resp_fifo_inputs = 0;
 }
 
+// No use
 ldst_unit::ldst_unit(mem_fetch_interface *icnt,
                      shader_core_mem_fetch_allocator *mf_allocator,
                      shader_core_ctx *core, opndcoll_rfu_t *operand_collector,
@@ -3621,6 +3723,7 @@ void ldst_unit::cycle() {
 
   if (!m_response_fifo.empty()) {
     mem_fetch *mf = m_response_fifo.front();
+
     if (mf->get_access_type() == TEXTURE_ACC_R) {
       if (m_L1T->fill_port_free()) {
         m_L1T->fill(mf, time);
@@ -3638,7 +3741,11 @@ void ldst_unit::cycle() {
            mf->get_is_write())) {
         // SST memory is handled by SST mem hierarchy
         // Perfect mem
-        m_core->store_ack(mf);
+        // 3/7
+        if (!mf->get_l1d_bypass_noalloc()) {
+          m_core->store_ack(mf);  
+        }
+        // m_core->store_ack(mf); // default
         m_response_fifo.pop_front();
         delete mf;
       } else {
@@ -3654,11 +3761,27 @@ void ldst_unit::cycle() {
               bypassL1D = true;
             }
         }
+
         if (bypassL1D) {
           if (m_next_global == NULL) {
             mf->set_status(IN_SHADER_FETCHED, time);
             m_response_fifo.pop_front();
             m_next_global = mf;
+
+            if (DTRACE(CACHE_EVENT)) {
+              m_L1D->dumpCacheEvent(time, "ldst_unit::cycle", 
+                "bypassL1D m_response_fifo.pop_front", mf);
+            }
+
+            if (DTRACE(CHK_RESP_FIFO_SIZE)) {
+              fprintf(Trace::out, "%llu ldst_unit::%s mf "
+                "[sid:%u][warp:%u][addr:%#llx] is popped from "
+                "m_response_fifo (size:%lu)\n",
+                time, __func__, mf->get_sid(), mf->get_wid(), mf->get_addr(),
+                m_response_fifo.size()
+              );
+            }
+
             // Return path via interconnect (bypass L1D): extend chain
             if (mf->get_inst().is_load()) {
               for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
@@ -3675,6 +3798,20 @@ void ldst_unit::cycle() {
           if (m_L1D->fill_port_free()) {
             m_L1D->fill(mf, time);
             m_response_fifo.pop_front();
+
+            if (DTRACE(CACHE_EVENT)) {
+              m_L1D->dumpCacheEvent(time, "ldst_unit::cycle", "m_response_fifo.pop_front", mf);
+            }
+
+            if (DTRACE(CHK_RESP_FIFO_SIZE)) {
+              fprintf(Trace::out, "%llu ldst_unit::%s mf "
+                "[sid:%u][warp:%u][addr:%#llx] is popped from "
+                "m_response_fifo (size:%lu)\n",
+                time, __func__, mf->get_sid(), mf->get_wid(), mf->get_addr(),
+                m_response_fifo.size()
+              );
+            }
+
             // Return path filled into L1D: extend chain
             if (mf->get_inst().is_load()) {
               for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
@@ -3686,7 +3823,7 @@ void ldst_unit::cycle() {
                 }
               }
             }
-          }
+          } // if (m_L1D->fill_port_free()) {
         }
       }
     }
@@ -3697,11 +3834,9 @@ void ldst_unit::cycle() {
   if (m_L1D) {
     // fprintf(Trace::out, "%llu Entering m_L1D->cycle() the %u times\n", time, m_cnt_l1d_run_cycles);
     
-    m_L1D->cycle();
+    m_L1D->cycle(); // Send req to next-level cache
     if (m_config->m_L1D_config.l1_latency > 0) {
-      // fprintf(Trace::out, "%llu Entering L1_latency_queue_cycle() %u times\n", time, m_cnt_l1d_run_cycles);
-
-      L1_latency_queue_cycle();
+      L1_latency_queue_cycle(); // mem_fetch *mf_next = l1_latency_queue[bank_id][0];
       m_cnt_l1d_run_cycles++;
     }
   }
@@ -4907,8 +5042,8 @@ bool shader_core_ctx::ldst_unit_response_buffer_full() const {
   return m_ldst_unit->response_buffer_full();
 }
 
-void shader_core_ctx::accept_ldst_unit_response(mem_fetch *mf) {
-  m_ldst_unit->fill(mf);
+void shader_core_ctx::accept_ldst_unit_response(mem_fetch *mf, unsigned cid) {
+  m_ldst_unit->fill(mf, cid);
 }
 
 void shader_core_ctx::store_ack(class mem_fetch *mf) {
@@ -5437,6 +5572,7 @@ simt_core_cluster::simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
   m_stats = stats;
   m_memory_stats = mstats;
   m_mem_config = mem_config;
+  m_resp_fifo_inputs = 0;
 }
 
 void simt_core_cluster::core_cycle() {
@@ -5703,24 +5839,58 @@ void simt_core_cluster::icnt_cycle() {
   if (!m_response_fifo.empty()) {
     mem_fetch *mf = m_response_fifo.front();
     unsigned cid = m_config->sid_to_cid(mf->get_sid());
+
+    if (DTRACE(CHK_SID)) {
+      fprintf(Trace::out, "%llu simt_core_cluster::icnt_cycle sid = %u cid = %u\n",
+        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, 
+        mf->get_sid(), cid
+        );
+    }
+
     if (mf->get_access_type() == INST_ACC_R) {
       // instruction fetch response
       if (!m_core[cid]->fetch_unit_response_buffer_full()) {
         m_response_fifo.pop_front();
         m_core[cid]->accept_fetch_response(mf);
+
+        if (DTRACE(CHK_RESP_FIFO_SIZE)) {
+          fprintf(Trace::out, "%llu simt_core_cluster::%s "
+            "!fetch_unit_response_buffer_full mf "
+            "[sid:%u][warp:%u][addr:%#llx] is popped from "
+            "m_response_fifo (size:%lu)\n",
+            m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, 
+            __func__, mf->get_sid(), mf->get_wid(), mf->get_addr(),
+            m_response_fifo.size()
+          );
+        }
+
       }
     } else {
       // data response
       if (!m_core[cid]->ldst_unit_response_buffer_full()) {
         m_response_fifo.pop_front();
         m_memory_stats->memlatstat_read_done(mf);
-        m_core[cid]->accept_ldst_unit_response(mf);
+        m_core[cid]->accept_ldst_unit_response(mf, cid);
+
+        if (DTRACE(CHK_RESP_FIFO_SIZE)) {
+          fprintf(Trace::out, "%llu simt_core_cluster::%s "
+            "!ldst_unit_response_buffer_full mf "
+            "[sid:%u][warp:%u][addr:%#llx] is popped from "
+            "m_response_fifo (size:%lu)\n",
+            m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, 
+            __func__, mf->get_sid(), mf->get_wid(), mf->get_addr(),
+            m_response_fifo.size()
+          );
+        }        
       }
     }
   }
   if (m_response_fifo.size() < m_config->n_simt_ejection_buffer_size) {
     mem_fetch *mf = (mem_fetch *)::icnt_pop(m_cluster_id);
-    if (!mf) return;
+
+    if (!mf) {
+      return;
+    }
     assert(mf->get_tpc() == m_cluster_id);
     assert(mf->get_type() == READ_REPLY || mf->get_type() == WRITE_ACK);
 
@@ -5734,7 +5904,38 @@ void simt_core_cluster::icnt_cycle() {
                    m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
     // m_memory_stats->memlatstat_read_done(mf,m_shader_config->max_warps_per_shader);
     m_response_fifo.push_back(mf);
+    m_resp_fifo_inputs++;
     m_stats->n_mem_to_simt[m_cluster_id] += mf->get_num_flits(false);
+
+    if (DTRACE(CACHE_Q_SIZE)) {
+      fprintf(Trace::out, "simt_core_cluster m_resp_fifo_inputs++ = %u\n", m_resp_fifo_inputs);
+    }
+
+    if (DTRACE(CACHE_EVENT)) {
+      unsigned cid = m_config->sid_to_cid(mf->get_sid());
+      m_core[cid]->get_ldst_unit()->get_l1d_ptr()->dumpCacheEvent(
+        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, 
+        "simt_core_cluster::icnt_cycle()", 
+        "::icnt_pop mf into m_response_fifo", mf);
+    }
+
+    if (DTRACE(CHK_RESP_FIFO_SIZE)) {
+      fprintf(Trace::out, "%llu simt_core_cluster::%s "
+        "added mf [sid:%u][warp:%u][addr:%#llx] into m_response_fifo (size:%lu)\n",
+        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, 
+        __func__, mf->get_sid(), mf->get_wid(), mf->get_addr(),
+        m_response_fifo.size()
+      );
+    }
+
+    if (DTRACE(RESP_BACK_SM) || DTRACE(CHK_RESP_FIFO)) {
+      unsigned long long time = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+      fprintf(Trace::out, "%llu simt_core_cluster::%s "
+        "added mf [sid:%u][warp:%u][addr:%#llx] into m_response_fifo (size:%lu)\n",
+        time, __func__, mf->get_sid(), mf->get_wid(), mf->get_addr(),
+        m_response_fifo.size()
+      );
+    }
   }
 }
 
@@ -5747,6 +5948,18 @@ void sst_simt_core_cluster::icnt_cycle_SST() {
       if (!m_core[cid]->fetch_unit_response_buffer_full()) {
         m_response_fifo.pop_front();
         m_core[cid]->accept_fetch_response(mf);
+
+        if (DTRACE(CHK_RESP_FIFO_SIZE)) {
+          fprintf(Trace::out, "%llu simt_core_cluster::%s "
+            "!fetch_unit_response_buffer_full mf "
+            "[sid:%u][warp:%u][addr:%#llx] is popped from "
+            "m_response_fifo (size:%lu)\n",
+            m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, 
+            __func__, mf->get_sid(), mf->get_wid(), mf->get_addr(),
+            m_response_fifo.size()
+          );
+        }  
+
       }
     } else {
       // data response
@@ -5754,6 +5967,17 @@ void sst_simt_core_cluster::icnt_cycle_SST() {
         m_response_fifo.pop_front();
         m_memory_stats->memlatstat_read_done(mf);
         m_core[cid]->accept_ldst_unit_response(mf);
+
+        if (DTRACE(CHK_RESP_FIFO_SIZE)) {
+          fprintf(Trace::out, "%llu simt_core_cluster::%s "
+            "!ldst_unit_response_buffer_full mf "
+            "[sid:%u][warp:%u][addr:%#llx] is popped from "
+            "m_response_fifo (size:%lu)\n",
+            m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, 
+            __func__, mf->get_sid(), mf->get_wid(), mf->get_addr(),
+            m_response_fifo.size()
+          );
+        }        
       }
     }
   }
@@ -5777,7 +6001,31 @@ void sst_simt_core_cluster::icnt_cycle_SST() {
                    m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
     // m_memory_stats->memlatstat_read_done(mf,m_shader_config->max_warps_per_shader);
     m_response_fifo.push_back(mf);
+    m_resp_fifo_inputs++;
     m_stats->n_mem_to_simt[m_cluster_id] += mf->get_num_flits(false);
+
+    if (DTRACE(CACHE_Q_SIZE)) {
+      fprintf(Trace::out, "sst_simt_core_cluster m_resp_fifo_inputs++ = %u\n", m_resp_fifo_inputs);
+    }
+
+    if (DTRACE(CHK_RESP_FIFO_SIZE)) {
+      fprintf(Trace::out, "%llu sst_simt_core_cluster::%s "
+        "added mf [sid:%u][warp:%u][addr:%#llx] into m_response_fifo (size:%lu)\n",
+        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, 
+        __func__, mf->get_sid(), mf->get_wid(), mf->get_addr(),
+        m_response_fifo.size()
+      );
+    }
+
+    if (DTRACE(RESP_BACK_SM) || DTRACE(CHK_RESP_FIFO)) {
+      unsigned long long time = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+      fprintf(Trace::out, "%llu sst_simt_core_cluster::%s "
+        "added mf [sid:%u][warp:%u][addr:%#llx] into m_response_fifo (size:%lu)\n",
+        time, __func__, mf->get_sid(), mf->get_wid(), mf->get_addr(),
+        m_response_fifo.size()
+      );
+    }
+
   }
 }
 

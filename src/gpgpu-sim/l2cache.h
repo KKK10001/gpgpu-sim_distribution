@@ -168,6 +168,10 @@ class memory_sub_partition {
                        class memory_stats_t *stats, class gpgpu_sim *gpu);
   ~memory_sub_partition();
 
+  unsigned long long get_unified_cycle() const {
+    return m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset;
+  }
+
   unsigned get_id() const { return m_id; }
 
   bool busy() const;
@@ -233,6 +237,7 @@ class memory_sub_partition {
   fifo_pipeline<mem_fetch> *m_L2_dram_queue;
   fifo_pipeline<mem_fetch> *m_dram_L2_queue;
   fifo_pipeline<mem_fetch> *m_L2_icnt_queue;  // L2 cache hit response queue
+  std::vector<std::vector<unsigned>> m_L2_icnt_inputs; // [L2_sub][SM]
 
   class mem_fetch *L2dramout;
   unsigned long long int wb_addr;
@@ -257,20 +262,30 @@ class memory_sub_partition {
 };
 
 class L2interface : public mem_fetch_interface {
- public:
-  L2interface(memory_sub_partition *unit) { m_unit = unit; }
-  virtual ~L2interface() {}
-  virtual bool full(unsigned size, bool write) const {
-    // assume read and write packets all same size
-    return m_unit->m_L2_dram_queue->full();
-  }
-  virtual void push(mem_fetch *mf) {
-    mf->set_status(IN_PARTITION_L2_TO_DRAM_QUEUE, 0 /*FIXME*/);
-    m_unit->m_L2_dram_queue->push(mf);
-  }
+  public:
+    L2interface() {
+      m_if_name     = "L2interface";
+      m_push_q_name = "m_L2_dram_queue";      
+    }
+    L2interface(memory_sub_partition *unit) { 
+      m_unit = unit; 
+      m_if_name     = "L2interface";
+      m_push_q_name = "m_L2_dram_queue";
+    }
+    virtual ~L2interface() {}
+    virtual bool full(unsigned size, bool write) const {
+      // assume read and write packets all same size
+      return m_unit->m_L2_dram_queue->full();
+    }
+    virtual void push(mem_fetch *mf) {
+      mf->set_status(IN_PARTITION_L2_TO_DRAM_QUEUE, 0 /*FIXME*/);
+      m_unit->m_L2_dram_queue->push(mf);
+    }
 
- private:
-  memory_sub_partition *m_unit;
+  private:
+    std::string m_if_name;
+    std::string m_push_q_name;
+    memory_sub_partition *m_unit;
 };
 
 #endif

@@ -1452,7 +1452,7 @@ class ldst_unit : public pipelined_simd_unit {
   bool is_issue_partitioned() { return false; }
   virtual void cycle();
 
-  void fill(mem_fetch *mf);
+  void fill(mem_fetch *mf, unsigned cid = (unsigned) - 1);
   void flush();
   void invalidate();
   void writeback();
@@ -1497,6 +1497,8 @@ class ldst_unit : public pipelined_simd_unit {
   // (used for diagnostic trace when globally blocked). Returns true if found.
   bool get_any_pending_longop_detail(unsigned &warp, int &reg, unsigned &pc,
                                      unsigned long long &addr) const;
+  
+  l1_cache* get_l1d_ptr() { return m_L1D; }
 
  protected:
   ldst_unit(mem_fetch_interface *icnt,
@@ -1546,6 +1548,7 @@ class ldst_unit : public pipelined_simd_unit {
            std::map<unsigned /*regnum*/, unsigned /*count*/>>
       m_pending_writes;
   std::list<mem_fetch *> m_response_fifo;
+  unsigned m_resp_fifo_inputs; // per SM based
   opndcoll_rfu_t *m_operand_collector;
   Scoreboard *m_scoreboard;
 
@@ -1566,6 +1569,8 @@ class ldst_unit : public pipelined_simd_unit {
 
   std::vector<std::deque<mem_fetch *>> l1_latency_queue;
   void L1_latency_queue_cycle();
+  void set_reply_and_ack_for_miss(
+    mem_fetch* mf_next, bool was_wr_alloc_sent, bool write_sent, bool read_sent);
   unsigned int m_cnt_l1d_run_cycles;
 
   // Track last-seen address and PC for pending long-latency load by (warp,reg)
@@ -1575,6 +1580,8 @@ class ldst_unit : public pipelined_simd_unit {
   std::map<std::pair<unsigned,int>, std::string> m_pending_longop_chain;
   // Track source for next writeback (to tag unblock cause)
   std::string m_next_wb_source;
+
+  std::set<REQ_PKT> m_recorded_trashed_pkts;
 };
 
 enum pipeline_stage_name_t {
@@ -1836,7 +1843,7 @@ struct shader_core_stats_pod {
       shader_core_stats_pod_start[0];  // DO NOT MOVE FROM THE TOP - spaceless
                                        // pointer to the start of this structure
   unsigned long long *shader_cycles;
-  unsigned *m_unique_cachelines;
+  // unsigned *m_unique_cachelines;
   unsigned *m_raw_conflicts;
   unsigned *m_rd_reg_reqs;
   unsigned *m_wr_reg_bank_conflicts;
@@ -1921,6 +1928,7 @@ struct shader_core_stats_pod {
   unsigned *m_l1d_avg_evicts;
   unsigned *m_l1d_repl_cands;
   unsigned *m_l1d_lines_recency;
+  unsigned *m_n_l1d_trashed_lines;
   unsigned l2_victims;  
   unsigned **issued_warp_insts;
   unsigned **intra_warp_interfere;
@@ -1968,7 +1976,7 @@ class shader_core_stats : public shader_core_stats_pod {
         this->shader_core_stats_pod_start);
     memset(pod, 0, sizeof(shader_core_stats_pod));
     shader_cycles = (unsigned long long *)calloc(config->num_shader(), sizeof(unsigned long long));
-    m_unique_cachelines = (unsigned*)calloc(config->num_shader(), sizeof(unsigned));
+    // m_unique_cachelines = (unsigned*)calloc(config->num_shader(), sizeof(unsigned));
 
     m_raw_conflicts  = (unsigned *)calloc(m_config->gpgpu_num_reg_banks, sizeof(unsigned));
     m_rd_reg_reqs = (unsigned *)calloc(m_config->gpgpu_num_reg_banks, sizeof(unsigned));
@@ -2075,6 +2083,7 @@ class shader_core_stats : public shader_core_stats_pod {
     m_l1d_max_evicts = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
     m_l1d_avg_evicts = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
     m_l1d_repl_cands = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));    
+    m_n_l1d_trashed_lines = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
 
     m_l1d_thrash = (unsigned**)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned));
     issued_warp_insts = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
@@ -2281,7 +2290,7 @@ class shader_core_ctx : public core_t {
   void cache_flush();
   void cache_invalidate();
   void accept_fetch_response(mem_fetch *mf);
-  void accept_ldst_unit_response(class mem_fetch *mf);
+  void accept_ldst_unit_response(class mem_fetch *mf, unsigned cid = (unsigned) - 1);
   void broadcast_barrier_reduction(unsigned cta_id, unsigned bar_id,
                                    warp_set_t warps);
   void set_kernel(kernel_info_t *k) {
@@ -2791,8 +2800,7 @@ class shader_core_ctx : public core_t {
   unsigned m_num_function_units;
   std::vector<unsigned> m_dispatch_port;
   std::vector<unsigned> m_issue_port;
-  std::vector<simd_function_unit *>
-      m_fu;  // stallable pipelines should be last in this array
+  std::vector<simd_function_unit *> m_fu; // stallable pipelines should be last in this array
   ldst_unit *m_ldst_unit;
   static const unsigned MAX_ALU_LATENCY = 512;
   unsigned num_result_bus;
@@ -2920,6 +2928,8 @@ class simt_core_cluster {
   unsigned m_cta_issue_next_core;
   std::list<unsigned> m_core_sim_order;
   std::list<mem_fetch *> m_response_fifo;
+  // Assemble of that of per SM based "m_resp_fifo_inputs" in class ldst_unit
+  unsigned m_resp_fifo_inputs;
 };
 
 class exec_simt_core_cluster : public simt_core_cluster {
@@ -2981,43 +2991,55 @@ class sst_simt_core_cluster : public exec_simt_core_cluster {
 };
 
 class shader_memory_interface : public mem_fetch_interface {
- public:
-  shader_memory_interface(shader_core_ctx *core, simt_core_cluster *cluster) {
-    m_core = core;
-    m_cluster = cluster;
-  }
-  virtual bool full(unsigned size, bool write) const {
-    return m_cluster->icnt_injection_buffer_full(size, write);
-  }
-  virtual void push(mem_fetch *mf) {
-    m_core->inc_simt_to_mem(mf->get_num_flits(true));
-    m_cluster->icnt_inject_request_packet(mf);
-  }
+  public:
+    shader_memory_interface() {
+      m_if_name     = "shader_memory_interface";
+      m_push_q_name = "";
+    }
+    shader_memory_interface(shader_core_ctx *core, simt_core_cluster *cluster) {
+      m_core = core;
+      m_cluster = cluster;
+    }
+    virtual bool full(unsigned size, bool write) const {
+      return m_cluster->icnt_injection_buffer_full(size, write);
+    }
+    virtual void push(mem_fetch *mf) {
+      m_core->inc_simt_to_mem(mf->get_num_flits(true));
+      m_cluster->icnt_inject_request_packet(mf);
+    }
 
- private:
-  shader_core_ctx *m_core;
-  simt_core_cluster *m_cluster;
+  private:
+    shader_core_ctx *m_core;
+    simt_core_cluster *m_cluster;
+    std::string m_if_name;
+    std::string m_push_q_name;    
 };
 
 class perfect_memory_interface : public mem_fetch_interface {
- public:
-  perfect_memory_interface(shader_core_ctx *core, simt_core_cluster *cluster) {
-    m_core = core;
-    m_cluster = cluster;
-  }
-  virtual bool full(unsigned size, bool write) const {
-    return m_cluster->response_queue_full();
-  }
-  virtual void push(mem_fetch *mf) {
-    if (mf && mf->isatomic())
-      mf->do_atomic();  // execute atomic inside the "memory subsystem"
-    m_core->inc_simt_to_mem(mf->get_num_flits(true));
-    m_cluster->push_response_fifo(mf);
-  }
+  public:
+    perfect_memory_interface() {
+      m_if_name     = "perfect_memory_interface";
+      m_push_q_name = "";
+    }
+    perfect_memory_interface(shader_core_ctx *core, simt_core_cluster *cluster) {
+      m_core = core;
+      m_cluster = cluster;
+    }
+    virtual bool full(unsigned size, bool write) const {
+      return m_cluster->response_queue_full();
+    }
+    virtual void push(mem_fetch *mf) {
+      if (mf && mf->isatomic())
+        mf->do_atomic();  // execute atomic inside the "memory subsystem"
+      m_core->inc_simt_to_mem(mf->get_num_flits(true));
+      m_cluster->push_response_fifo(mf);
+    }
 
- private:
-  shader_core_ctx *m_core;
-  simt_core_cluster *m_cluster;
+  private:
+    shader_core_ctx *m_core;
+    simt_core_cluster *m_cluster;
+    std::string m_if_name;
+    std::string m_push_q_name;  
 };
 
 /**
@@ -3025,54 +3047,60 @@ class perfect_memory_interface : public mem_fetch_interface {
  *
  */
 class sst_memory_interface : public mem_fetch_interface {
- public:
-  sst_memory_interface(shader_core_ctx *core, sst_simt_core_cluster *cluster) {
-    m_core = core;
-    m_cluster = cluster;
-  }
-  /**
-   * @brief For constant, inst, tex cache access
-   *
-   * @param size
-   * @param write
-   * @return true
-   * @return false
-   */
-  virtual bool full(unsigned size, bool write) const {
-    assert(false && "Use the full() method with access type instead!");
-    return true;
-  }
+  public:
+    sst_memory_interface() {
+      m_if_name     = "sst_memory_interface";
+      m_push_q_name = "";
+    }
+    sst_memory_interface(shader_core_ctx *core, sst_simt_core_cluster *cluster) {
+      m_core = core;
+      m_cluster = cluster;
+    }
+    /**
+     * @brief For constant, inst, tex cache access
+     *
+     * @param size
+     * @param write
+     * @return true
+     * @return false
+     */
+    virtual bool full(unsigned size, bool write) const {
+      assert(false && "Use the full() method with access type instead!");
+      return true;
+    }
 
-  /**
-   * @brief With SST, the core will direct all mem access except for
-   *        constant, tex, and inst reads to SST mem system
-   *        (i.e. not modeling constant mem right now), thus
-   *        requiring the mem_access_type information to be passed in
-   *
-   * @param size
-   * @param write
-   * @param type
-   * @return true
-   * @return false
-   */
-  bool full(unsigned size, bool write, mem_access_type type) const {
-    return m_cluster->SST_injection_buffer_full(size, write, type);
-  }
+    /**
+     * @brief With SST, the core will direct all mem access except for
+     *        constant, tex, and inst reads to SST mem system
+     *        (i.e. not modeling constant mem right now), thus
+     *        requiring the mem_access_type information to be passed in
+     *
+     * @param size
+     * @param write
+     * @param type
+     * @return true
+     * @return false
+     */
+    bool full(unsigned size, bool write, mem_access_type type) const {
+      return m_cluster->SST_injection_buffer_full(size, write, type);
+    }
 
-  /**
-   * @brief Push memory request to SST memory system and
-   *        update stats
-   *
-   * @param mf
-   */
-  virtual void push(mem_fetch *mf) {
-    m_core->inc_simt_to_mem(mf->get_num_flits(true));
-    m_cluster->icnt_inject_request_packet_to_SST(mf);
-  }
+    /**
+     * @brief Push memory request to SST memory system and
+     *        update stats
+     *
+     * @param mf
+     */
+    virtual void push(mem_fetch *mf) {
+      m_core->inc_simt_to_mem(mf->get_num_flits(true));
+      m_cluster->icnt_inject_request_packet_to_SST(mf);
+    }
 
- private:
-  shader_core_ctx *m_core;
-  sst_simt_core_cluster *m_cluster;
+  private:
+    shader_core_ctx *m_core;
+    sst_simt_core_cluster *m_cluster;
+    std::string m_if_name;
+    std::string m_push_q_name;  
 };
 
 inline int scheduler_unit::get_sid() const { return m_shader->get_sid(); }

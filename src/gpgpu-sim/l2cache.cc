@@ -514,6 +514,12 @@ memory_sub_partition::memory_sub_partition(unsigned sub_partition_id,
   m_L2_dram_queue = new fifo_pipeline<mem_fetch>("L2-to-dram", 0, l2_dram_q_capacity);
   m_dram_L2_queue = new fifo_pipeline<mem_fetch>("dram-to-L2", 0, dram_l2_q_capacity);
   m_L2_icnt_queue = new fifo_pipeline<mem_fetch>("L2-to-icnt", 0, l2_icnt_q_capacity);
+  
+  m_L2_icnt_inputs.resize(m_config->m_n_mem_sub_partition);
+  for (size_t i = 0; i < m_config->m_n_mem_sub_partition; i++)
+  {
+    m_L2_icnt_inputs[i].resize(m_gpu->get_config().num_shader(), 0);
+  }
 
   m_L2cache->m_stats.set_l2_dram_queue_capacity(l2_dram_q_capacity);
   m_L2cache->m_stats.set_l2_icnt_queue_capacity(l2_icnt_q_capacity);
@@ -554,71 +560,78 @@ memory_sub_partition::~memory_sub_partition() {
   }  
 }
 
-void memory_sub_partition::cache_cycle(unsigned long long cycle, mem_fetch* mf_monitor) {
+void memory_sub_partition::cache_cycle(
+  unsigned long long cycle, mem_fetch* mf_monitor) {
   // L2 fill responses
+  unsigned long long unified_cycle = get_unified_cycle();
+
   if (!m_config->m_L2_config.disabled()) {
     if (m_L2cache->access_ready() && !m_L2_icnt_queue->full()) {
-      // for debug 1-9
-      // fprintf(Trace::out, "L2 sub = %u in memory_sub_partition::cache_cycle\n", get_id());
-
       mem_fetch *mf = m_L2cache->next_access("L2", cycle);
-
+      mf->set_sub_partition(m_id);
       // Don't pass write allocate read request back to upper level cache
       if (mf->get_access_type() != L2_WR_ALLOC_R) {
         mf->set_reply();
-        mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+        mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE, unified_cycle);
         m_L2_icnt_queue->push(mf);
+        m_L2_icnt_inputs[m_id][mf->get_sid()]++;
+        
+        if (DTRACE(CACHE_Q_SIZE)) {
+          fprintf(Trace::out, 
+            "m_L2_icnt_inputs[L2_sub:%u][sid:%u]++ = %u\n", 
+            m_id, mf->get_sid(), m_L2_icnt_inputs[m_id][mf->get_sid()]);
+        }        
 
+        if (DTRACE(RESP_PKT)) {
+          fprintf(Trace::out, "%llu L2_sub[%u] "
+            "push m_L2_icnt_queue with mf of addr: %#llx\n", 
+            unified_cycle, m_id, mf->get_addr());
+        }
         if (DTRACE(L2_ICNT_QUEUE)) {
           fprintf(Trace::out, "%llu L2_sub[%u] m_L2_icnt_queue added mf:"
             "{TPC:%u SM:%u WARP:%u req_uid:%u %#llx acc_type:%s}\n",
-            m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset, m_id,
+            unified_cycle, m_id,
             mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(),
             mem_access_type_str(mem_access_type(mf->get_access_type()))
             );
         }
-
         m_L2cache->m_stats.inc_accu_l2_icnt_queue_size(
           mf->get_streamID(), m_id, m_L2_icnt_queue->get_length());
-        m_L2cache->m_stats.inc_l2_icnt_q_accesses(mf->get_streamID(), m_id);
-        
-        if (DTRACE(L2_TRACE)) {
-          fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s pos:%s} "
-            "L2 fill responses L2_sub[%u] -> m_L2_icnt_queue: {occup=(%u/%u)=%f}\n", 
-            m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset,
-            mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(), 
-            mem_access_type_str(mem_access_type(mf->get_access_type())), 
-            mf->mem_fetch_status_str(mf->get_status()),
-            m_id,
-            m_L2_icnt_queue->get_length() + 1, m_L2_icnt_queue->get_max_len(),
-            (float)(m_L2_icnt_queue->get_length() + 1) / m_L2_icnt_queue->get_max_len() // occupancy
-            );
-        }         
+        m_L2cache->m_stats.inc_l2_icnt_q_accesses(mf->get_streamID(), m_id);       
       } else {
         if (m_config->m_L2_config.m_write_alloc_policy == FETCH_ON_WRITE) {
           mem_fetch *original_wr_mf = mf->get_original_wr_mf();
           assert(original_wr_mf);
+          assert(original_wr_mf->get_sub_partition() == m_id);
           original_wr_mf->set_reply();
-          original_wr_mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+          original_wr_mf->set_status(
+            IN_PARTITION_L2_TO_ICNT_QUEUE, 
+            m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+
           m_L2_icnt_queue->push(original_wr_mf);
+          m_L2_icnt_inputs[m_id][mf->get_sid()]++;
           m_L2cache->m_stats.inc_accu_l2_icnt_queue_size(
             original_wr_mf->get_streamID(), m_id, m_L2_icnt_queue->get_length());
           m_L2cache->m_stats.inc_l2_icnt_q_accesses(original_wr_mf->get_streamID(), m_id);
-        } else {
-          if (DTRACE(L2_TRACE)) {
-            fprintf(Trace::out, "%llu L2_sub[%u]->cache_cycle directly erased mf:"
-              "{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s} from m_request_tracker\n",
-              m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset, m_id,
-              mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(), 
-              mem_access_type_str(mem_access_type(mf->get_access_type()))
-              );
+
+          if (DTRACE(CACHE_Q_SIZE)) {
+            fprintf(Trace::out, 
+              "m_L2_icnt_inputs[L2_sub:%u][sid:%u]++ = %u\n", 
+              m_id, mf->get_sid(), m_L2_icnt_inputs[m_id][mf->get_sid()]);
           }
+
+          if (DTRACE(RESP_PKT)) {
+            fprintf(Trace::out, "%llu L2_sub[%u] "
+              "push m_L2_icnt_queue with mf of addr: %#llx\n", 
+              unified_cycle, m_id, mf->get_addr());
+          }          
         }
-        if (DTRACE(RELEASE_REQ_TRACKER)) {
-          fprintf(Trace::out, "%llu L2_sub[%u] req_tracker released mf:{ TPC:%u SM:%u WARP:%u %#llx }\n",
-            cycle, m_id,
-            mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_addr()
-          );
+
+        if (DTRACE(CACHE_EVENT)) {
+          m_L2cache->dumpCacheEvent(
+            get_unified_cycle(), 
+            "memory_sub_partition::cache_cycle", 
+            "m_request_tracker.erase(mf)", mf);
         }
         m_request_tracker.erase(mf);
         delete mf;
@@ -632,7 +645,7 @@ void memory_sub_partition::cache_cycle(unsigned long long cycle, mem_fetch* mf_m
     if (DTRACE(L2_DRAM_IF) || DTRACE(MEM_FETCH_LIFETIME) || DTRACE(REFILL_PATH)) {
       fprintf(Trace::out, "%llu m_dram_L2_queue->top is mf:"
         "{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx}\n",
-        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset,
+        unified_cycle,
         mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr()
       );
     }
@@ -640,14 +653,15 @@ void memory_sub_partition::cache_cycle(unsigned long long cycle, mem_fetch* mf_m
       if (m_L2cache->fill_port_free()) {
         mf->set_status(IN_PARTITION_L2_FILL_QUEUE,
                        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-        m_L2cache->fill(mf, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle +
-                                m_memcpy_cycle_offset);
+        m_L2cache->fill(mf, unified_cycle);
 
         if (DTRACE(L2_TRACE) || DTRACE(MEM_FETCH_LIFETIME) || DTRACE(REFILL_PATH)) {
-          fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s pos:%s} "
+          fprintf(Trace::out, "%llu "
+            "mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s pos:%s} "
             "m_dram_L2_queue(occup:%f) -> L2_sub[%u]\n", 
-            m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset,
-            mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(),
+            unified_cycle,
+            mf->get_tpc(), mf->get_sid(), mf->get_wid(), 
+            mf->get_request_uid(), mf->get_addr(),
             mem_access_type_str(mem_access_type(mf->get_access_type())),
             mf->mem_fetch_status_str(mf->get_status()),
             (float)(m_dram_L2_queue->get_length() - 1) / m_dram_L2_queue->get_max_len(), // occupancy          
@@ -671,9 +685,10 @@ void memory_sub_partition::cache_cycle(unsigned long long cycle, mem_fetch* mf_m
       }
 
       if (DTRACE(L2_TRACE) || DTRACE(MEM_FETCH_LIFETIME) || DTRACE(REFILL_PATH)) {
-        fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s pos:%s} "
+        fprintf(Trace::out, "%llu "
+          "mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s pos:%s} "
           "m_dram_L2_queue(occup:%f) -> L2_sub[%u] -> m_L2_icnt_queue(occup:%f)\n", 
-          m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset, 
+          unified_cycle, 
           mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(), 
           mem_access_type_str(mem_access_type(mf->get_access_type())),
           mf->mem_fetch_status_str(mf->get_status()),
@@ -684,16 +699,28 @@ void memory_sub_partition::cache_cycle(unsigned long long cycle, mem_fetch* mf_m
       }    
       
       m_L2_icnt_queue->push(mf);
+      m_L2_icnt_inputs[m_id][mf->get_sid()]++;
       m_L2cache->m_stats.inc_accu_l2_icnt_queue_size(
         mf->get_streamID(), m_id, m_L2_icnt_queue->get_length());
       m_L2cache->m_stats.inc_l2_icnt_q_accesses(mf->get_streamID(), m_id);
       m_dram_L2_queue->pop();
+
+      if (DTRACE(CACHE_Q_SIZE)) {
+        fprintf(Trace::out, 
+          "m_L2_icnt_inputs[L2_sub:%u][sid:%u]++ = %u\n", 
+          m_id, mf->get_sid(), m_L2_icnt_inputs[m_id][mf->get_sid()]);
+      }
+
+      if (DTRACE(RESP_PKT)) {
+        fprintf(Trace::out, "%llu L2_sub[%u] "
+          "push m_L2_icnt_queue with mf of addr: %#llx\n", 
+          m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, m_id, mf->get_addr());
+      }      
     }
   } else {
     if (DTRACE(L2_DRAM_IF)) {
       fprintf(Trace::out, "%llu m_dram_L2_queue is empty ---> no cache fill\n",
-        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset
-      );
+        get_unified_cycle());
     }
   }
 
@@ -712,8 +739,6 @@ void memory_sub_partition::cache_cycle(unsigned long long cycle, mem_fetch* mf_m
     
     m_L2cache->cycle();
   }
-
-  unsigned long long time = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset;
 
   bool output_full = m_L2_icnt_queue->full();
   bool port_free = m_L2cache->data_port_free();
@@ -736,6 +761,7 @@ void memory_sub_partition::cache_cycle(unsigned long long cycle, mem_fetch* mf_m
   // new L2 texture accesses and/or non-texture accesses
   if (access_l2_condition_1) {
     mem_fetch *mf = m_icnt_L2_queue->top();
+    mf->set_sub_partition(m_id);
     if (!m_config->m_L2_config.disabled() &&
         ((m_config->m_L2_texure_only && mf->istexture()) ||
          (!m_config->m_L2_texure_only))) {
@@ -743,9 +769,11 @@ void memory_sub_partition::cache_cycle(unsigned long long cycle, mem_fetch* mf_m
       if (access_l2_condition_2) {
         std::list<cache_event> events;
         mf->set_sub_partition(m_id);
-        enum cache_request_status status = m_L2cache->access(mf->get_addr(), mf, time, events);
+        enum cache_request_status status = 
+          m_L2cache->access(mf->get_addr(), mf, unified_cycle, events);
+
         bool write_sent = was_write_sent(events);
-        bool read_sent = was_read_sent(events);
+        bool read_sent  = was_read_sent(events);
         MEM_SUBPART_DPRINTF("Probing L2 cache Address=%llx, status=%u\n",
                             mf->get_addr(), status);
 
@@ -754,23 +782,13 @@ void memory_sub_partition::cache_cycle(unsigned long long cycle, mem_fetch* mf_m
             // L2 cache replies
             assert(!read_sent);
             if (mf->get_access_type() == L1_WRBK_ACC) {
-              if (DTRACE(L2_TRACE)) {
-                fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u addr:%#llx acc_type:%s pos:%s} "
-                  "m_request_tracker.erase(size:%lu->%lu); m_icnt_L2_queue->pop (occup:%f)\n", 
-                  time, 
-                  mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_addr(), 
-                  mem_access_type_str(mem_access_type(mf->get_access_type())),
-                  mf->mem_fetch_status_str(mf->get_status()),
-                  m_request_tracker.size(), m_request_tracker.size() - 1,
-                  (m_icnt_L2_queue->get_length() - 1) / (float)m_icnt_L2_queue->get_max_len()  // m_icnt_L2_queue occupancy
-                );
+              if (DTRACE(CACHE_EVENT)) {
+                m_L2cache->dumpCacheEvent(
+                  unified_cycle, 
+                  "memory_sub_partition::cache_cycle", 
+                  "m_request_tracker.erase(mf) for !write_sent L1_WRBK_ACC", 
+                  mf);
               }
-              if (DTRACE(RELEASE_REQ_TRACKER)) {
-                fprintf(Trace::out, "%llu L2_sub[%u] req_tracker released mf:{ TPC:%u SM:%u WARP:%u %#llx }\n",
-                  time, m_id,
-                  mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_addr()
-                );
-              }            
               m_request_tracker.erase(mf);
               delete mf;
             } else {
@@ -778,41 +796,27 @@ void memory_sub_partition::cache_cycle(unsigned long long cycle, mem_fetch* mf_m
               mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE,
                              m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
               m_L2_icnt_queue->push(mf);
+              m_L2_icnt_inputs[m_id][mf->get_sid()]++;
               m_L2cache->m_stats.inc_accu_l2_icnt_queue_size(
                 mf->get_streamID(), m_id, m_L2_icnt_queue->get_length());              
               m_L2cache->m_stats.inc_l2_icnt_q_accesses(mf->get_streamID(), m_id);
 
-              if (DTRACE(L2_TRACE)) {
-                fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s pos:%s} "
-                  "L2_sub[%u] -> m_L2_icnt_queue(occup:%f); m_icnt_L2_queue->pop (occup:%f)\n", 
-                  time, 
-                  mf->get_tpc(), mf->get_sid(), mf->get_wid(), 
-                  mf->get_request_uid(), mf->get_addr(), 
-                  mem_access_type_str(mem_access_type(mf->get_access_type())),
-                  mf->mem_fetch_status_str(mf->get_status()),
-                  m_id,
-                  m_L2_icnt_queue->get_length() / (float)m_L2_icnt_queue->get_max_len(), // m_L2_icnt_queue occupancy
-                  (m_icnt_L2_queue->get_length() - 1) / (float)m_icnt_L2_queue->get_max_len()  // m_icnt_L2_queue occupancy
-                );
+              if (DTRACE(CACHE_Q_SIZE)) {
+                fprintf(Trace::out, 
+                  "m_L2_icnt_inputs[L2_sub:%u][sid:%u]++ = %u\n", 
+                  m_id, mf->get_sid(), m_L2_icnt_inputs[m_id][mf->get_sid()]);
+              }
+
+              if (DTRACE(RESP_PKT)) {
+                fprintf(Trace::out, "%llu L2_sub[%u] "
+                  "push m_L2_icnt_queue with mf of addr: %#llx\n", 
+                  m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, m_id, mf->get_addr());
               }
             }
             m_icnt_L2_queue->pop();
           } else {
             assert(write_sent);
             m_icnt_L2_queue->pop();
-
-            if (DTRACE(L2_TRACE)) {
-              fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s pos:%s} "
-                "wr_sent. L2_sub[%i] m_icnt_L2_queue->pop (occup:%f)\n", 
-                time, 
-                mf->get_tpc(), mf->get_sid(), mf->get_wid(), 
-                mf->get_request_uid(), mf->get_addr(), 
-                mem_access_type_str(mem_access_type(mf->get_access_type())), 
-                mf->mem_fetch_status_str(mf->get_status()),
-                m_id,
-                (m_icnt_L2_queue->get_length() - 1) / (float)m_icnt_L2_queue->get_max_len()  // m_icnt_L2_queue occupancy
-              );
-            }
           }
         } else if (status != RESERVATION_FAIL) {
           if (mf->is_write() &&
@@ -820,28 +824,43 @@ void memory_sub_partition::cache_cycle(unsigned long long cycle, mem_fetch* mf_m
                m_config->m_L2_config.m_write_alloc_policy == LAZY_FETCH_ON_READ) &&
               !was_writeallocate_sent(events)) {
             if (mf->get_access_type() == L1_WRBK_ACC) {
-              if (DTRACE(RELEASE_REQ_TRACKER)) {
-                fprintf(Trace::out, "%llu L2_sub[%u] req_tracker released mf:{ TPC:%u SM:%u WARP:%u %#llx }\n",
-                  time, // use time or cycle should be confirmed according to final dumps
-                  m_id,
-                  mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_addr()
-                );
+              if (DTRACE(CACHE_EVENT)) {
+                m_L2cache->dumpCacheEvent(
+                  unified_cycle, 
+                  "memory_sub_partition::cache_cycle", 
+                  "m_request_tracker.erase(mf) for L1_WRBK_ACC", mf);
               }
               m_request_tracker.erase(mf);
               delete mf;
             } else if (m_config->m_L2_config.get_write_policy() == WRITE_BACK) {
               mf->set_reply();
+              if (m_config->m_L2_config.get_write_policy() == WRITE_BACK) {
+                assert(0);
+              }              
               mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE,
                              m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
               m_L2_icnt_queue->push(mf);
+              m_L2_icnt_inputs[m_id][mf->get_sid()]++;
               m_L2cache->m_stats.inc_accu_l2_icnt_queue_size(
                 mf->get_streamID(), m_id, m_L2_icnt_queue->get_length());              
               m_L2cache->m_stats.inc_l2_icnt_q_accesses(mf->get_streamID(), m_id);
 
+              if (DTRACE(CACHE_Q_SIZE)) {
+                fprintf(Trace::out, 
+                  "m_L2_icnt_inputs[L2_sub:%u][sid:%u]++ = %u\n", 
+                  m_id, mf->get_sid(), m_L2_icnt_inputs[m_id][mf->get_sid()]);
+              }
+
+              if (DTRACE(RESP_PKT)) {
+                fprintf(Trace::out, "%llu L2_sub[%u] "
+                  "push m_L2_icnt_queue with mf of addr: %#llx\n", 
+                  m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, m_id, mf->get_addr());
+              }
+
               if (DTRACE(L2_TRACE)) {
                 fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u addr:%#llx acc_type:%s pos:%s} "
                   "L2 wap:wb req_status:%s L2_sub[%u] -> m_L2_icnt_queue(occup:%f)\n", 
-                  time, 
+                  unified_cycle, 
                   mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_addr(), 
                   mem_access_type_str(mem_access_type(mf->get_access_type())),
                   mf->mem_fetch_status_str(mf->get_status()),
@@ -854,7 +873,7 @@ void memory_sub_partition::cache_cycle(unsigned long long cycle, mem_fetch* mf_m
           if (DTRACE(L2_TRACE)) {
             fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s pos:%s} "
               "L2_sub[%u] m_icnt_L2_queue->pop {occup=(%u/%u)=%f}\n", 
-              time, 
+              unified_cycle, 
               mf->get_tpc(), mf->get_sid(), mf->get_wid(), 
               mf->get_request_uid(), mf->get_addr(), 
               mem_access_type_str(mem_access_type(mf->get_access_type())), 
@@ -882,7 +901,7 @@ void memory_sub_partition::cache_cycle(unsigned long long cycle, mem_fetch* mf_m
       if (DTRACE(L2_TRACE)) {
         fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u addr:%#llx acc_type:%s pos:%s} "
           "L2_sub[%u] -> m_L2_dram_queue(occup:%f); m_icnt_L2_queue.pop(occup:%f)\n", 
-          time, 
+          unified_cycle, 
           mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_addr(), 
           mem_access_type_str(mem_access_type(mf->get_access_type())),
           mf->mem_fetch_status_str(mf->get_status()),
@@ -900,8 +919,23 @@ void memory_sub_partition::cache_cycle(unsigned long long cycle, mem_fetch* mf_m
     mem_fetch *mf = m_rop.front().req;
     m_rop.pop();
     m_icnt_L2_queue->push(mf);
-    mf->set_status(IN_PARTITION_ICNT_TO_L2_QUEUE,
-                   m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+    unsigned long long time = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+    mf->set_status(IN_PARTITION_ICNT_TO_L2_QUEUE, time);
+    mf->set_sub_partition(m_id);
+
+    if (DTRACE(CACHE_EVENT)) {      
+      m_L2cache->dumpCacheEvent(
+        time, "memory_sub_partition::cache_cycle", 
+        "m_rop.front().req ---> m_icnt_L2_queue", mf);
+    }
+
+    if (DTRACE(ICNT_TO_L2)) {
+      fprintf(Trace::out, "%llu memory_sub_partition::%s "
+        "m_icnt_L2_queue->push mf "
+        "[sid:%u][warp:%u][addr:%#llx]\n",
+        time, __func__, mf->get_sid(), mf->get_wid(), mf->get_addr()
+      );
+    }
 
     if (DTRACE(L2_TRACE)) {
       fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s pos:%s} "
@@ -914,6 +948,15 @@ void memory_sub_partition::cache_cycle(unsigned long long cycle, mem_fetch* mf_m
         m_icnt_L2_queue->get_length(), m_icnt_L2_queue->get_max_len(),
         (float)m_icnt_L2_queue->get_length() / m_icnt_L2_queue->get_max_len(), m_id);
     }                   
+  } else if (!m_rop.empty() && !m_icnt_L2_queue->full()) {
+    mem_fetch *mf = m_rop.front().req;
+    mf->set_sub_partition(m_id);
+    if (DTRACE(ROP_EVENT)) {
+      m_L2cache->dumpCacheEvent(
+        m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, 
+        "memory_sub_partition::cache_cycle()", 
+        "buffering in ROP", mf);
+    }
   }
 }
 
@@ -938,11 +981,14 @@ bool memory_sub_partition::dram_L2_queue_full() const {
 }
 
 void memory_sub_partition::dram_L2_queue_push(class mem_fetch *mf) {
+
   m_dram_L2_queue->push(mf);
+  assert(mf->get_sub_partition() == m_id);
   if (DTRACE(CACHE_EVENT)) {
     m_L2cache->dumpCacheEvent(
-      m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, 
-      "::dram_cycle()", "m_dram_L2_queue->push", mf);
+      get_unified_cycle(),
+      "memory_sub_partition::dram_L2_queue_push", 
+      "m_dram_L2_queue->push(mf)", mf);
   }  
 }
 
@@ -1126,15 +1172,16 @@ void memory_sub_partition::push(mem_fetch *m_req, unsigned long long cycle) {
 
     for (unsigned i = 0; i < reqs.size(); ++i) {
       mem_fetch *req = reqs[i];
-      if (DTRACE(INSERT_REQ_TRACKER)) {
-        fprintf(Trace::out, "%llu L2_sub[%u] req_tracker inserted "
-          "mf:{ TPC:%u SM:%u WARP:%u %#llx }\n",
-          m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle,
-          m_id,
-          req->get_tpc(), req->get_sid(), req->get_wid(), req->get_addr()
-        );
-      }
+      req->set_sub_partition(m_id);
       m_request_tracker.insert(req);
+
+      if (DTRACE(CACHE_EVENT)) {
+        m_L2cache->dumpCacheEvent(
+          m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, 
+          "memory_sub_partition::push", 
+          "m_request_tracker.insert(req)", req);
+      }
+
       if (req->istexture()) {
         if (DTRACE(L2_TRACE)) {
           fprintf(Trace::out, "%llu Texture pop one req to L2 QUEUE"
@@ -1148,7 +1195,25 @@ void memory_sub_partition::push(mem_fetch *m_req, unsigned long long cycle) {
         m_icnt_L2_queue->push(req);
         req->set_status(IN_PARTITION_ICNT_TO_L2_QUEUE,
                         m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-      } else {
+
+        assert(req->get_sub_partition() == m_id);
+        if (DTRACE(CACHE_EVENT)) {
+          m_L2cache->dumpCacheEvent(
+            m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, 
+            "memory_sub_partition::push", 
+            "m_icnt_L2_queue->push(req)", req);
+        }
+
+        if (DTRACE(ICNT_TO_L2)) {
+          fprintf(Trace::out, "%llu memory_sub_partition::%s "
+            "m_icnt_L2_queue->push mf "
+            "[sid:%u][warp:%u][addr:%#llx]\n",
+            m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, 
+            __func__, req->get_sid(), req->get_wid(), req->get_addr()
+          );
+        }
+      } // if (req->istexture()) { 
+      else {
         rop_delay_t r;
         r.req = req;
         // r.ready_cycle = cycle + m_config->rop_latency;
@@ -1158,7 +1223,8 @@ void memory_sub_partition::push(mem_fetch *m_req, unsigned long long cycle) {
                         m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
         
         if (DTRACE(ROP_EVENT)) {
-          fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx pos:%s} "
+          fprintf(Trace::out, "%llu "
+            "mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx pos:%s} "
             "is pushed into m_rop (size:%lu)\n", 
             m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle,
             r.req->get_tpc(), r.req->get_sid(), r.req->get_wid(), r.req->get_request_uid(), r.req->get_addr(), 
@@ -1172,30 +1238,13 @@ void memory_sub_partition::push(mem_fetch *m_req, unsigned long long cycle) {
 }
 
 mem_fetch *memory_sub_partition::pop() {
-  mem_fetch *mf = m_L2_icnt_queue->pop();
-  
-  if (DTRACE(L2_TRACE)) {
-    if (mf) {
-      fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s pos:%s} "
-        "L2_sub[%u] m_L2_icnt_queue->pop (occup:%f)\n", 
-        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset,
-        mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(), 
-        mem_access_type_str(mem_access_type(mf->get_access_type())), 
-        mf->mem_fetch_status_str(mf->get_status()),
-        m_id,
-        (float)(m_L2_icnt_queue->get_length()) / m_L2_icnt_queue->get_max_len() // occupancy
-        );
-    }
-  }
+  mem_fetch *mf = m_L2_icnt_queue->pop(); // mf can be NULL here
 
-  if (DTRACE(RELEASE_REQ_TRACKER)) {
-    if (mf) {
-      fprintf(Trace::out, "%llu L2_sub[%u] req_tracker released mf:{ TPC:%u SM:%u WARP:%u %#llx }\n",
-        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset,
-        m_id,
-        mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_addr()
-      );
-    }
+  if (DTRACE(CACHE_EVENT)) {
+    m_L2cache->dumpCacheEvent(
+      get_unified_cycle(),
+      "memory_sub_partition::pop()", 
+      "1. m_L2_icnt_queue->pop 2. m_request_tracker.erase", mf);
   }
 
   m_request_tracker.erase(mf);
@@ -1211,25 +1260,22 @@ mem_fetch *memory_sub_partition::pop() {
 }
 
 mem_fetch *memory_sub_partition::top() {
-  mem_fetch *mf = m_L2_icnt_queue->top();
+  mem_fetch *mf = m_L2_icnt_queue->top(); // mf can be NULL here
+
   if (mf && (mf->get_access_type() == L2_WRBK_ACC ||
              mf->get_access_type() == L1_WRBK_ACC)) {
 
-    if (DTRACE(L2_TRACE)) {
-      fprintf(Trace::out, "%llu mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s pos:%s} "
-        "L2_sub[%u] m_L2_icnt_queue->pop (occup:%f)\n", 
-        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset,
-        mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(), 
-        mem_access_type_str(mem_access_type(mf->get_access_type())), 
-        mf->mem_fetch_status_str(mf->get_status()),
-        m_id,
-        (float)(m_L2_icnt_queue->get_length() - 1) / m_L2_icnt_queue->get_max_len() // occupancy
-        );
+    if (DTRACE(CACHE_EVENT)) {  
+      m_L2cache->dumpCacheEvent(
+        get_unified_cycle(),
+        "memory_sub_partition::top()", 
+        "1. m_L2_icnt_queue->pop 2. m_request_tracker.erase", mf);
     }
 
     if (DTRACE(RELEASE_REQ_TRACKER)) {
-      fprintf(Trace::out, "%llu L2_sub[%u] req_tracker released mf:{ TPC:%u SM:%u WARP:%u %#llx }\n",
-        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset,
+      fprintf(Trace::out, "%llu L2_sub[%u] req_tracker released "
+        "mf:{ TPC:%u SM:%u WARP:%u %#llx }\n",
+        get_unified_cycle(),
         m_id,
         mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_addr()
       );
@@ -1244,12 +1290,14 @@ mem_fetch *memory_sub_partition::top() {
 }
 
 void memory_sub_partition::set_done(mem_fetch *mf) {
-  if (DTRACE(RELEASE_REQ_TRACKER)) {
-    fprintf(Trace::out, "%llu L2_sub[%u] req_tracker released mf:{ TPC:%u SM:%u WARP:%u %#llx }\n",
-      m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle + m_memcpy_cycle_offset,
-      m_id,
-      mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_addr()
-    );
+  assert(mf);
+  // mf->get_sub_partition() != m_id can also happen
+  
+  if (DTRACE(CACHE_EVENT)) {
+    m_L2cache->dumpCacheEvent(
+      get_unified_cycle(),
+      "memory_sub_partition::set_done", 
+      "m_request_tracker.erase(mf)", mf);
   }
 
   m_request_tracker.erase(mf);

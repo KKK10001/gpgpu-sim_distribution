@@ -129,11 +129,21 @@ bool Scoreboard::checkCollision(unsigned wid, const class inst_t* inst) const {
   // Get list of all input and output registers
   std::set<int> inst_regs;
 
-  for (unsigned iii = 0; iii < inst->outcount; iii++)
+  for (unsigned iii = 0; iii < inst->outcount; iii++) {
     inst_regs.insert(inst->out[iii]);
+    if (DTRACE(CHECK_SCB)) {
+      fprintf(Trace::out, "Scoreboard::checkCollision insert(inst->out[%u]=%u)\n",
+        iii, inst->out[iii]);
+    }
+  }
 
-  for (unsigned jjj = 0; jjj < inst->incount; jjj++)
+  for (unsigned jjj = 0; jjj < inst->incount; jjj++) {
     inst_regs.insert(inst->in[jjj]);
+    if (DTRACE(CHECK_SCB)) {
+      fprintf(Trace::out, "Scoreboard::checkCollision insert(inst->in[%u]=%u)\n",
+        jjj, inst->in[jjj]);
+    }    
+  }
 
   if (inst->pred > 0) inst_regs.insert(inst->pred);
   if (inst->ar1 > 0) inst_regs.insert(inst->ar1);
