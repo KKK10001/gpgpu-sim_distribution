@@ -106,6 +106,7 @@ class shd_warp_t {
   shd_warp_t(class shader_core_ctx *shader, unsigned warp_size)
       : m_shader(shader), m_warp_size(warp_size) {
     m_stores_outstanding = 0;
+    m_outstanding_store_has_decremented = false;
     m_inst_in_pipeline = 0;
     reset();
   }
@@ -254,10 +255,18 @@ class shd_warp_t {
   void clear_imiss_pending() { m_imiss_pending = false; }
 
   bool stores_done() const { return m_stores_outstanding == 0; }
+  bool outstanding_store_has_decremented() const { return m_outstanding_store_has_decremented; }
   void inc_store_req() { m_stores_outstanding++; }
   void dec_store_req() {
+    // if (m_outstanding_store_has_decremented) {
+    //   // nothing
+    // } else {
+    //   assert(m_stores_outstanding > 0);
+    //   m_stores_outstanding--;
+    //   m_outstanding_store_has_decremented = true;
+    // }
     assert(m_stores_outstanding > 0);
-    m_stores_outstanding--;
+    m_stores_outstanding--;    
   }
 
   unsigned num_inst_in_buffer() const {
@@ -330,6 +339,7 @@ class shd_warp_t {
 
   unsigned m_stores_outstanding;  // number of store requests sent but not yet
                                   // acknowledged
+  bool m_outstanding_store_has_decremented;
   unsigned m_inst_in_pipeline;
 
   // Jin: cdp support
@@ -2339,7 +2349,7 @@ class shader_core_ctx : public core_t {
   void dec_inst_in_pipeline(unsigned warp_id) {
     m_warp[warp_id]->dec_inst_in_pipeline();
   }  // also used in writeback()
-  void store_ack(class mem_fetch *mf);
+  void store_ack(class mem_fetch *mf, std::string caller = nullptr);
   bool warp_waiting_at_mem_barrier(unsigned warp_id);
   void set_max_cta(const kernel_info_t &kernel);
   void warp_inst_complete(const warp_inst_t &inst);

@@ -228,7 +228,7 @@ class mem_fetch {
                               
   unsigned m_bank; // hold the bank_id from L1D request
   unsigned long long m_time; // hold the time when *mf being created from l1_latency_queue
-  bool m_l1d_bypass_noalloc = false;
+  bool m_l1d_bypass_noalloc;
 };
 
 #endif

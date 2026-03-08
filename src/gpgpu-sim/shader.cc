@@ -2578,8 +2578,16 @@ mem_stage_stall_type ldst_unit::process_cache_access(
                            ? (mf->get_data_size() / SECTOR_SIZE)
                            : 1;
 
-    for (unsigned i = 0; i < inc_ack; ++i)
+    for (unsigned i = 0; i < inc_ack; ++i) {
       m_core->inc_store_req(inst.warp_id());
+      if (DTRACE(STORE_ACK)) {
+        assert(inst.get_uid() == mf->get_request_uid());
+        fprintf(Trace::out, 
+          "%llu inc_store_req for uid:%u addr:%#llx get_l1d_bypass_noalloc:%u\n",
+          m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle, 
+          inst.get_uid(), mf->get_addr(), mf->get_l1d_bypass_noalloc());
+      }
+    }      
   }
   if (status == HIT) {
     assert(!read_sent);
@@ -2670,30 +2678,6 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
       }
 
       if ((l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1]) == NULL) {
-        // if (m_config->m_L1D_config.bypass_low_loc_lines() == 'T') {
-        //   auto trashed_addresses = m_L1D->m_tag_array->get_trashed_pkts();
-        //   REQ_PKT req_pkt(mf->get_sid(), mf->get_addr());
-        //   auto it = trashed_addresses.find(req_pkt);          
-        //   if (it == trashed_addresses.end()) { // Only allow non-trashing mf enter l1_lat_q
-        //     l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1] = mf;
-        //   } else {
-        //     bool write_sent = inst.is_store() ? true : false;
-        //     bool read_sent  = inst.is_load() ? true : false;
-        //     set_reply_and_ack_for_miss(mf, false, write_sent, read_sent);
-        //     if (mf->get_inst().is_store()) {
-        //       unsigned inc_ack = (m_config->m_L1D_config.get_mshr_type() == SECTOR_ASSOC)
-        //                             ? (mf->get_data_size() / SECTOR_SIZE)
-        //                             : 1;
-        //       for (unsigned i = 0; i < inc_ack; ++i) {
-        //         m_core->inc_store_req(inst.warp_id());
-        //       }
-        //     }
-        //     inst.accessq_pop_back(); // When comment, dec_store_req() would assert
-        //     continue;                // When comment, dec_store_req() would assert
-        //   }
-        // } else {
-        //   l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1] = mf;
-        // }
         l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1] = mf; // default
 
         if (DTRACE(CACHE_EVENT)) {
@@ -2723,6 +2707,13 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
 
           for (unsigned i = 0; i < inc_ack; ++i) {
             m_core->inc_store_req(inst.warp_id());
+            if (DTRACE(STORE_ACK)) {
+              // assert(inst.get_uid() == mf->get_request_uid());
+              fprintf(Trace::out, 
+                "%llu inc_store_req for uid:%u addr:%#llx get_l1d_bypass_noalloc:%u\n",
+                m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle,
+                inst.get_uid(), mf->get_addr(), mf->get_l1d_bypass_noalloc());
+            }            
           }            
         }
         inst.accessq_pop_back();
@@ -2771,7 +2762,21 @@ void ldst_unit::set_reply_and_ack_for_miss(
             : 1;
     mf_next->set_reply();
     for (unsigned i = 0; i < dec_ack; ++i) { 
-      m_core->store_ack(mf_next);
+      m_core->store_ack(mf_next, "ldst_unit::set_reply_and_ack_for_miss");
+      if (DTRACE(STORE_ACK)) {
+        bool mf_deleted = (!write_sent && !read_sent);
+        std::string explanation = 
+          write_sent ? "write_sent so mf can not be deleted at present":
+          read_sent ? "read_sent so mf can not be deleted at present": 
+          mf_deleted ? "(!write_sent && !read_sent) -> delete mf_next" : "";       
+        fprintf(Trace::out, "%llu %s "
+          "called dec_store_req for uid:%u addr:%#llx get_l1d_bypass_noalloc:%u mf_deleted:%u %s\n", 
+          m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle, 
+          "ldst_unit::set_reply_and_ack_for_miss", 
+          mf_next->get_inst().get_uid(), 
+          mf_next->get_addr(), mf_next->get_l1d_bypass_noalloc(), mf_deleted,
+          explanation.c_str());
+      }        
     }
 
     if (!write_sent && !read_sent) { 
@@ -2805,7 +2810,10 @@ void ldst_unit::L1_latency_queue_cycle() {
 
       bool write_sent = false;
       bool read_sent  = false;
+
+      // default logic
       enum cache_request_status status = m_L1D->access(mf_next->get_addr(), mf_next, time, events);
+
       // enum cache_request_status status = cache_request_status::MISS;
       // if (m_config.m_bypass_low_loc_lines == 'T') {
       //   const bool wa = false;        
@@ -2906,7 +2914,16 @@ void ldst_unit::L1_latency_queue_cycle() {
           mf_next->set_reply();
 
           for (unsigned i = 0; i < dec_ack; ++i) {
-            m_core->store_ack(mf_next);
+            m_core->store_ack(mf_next, "ldst_unit::L1_latency_queue_cycle");
+            if (DTRACE(STORE_ACK)) {
+              bool mf_deleted = !write_sent;
+              fprintf(Trace::out, "%llu %s "
+                "called dec_store_req for uid:%u addr:%#llx "
+                "get_l1d_bypass_noalloc:%u mf_deleted:%u\n", 
+                time, "ldst_unit::L1_latency_queue_cycle", 
+                mf_next->get_inst().get_uid(), 
+                mf_next->get_addr(), mf_next->get_l1d_bypass_noalloc(), mf_deleted);
+            }            
           }
         } // Inside status == HIT
         if (!write_sent) { delete mf_next; }
@@ -2924,25 +2941,6 @@ void ldst_unit::L1_latency_queue_cycle() {
         }
 
         l1_latency_queue[bank_id][0] = NULL; // Remove *mf from head of l1_latency_queue
-
-        // if (m_config->m_L1D_config.get_write_policy() != WRITE_THROUGH &&
-        //     mf_next->get_inst().is_store() &&
-        //     (m_config->m_L1D_config.get_write_allocate_policy() == FETCH_ON_WRITE ||
-        //      m_config->m_L1D_config.get_write_allocate_policy() == LAZY_FETCH_ON_READ) &&
-        //     !was_writeallocate_sent(events)) {
-        //   unsigned dec_ack =
-        //       (m_config->m_L1D_config.get_mshr_type() == SECTOR_ASSOC)
-        //           ? (mf_next->get_data_size() / SECTOR_SIZE)
-        //           : 1;
-        //   mf_next->set_reply();
-        //   for (unsigned i = 0; i < dec_ack; ++i) { 
-        //     m_core->store_ack(mf_next);
-        //   }
-
-        //   if (!write_sent && !read_sent) { 
-        //     delete mf_next;
-        //   }
-        // } // Inside status == MISS
         bool was_wr_alloc_sent = was_writeallocate_sent(events);
         set_reply_and_ack_for_miss(mf_next, was_wr_alloc_sent, write_sent, read_sent);
       } // assert(status == MISS || status == SECTOR_MISS || status == HIT_RESERVED);
@@ -3037,6 +3035,7 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
       bypassL1D = true;
     }
   }
+
   if (bypassL1D) {
     // bypass L1 cache
     unsigned control_size = inst.is_store() ? WRITE_PACKET_SIZE : READ_PACKET_SIZE;
@@ -3077,6 +3076,13 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
           }
         } else if (inst.is_store()) {
           m_core->inc_store_req(inst.warp_id());
+          if (DTRACE(STORE_ACK)) {
+            assert(inst.get_uid() == mf->get_request_uid());
+            fprintf(Trace::out, 
+              "%llu inc_store_req for uid:%u addr:%#llx get_l1d_bypass_noalloc:%u\n",
+              m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle,
+              inst.get_uid(), mf->get_addr(), mf->get_l1d_bypass_noalloc());
+          }
         }          
       }
     }
@@ -3739,13 +3745,19 @@ void ldst_unit::cycle() {
       if (mf->get_type() == WRITE_ACK ||
           ((m_config->gpgpu_perfect_mem || m_memory_config->SST_mode) &&
            mf->get_is_write())) {
+
+        if (DTRACE(STORE_ACK)) {
+          fprintf(Trace::out, "%llu %s "
+            "called dec_store_req for uid:%u addr:%#llx "
+            "get_l1d_bypass_noalloc:%u mf_deleted:1\n", 
+            time, "ldst_unit::cycle", 
+            mf->get_inst().get_uid(), 
+            mf->get_addr(), mf->get_l1d_bypass_noalloc());
+        }  
+
         // SST memory is handled by SST mem hierarchy
         // Perfect mem
-        // 3/7
-        if (!mf->get_l1d_bypass_noalloc()) {
-          m_core->store_ack(mf);  
-        }
-        // m_core->store_ack(mf); // default
+        m_core->store_ack(mf, "ldst_unit::cycle"); // default
         m_response_fifo.pop_front();
         delete mf;
       } else {
@@ -5046,10 +5058,10 @@ void shader_core_ctx::accept_ldst_unit_response(mem_fetch *mf, unsigned cid) {
   m_ldst_unit->fill(mf, cid);
 }
 
-void shader_core_ctx::store_ack(class mem_fetch *mf) {
+void shader_core_ctx::store_ack(class mem_fetch *mf, std::string caller) {
   assert(mf->get_type() == WRITE_ACK ||
          ((m_config->gpgpu_perfect_mem || m_memory_config->SST_mode) &&
-          mf->get_is_write()));
+          mf->get_is_write()));  
   unsigned warp_id = mf->get_wid();
   m_warp[warp_id]->dec_store_req();
 }
