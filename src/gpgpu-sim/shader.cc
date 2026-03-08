@@ -2803,8 +2803,8 @@ void ldst_unit::L1_latency_queue_cycle() {
 
       if (DTRACE(L1_LAT_Q_POP)) {
         fprintf(Trace::out, "%llu ldst_unit::%s "
-          "got REQ_PKT<sid:%u, addr:%#llx> from l1_lat_q[bank:%u][0]\n",
-          time, __func__, mf_next->get_sid(), mf_next->get_addr(), bank_id
+          "got REQ_PKT<uid:%u addr:%#llx> from l1_lat_q[bank:%u][0]\n",
+          time, __func__, mf_next->get_inst().get_uid(), mf_next->get_addr(), bank_id
           );
       }
 
@@ -2813,18 +2813,6 @@ void ldst_unit::L1_latency_queue_cycle() {
 
       // default logic
       enum cache_request_status status = m_L1D->access(mf_next->get_addr(), mf_next, time, events);
-
-      // enum cache_request_status status = cache_request_status::MISS;
-      // if (m_config.m_bypass_low_loc_lines == 'T') {
-      //   const bool wa = false;        
-      //   assert(status == cache_request_status::MISS);
-      //   if (!wa) {
-      //     events.push_back(cache_event(READ_REQUEST_SENT));
-      //   }
-      //   return;
-      // } else {
-      //   status = m_L1D->access(mf_next->get_addr(), mf_next, time, events);
-      // }
 
       write_sent = was_write_sent(events);
       read_sent  = was_read_sent(events);
@@ -3438,41 +3426,6 @@ ldst_unit::ldst_unit(mem_fetch_interface *icnt,
     : pipelined_simd_unit(NULL, config, config->smem_latency, core, 0),      
       m_gpu(gpu),
       m_next_wb(config) {
-
-  m_recorded_trashed_pkts.insert(REQ_PKT(0, 0x7f7091709be0));
-  m_recorded_trashed_pkts.insert(REQ_PKT(0, 0x7f709174c9e0));
-  m_recorded_trashed_pkts.insert(REQ_PKT(0, 0x7f709174fd60));
-  m_recorded_trashed_pkts.insert(REQ_PKT(0, 0x7f709174fde0));
-  m_recorded_trashed_pkts.insert(REQ_PKT(0, 0x7f7091754260));
-  m_recorded_trashed_pkts.insert(REQ_PKT(0, 0x7f709175b5c0));
-  m_recorded_trashed_pkts.insert(REQ_PKT(0, 0x7f709175b5e0));
-  m_recorded_trashed_pkts.insert(REQ_PKT(0, 0x7f709175be60));
-  m_recorded_trashed_pkts.insert(REQ_PKT(1, 0x7f7091700440));
-  m_recorded_trashed_pkts.insert(REQ_PKT(1, 0x7f7091702960));
-  m_recorded_trashed_pkts.insert(REQ_PKT(1, 0x7f70917031c0));
-  m_recorded_trashed_pkts.insert(REQ_PKT(1, 0x7f7091703c60));
-  m_recorded_trashed_pkts.insert(REQ_PKT(1, 0x7f7091765ea0));
-  m_recorded_trashed_pkts.insert(REQ_PKT(1, 0x7f7091765ec0));
-  m_recorded_trashed_pkts.insert(REQ_PKT(1, 0x7f709176f6c0));
-  m_recorded_trashed_pkts.insert(REQ_PKT(1, 0x7f709176f6e0));
-  m_recorded_trashed_pkts.insert(REQ_PKT(1, 0x7f70917888c0));
-  m_recorded_trashed_pkts.insert(REQ_PKT(1, 0x7f709178dde0));
-  m_recorded_trashed_pkts.insert(REQ_PKT(2, 0x7f7091704e60));
-  m_recorded_trashed_pkts.insert(REQ_PKT(2, 0x7f7091708260));
-  m_recorded_trashed_pkts.insert(REQ_PKT(2, 0x7f7091709360));
-  m_recorded_trashed_pkts.insert(REQ_PKT(2, 0x7f7091753860));
-  m_recorded_trashed_pkts.insert(REQ_PKT(2, 0x7f709175cfc0));
-  m_recorded_trashed_pkts.insert(REQ_PKT(2, 0x7f709176f960));
-  m_recorded_trashed_pkts.insert(REQ_PKT(2, 0x7f7091772140));
-  m_recorded_trashed_pkts.insert(REQ_PKT(2, 0x7f7091772160));
-  m_recorded_trashed_pkts.insert(REQ_PKT(2, 0x7f7091772c60));
-  m_recorded_trashed_pkts.insert(REQ_PKT(3, 0x7f70917004c0));
-  m_recorded_trashed_pkts.insert(REQ_PKT(3, 0x7f70917165e0));
-  m_recorded_trashed_pkts.insert(REQ_PKT(3, 0x7f709171f540));
-  m_recorded_trashed_pkts.insert(REQ_PKT(3, 0x7f7091736340));
-  m_recorded_trashed_pkts.insert(REQ_PKT(3, 0x7f7091736360));
-  m_recorded_trashed_pkts.insert(REQ_PKT(3, 0x7f7091761240));
-  m_recorded_trashed_pkts.insert(REQ_PKT(3, 0x7f7091764f60));
 
   assert(config->smem_latency > 1);
   init(icnt, mf_allocator, core, operand_collector, scoreboard, config,

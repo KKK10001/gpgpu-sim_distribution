@@ -954,7 +954,8 @@ class cache_config {
     m_data_port_width = 0;
     m_set_index_function = LINEAR_SET_FUNCTION;
     m_is_streaming = false;
-    m_wr_percent = 0;
+    m_low_locality_threshold = 30;
+    m_wr_percent = 0;    
   }
   void init(
     char *config, 
@@ -1381,7 +1382,8 @@ class cache_config {
   char *m_rep_enhance_string;
   char *m_config_stringPrefL1;
   char *m_config_stringPrefShared;
-  FuncCache cache_status;  
+  FuncCache cache_status;
+  unsigned m_low_locality_threshold;
   unsigned m_wr_percent;
   write_allocate_policy_t get_write_allocate_policy() {
     return m_write_alloc_policy;
@@ -1619,15 +1621,15 @@ struct LINE_LOCALITY
 };
 struct REQ_PKT
 {
-  unsigned core_id;
+  unsigned uid;
   new_addr_type addr;
-  REQ_PKT() : core_id((unsigned) - 1), addr((new_addr_type) - 1) {}
-  REQ_PKT(unsigned core_id_, new_addr_type addr_) :
-    core_id(core_id_), addr(addr_) {}
+  REQ_PKT() : uid((unsigned) - 1), addr((new_addr_type) - 1) {}
+  REQ_PKT(unsigned uid_, new_addr_type addr_) :
+    uid(uid_), addr(addr_) {}
 
   bool operator<(const REQ_PKT& o) const {
-    if (core_id != o.core_id) {
-      return core_id < o.core_id;
+    if (uid != o.uid) {
+      return uid < o.uid;
     }
     return addr < o.addr;
   }
@@ -1831,8 +1833,8 @@ class tag_array {
   std::vector<unsigned> m_l1d_max_evicts;
   std::vector<unsigned> m_l1d_avg_evicts;
   std::map<
-    std::pair<unsigned /* sid */, new_addr_type>, unsigned /* evictions */> 
-    m_l1d_lines_evictions;
+    std::pair<unsigned /* uid */, new_addr_type>, unsigned /* evictions */> 
+    m_l1d_lines_evictions;    
   std::set<new_addr_type> m_l1d_trashed_lines;
 };
 
@@ -2697,11 +2699,6 @@ class data_cache : public baseline_cache {
                                          unsigned long long time,
                                          std::list<cache_event> &events,
                                          enum cache_request_status status);
-  // void dump_cache_access_info(
-  //   const char* caller,
-  //   new_addr_type addr, mem_fetch *mf, unsigned long long time, 
-  //   enum cache_request_status status,
-  //   bool dump_inst_str = false);
 };
 
 /// This is meant to model the first level data cache in Fermi.

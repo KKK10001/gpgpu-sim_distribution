@@ -1590,8 +1590,6 @@ class ldst_unit : public pipelined_simd_unit {
   std::map<std::pair<unsigned,int>, std::string> m_pending_longop_chain;
   // Track source for next writeback (to tag unblock cause)
   std::string m_next_wb_source;
-
-  std::set<REQ_PKT> m_recorded_trashed_pkts;
 };
 
 enum pipeline_stage_name_t {

@@ -445,6 +445,9 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "<fill_time_ascend>,<warp_interfere_aware>,<pending_longop_aware>",
                          "F,F,F");
 
+  option_parser_register(opp, "-gpgpu_l1_cache_low_locality_threshold", OPT_UINT32,
+                        &m_L1D_config.m_low_locality_threshold, "L1D low locality threshold", "30");
+
   option_parser_register(opp, "-gpgpu_l1_cache_write_ratio", OPT_UINT32,
                          &m_L1D_config.m_wr_percent, "L1D write ratio", "0");
   option_parser_register(opp, "-gpgpu_l1_banks", OPT_UINT32,
