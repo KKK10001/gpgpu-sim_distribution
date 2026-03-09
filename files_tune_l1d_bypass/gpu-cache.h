@@ -2421,7 +2421,7 @@ class baseline_cache : public cache_t {
       new_addr_type a, new_addr_type ad, 
       unsigned i, unsigned d,
       const cache_config &m_config,
-      bool l1d_bypass_noalloc) { // case can pass ?
+      bool l1d_bypass_noalloc) {
 
       m_valid = true;
       m_block_addr = a;
