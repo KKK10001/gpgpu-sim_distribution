@@ -836,13 +836,7 @@ enum cache_request_status tag_array::probe(
   }
 
   if (m_config.m_bypass_low_loc_lines == 'T' && m_is_l1d && mf) {
-    if (mf->get_l1d_bypass_noalloc()) {
-      if (DTRACE(VERIFY_L1D_BYPASS)) {
-        fprintf(Trace::out, "%llu L1D Why mf [sid:%u, addr:%#llx] with l1d_bypass_noalloc = 1 "
-          "enter tag_array::probe again?\n",
-          time, mf->get_sid(), mf->get_addr());
-      }
-    }
+    assert(!mf->get_l1d_bypass_noalloc());
 
     new_addr_type block_addr = m_config.block_addr(mf->get_addr());
     const std::pair<unsigned, new_addr_type> loc_key(mf->get_inst().get_uid(), mf->get_addr());
@@ -857,6 +851,8 @@ enum cache_request_status tag_array::probe(
         // Try commented to check if "was sent by SM into l1_latency_queue again" would appear
         m_trashed_reqs.insert(REQ_PKT(mf->get_inst().get_uid(), mf->get_addr()));
         mf->set_l1d_bypass_noalloc(true); // case can pass
+        return MISS; // case can pass ? [3/9 eve] to avoid an expected SECTOR_MISS returned to outside caller 
+        
         if (DTRACE(BYPASS_L1D_ALLOC)) {
           fprintf(Trace::out, "%llu L1D can bypass frequent evictions "
             "of REQ_PKT<uid:%u addr:%#llx>\n",
@@ -3659,16 +3655,9 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
       if (it == trashed_addresses.end()) {
         m_tag_array->fill(e->second.m_cache_index, time, mf);
       } else {
-        if (DTRACE(BYPASS_L1D_ALLOC)) {
-          if (!mf->get_l1d_bypass_noalloc()) {
-            fprintf(Trace::out, "%llu assert failed! Why REQ_PKT hit on "
-              "mf uid:%u addr:%#llx, but get_l1d_bypass_noalloc = 0 ?\n",
-              time, mf->get_inst().get_uid(), mf->get_addr());
-          } else {
-            fprintf(Trace::out, "%llu L1D bypassed m_tag_array->fill "
-              "for mf uid:%u addr:%#llx\n",
-              time, mf->get_inst().get_uid(), mf->get_addr());
-          }
+        if (DTRACE(TRACE_BYPASSED_L1D_PKT)) {
+          dumpCacheEvent(time, "baseline_cache::fill", 
+            "L1D bypassed m_tag_array->fill", mf);
         }
         assert(mf->get_l1d_bypass_noalloc()); // case can pass
       }
@@ -3690,6 +3679,15 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
   if (m_config.m_mshr_disable == 'T') {
     has_atomic = mf->isatomic();
     m_lfb.push_back(mf); // !!! L1D bypass should only be applied to replacement
+
+    if (m_config.m_bypass_low_loc_lines == 'T' && mf->get_l1d_bypass_noalloc()) {
+      assert(m_is_l1d);
+      if (DTRACE(TRACE_BYPASSED_L1D_PKT)) {
+        dumpCacheEvent(time, "baseline_cache::fill", 
+          "Bypassed L1D pkt should still m_lfb.push_back", mf);
+      }
+    }
+
     if (!strcmp(m_config.m_cache_name,"L2")) {
       m_stats.inc_l2_sub_miss_served_cycles(
         mf->get_streamID(), mf->get_sub_partition(),
@@ -3787,9 +3785,11 @@ void baseline_cache::dumpCacheEvent(
     );
   } else {
     fprintf(Trace::out, "%llu %s%s stage(%s) cache_event(%s) "
-      "mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s pos:%s}\n", 
+      "mf:{TPC:%u SM:%u WARP:%u req_uid:%u uid:%u addr:%#llx acc_type:%s pos:%s}\n", 
       time, cache_name, suffix.c_str(), stage, event,
-      mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(), // mf info
+      mf->get_tpc(), mf->get_sid(), mf->get_wid(), 
+      mf->get_request_uid(), mf->get_inst().get_uid(), 
+      mf->get_addr(), // mf info
       mem_access_type_str(mem_access_type(mf->get_access_type())),
       mf->mem_fetch_status_str(mf->get_status())
     );
@@ -3932,13 +3932,12 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
           REQ_PKT req_pkt(mf->get_inst().get_uid(), mf->get_addr());
           auto it = trashed_addresses.find(req_pkt);
           if (it == trashed_addresses.end()) { // case can pass as well                
-          // if (!mf->get_l1d_bypass_noalloc()) { // previously passed version
+            assert(!mf->get_l1d_bypass_noalloc());
             m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);  
           } else {
-            if (DTRACE(BYPASS_L1D_ALLOC)) {
-              fprintf(Trace::out, "%llu L1D bypassed m_tag_array->access "
-                "for mf sid:%u uid:%u addr:%#llx\n",
-                time, mf->get_sid(), mf->get_inst().get_uid(), mf->get_addr());
+            if (DTRACE(TRACE_BYPASSED_L1D_PKT) || DTRACE(BYPASS_L1D_ALLOC)) {
+              dumpCacheEvent(time, "baseline_cache::send_read_request", 
+                "Bypassed m_tag_array->access", mf);
             }
           }
         } else {
@@ -3959,8 +3958,18 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
       m_miss_queue.push_back(mf);
 
       if (DTRACE(CACHE_EVENT) || DTRACE(MISS_QUEUE_EVENT) || DTRACE(EXTRA_MF_EVENT)) {
-        dumpMissQueue(time, "RD-MISS-NO-MSHR", 
-          "1. new m_extra_mf_fields[mf] 2. m_miss_queue.push_back(mf) ", mf);
+        dumpCacheEvent(time, "baseline_cache::send_read_request", 
+          "1. new extra_mf_fields[mf] "
+          "2. mf set MetaData {data_size, addr, status} "
+          "3. m_miss_queue.push_back(mf)", mf);
+      }
+      if (DTRACE(TRACE_BYPASSED_L1D_PKT)) {
+        if (mf->get_l1d_bypass_noalloc()) {
+          dumpCacheEvent(time, "baseline_cache::send_read_request", 
+            "1. new extra_mf_fields[mf] "
+            "2. mf set MetaData {data_size, addr, status} "
+            "3. m_miss_queue.push_back(mf)", mf);          
+        }
       }
 
       if (!wa) {        
@@ -4581,32 +4590,6 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
     std::list<cache_event> &events, enum cache_request_status status) {
   new_addr_type block_addr = m_config.block_addr(addr);
 
-  // if (mf->get_l1d_bypass_noalloc()) {
-  //   if (miss_queue_full(0, "data_cache::wr_miss_wa_lazy_fetch_on_read")) {
-  //     m_stats.inc_fail_stats(mf->get_access_type(), MISS_QUEUE_FULL,
-  //                           mf->get_streamID(), 
-  //                           miss_queue_full_driver::WR_ALLOC_MISS_LAZY_FETCH_ON_RD);
-
-  //     if (DTRACE(STORE_ACK)) {
-  //       fprintf(Trace::out, "%llu get_l1d_bypass_noalloc:1, but miss_queue_full. "
-  //         "No WRITE_REQUEST_SENT for mf uid:%u addr:%#llx\n",
-  //         time, mf->get_inst().get_uid(), mf->get_addr());
-  //     }
-
-  //     return RESERVATION_FAIL;  // cannot handle request this cycle
-  //   }
-  //   send_write_request("wr_miss_wa_lazy_fetch_on_read[bypass]",
-  //                     mf, cache_event(WRITE_REQUEST_SENT), time, events);
-
-  //   if (DTRACE(STORE_ACK)) {
-  //     fprintf(Trace::out, "%llu get_l1d_bypass_noalloc:1. "
-  //       "WRITE_REQUEST_SENT for mf uid:%u addr:%#llx\n",
-  //       time, mf->get_inst().get_uid(), mf->get_addr());
-  //   }
-
-  //   return MISS;    
-  // }
-
   // if the request writes to the whole cache line/sector, then, write and set
   // cache line Modified. and no need to send read request to memory or reserve
   // mshr
@@ -4771,8 +4754,13 @@ enum cache_request_status data_cache::rd_hit_base(
     std::list<cache_event> &events, enum cache_request_status status) {
   new_addr_type block_addr = m_config.block_addr(addr);
   if (!mf->get_l1d_bypass_noalloc()) {
-    assert(!mf->isatomic());
+    // assert(!mf->isatomic());
     m_tag_array->access(block_addr, time, cache_index, mf);  
+  } else {
+    if (DTRACE(TRACE_BYPASSED_L1D_PKT)) {
+      dumpCacheEvent(time, "data_cache::rd_hit_base", 
+        "Bypassed m_tag_array->access", mf);
+    }
   }
   // m_tag_array->access(block_addr, time, cache_index, mf); // default
   // Atomics treated as global read/write requests - Perform read, mark line as
@@ -4924,7 +4912,7 @@ enum cache_request_status data_cache::process_tag_probe(
   // options. Function pointers were used to avoid many long conditional
   // branches resulting from many cache configuration options.
   cache_request_status access_status = probe_status;
-  if (wr) {  // Write
+  if (wr) { // Write
     if (probe_status == HIT) {
       access_status = (this->*m_wr_hit)(addr, cache_index, mf, time, events, probe_status);
     } else if ((probe_status != RESERVATION_FAIL) ||
@@ -4952,11 +4940,6 @@ enum cache_request_status data_cache::process_tag_probe(
       // case can pass ?
       if (mf->get_l1d_bypass_noalloc()) {
         assert(!m_is_l1d);
-        // if (DTRACE(BYPASS_L1D_ALLOC)) {
-        //   fprintf(Trace::out, "%llu Why get_l1d_bypass_noalloc = true for "
-        //     "mf uid:%u addr:%#llx, but probe_status == HIT ?\n",
-        //     time, mf->get_inst().get_uid(), mf->get_addr());
-        // }
       }
 
       access_status = (this->*m_rd_hit)(addr, cache_index, mf, time, events, probe_status);
@@ -5011,21 +4994,36 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
     if (mf->get_l1d_bypass_noalloc()) {
       assert(!mf->is_write());
       assert(!mf->isatomic());
-      if (DTRACE(BYPASS_L1D_ALLOC)) {
-        fprintf(Trace::out, "%llu L1D bypassed m_tag_array->probe "
-          "for mf sid:%u uid:%u addr:%#llx\n",
-          time, mf->get_sid(), mf->get_inst().get_uid(), mf->get_addr());
+
+      if (DTRACE(TRACE_BYPASSED_L1D_PKT)) {
+        dumpCacheEvent(time, "data_cache::access", 
+          "Bypassed m_tag_array->probe", mf);
       }
     } else {
+      if (DTRACE(TAG_PROBE)) {
+        fprintf(Trace::out, "%llu %s m_bypass_low_loc_lines == 'T' "
+          "get_l1d_bypass_noalloc = %u. Before tag_array->probe "
+          "for mf uid:%u addr:%#llx, probe_status = %s\n",
+          time, m_config.get_cache_name(), 
+          mf->get_l1d_bypass_noalloc(),
+          mf->get_inst().get_uid(), mf->get_addr(),
+          cache_request_status_str(probe_status));                  
+      }
+
+      // After probe, probe_status and mf->get_l1d_bypass_noalloc 
+      // might both be changed.
       probe_status = m_tag_array->probe(
           "data_cache::access",
           block_addr, cache_index, mf, mf->is_write(), time,
           inter_warp_has_interference, inter_warp_interfere_record,
           true /* probe_mode */);
+
       if (DTRACE(TAG_PROBE)) {
-        fprintf(Trace::out, "%llu %s After tag_array->probe "
+        fprintf(Trace::out, "%llu %s m_bypass_low_loc_lines == 'T' "
+          "get_l1d_bypass_noalloc = %u. After tag_array->probe "
           "for mf uid:%u addr:%#llx, probe_status = %s\n",
           time, m_config.get_cache_name(), 
+          mf->get_l1d_bypass_noalloc(),
           mf->get_inst().get_uid(), mf->get_addr(),
           cache_request_status_str(probe_status));
       }
@@ -5038,9 +5036,12 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
       true /* probe_mode */); // default logic
 
     if (DTRACE(TAG_PROBE)) {
-      fprintf(Trace::out, "%llu %s After tag_array->probe "
+      fprintf(Trace::out, "%llu %s m_bypass_low_loc_lines == 'F' "
+        "mf->get_l1d_bypass_noalloc = %u "
+        "After tag_array->probe "
         "for mf uid:%u addr:%#llx, probe_status = %s\n",
         time, m_config.get_cache_name(), 
+        mf->get_l1d_bypass_noalloc(),
         mf->get_inst().get_uid(), mf->get_addr(),
         cache_request_status_str(probe_status));
     }       
@@ -5078,6 +5079,19 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
 
   // std::vector<std::set<new_addr_type>> l1d_unique_lines = m_tag_array->get_l1d_unique_lines();
   // m_gpu->get_shader_stats()->m_unique_cachelines[sid] = l1d_unique_lines[sid].size();
+
+  if (m_config.m_bypass_low_loc_lines == 'T' && m_is_l1d && mf && mf->get_l1d_bypass_noalloc()) {
+    if (probe_status != cache_request_status::MISS) {
+      if (DTRACE(TRACE_BYPASSED_L1D_PKT)) {
+        fprintf(Trace::out, "%llu %s Why probe_status:%s != MISS for bypassed "
+          "mf uid:%u addr:%#llx\n",
+          time, m_config.get_cache_name(), 
+          cache_request_status_str(probe_status),
+          mf->get_inst().get_uid(), mf->get_addr());
+      }
+    }
+    assert(probe_status == cache_request_status::MISS);
+  }
 
   enum cache_request_status access_status = process_tag_probe(wr, probe_status, addr, cache_index, mf, time, events);
 

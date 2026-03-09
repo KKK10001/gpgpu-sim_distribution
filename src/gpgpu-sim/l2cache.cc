@@ -595,6 +595,13 @@ void memory_sub_partition::cache_cycle(
             mem_access_type_str(mem_access_type(mf->get_access_type()))
             );
         }
+        if (mf->get_l1d_bypass_noalloc()) {
+          m_L2cache->dumpCacheEvent(
+            unified_cycle, 
+            "memory_sub_partition::cache_cycle", 
+            "L1D bypassed pkt is returned: m_L2_icnt_queue->push(mf)", mf);
+        }
+
         m_L2cache->m_stats.inc_accu_l2_icnt_queue_size(
           mf->get_streamID(), m_id, m_L2_icnt_queue->get_length());
         m_L2cache->m_stats.inc_l2_icnt_q_accesses(mf->get_streamID(), m_id);       
@@ -1240,6 +1247,15 @@ void memory_sub_partition::push(mem_fetch *m_req, unsigned long long cycle) {
 mem_fetch *memory_sub_partition::pop() {
   mem_fetch *mf = m_L2_icnt_queue->pop(); // mf can be NULL here
 
+  if (mf && mf->get_l1d_bypass_noalloc()) {
+    if (DTRACE(TRACE_BYPASSED_L1D_PKT)) {
+      m_L2cache->dumpCacheEvent(
+        get_unified_cycle(),
+        "memory_sub_partition::pop()", 
+        "1. m_L2_icnt_queue->pop 2. m_request_tracker.erase", mf);
+    }
+  }
+
   if (DTRACE(CACHE_EVENT)) {
     m_L2cache->dumpCacheEvent(
       get_unified_cycle(),
@@ -1265,20 +1281,19 @@ mem_fetch *memory_sub_partition::top() {
   if (mf && (mf->get_access_type() == L2_WRBK_ACC ||
              mf->get_access_type() == L1_WRBK_ACC)) {
 
+    if (mf->get_l1d_bypass_noalloc()) {
+      if (DTRACE(TRACE_BYPASSED_L1D_PKT)) {
+        m_L2cache->dumpCacheEvent(
+          get_unified_cycle(),
+          "memory_sub_partition::top() mf is L1/L2 writeback", 
+          "1. m_L2_icnt_queue->pop 2. m_request_tracker.erase 3. delete mf", mf);
+      }
+    }
     if (DTRACE(CACHE_EVENT)) {  
       m_L2cache->dumpCacheEvent(
         get_unified_cycle(),
-        "memory_sub_partition::top()", 
-        "1. m_L2_icnt_queue->pop 2. m_request_tracker.erase", mf);
-    }
-
-    if (DTRACE(RELEASE_REQ_TRACKER)) {
-      fprintf(Trace::out, "%llu L2_sub[%u] req_tracker released "
-        "mf:{ TPC:%u SM:%u WARP:%u %#llx }\n",
-        get_unified_cycle(),
-        m_id,
-        mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_addr()
-      );
+        "memory_sub_partition::top() mf is L1/L2 writeback", 
+        "1. m_L2_icnt_queue->pop 2. m_request_tracker.erase 3. delete mf", mf);
     }
 
     m_L2_icnt_queue->pop();

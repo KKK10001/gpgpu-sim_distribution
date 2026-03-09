@@ -3105,6 +3105,13 @@ void ldst_unit::fill(mem_fetch *mf, unsigned cid) {
   mf->set_status(IN_SHADER_LDST_RESPONSE_FIFO, time);
   m_response_fifo.push_back(mf);
   m_resp_fifo_inputs++;
+  
+  if (mf->get_l1d_bypass_noalloc()) {
+    if (DTRACE(TRACE_BYPASSED_L1D_PKT)) {
+      m_L1D->dumpCacheEvent(time, "ldst_unit::fill", 
+        "m_response_fifo.push_back", mf);
+    }
+  }
 
   if (DTRACE(CACHE_Q_SIZE)) {
     fprintf(Trace::out, "cid = %u LSU m_resp_fifo_inputs++ = %u\n", cid, m_resp_fifo_inputs);
