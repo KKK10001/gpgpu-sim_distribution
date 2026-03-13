@@ -4061,19 +4061,39 @@ void gpgpu_sim::shader_print_cache_stats(FILE *fout) const {
     fprintf(fout, "\tL1D_accesses      = %llu\n", total_css.accesses);
     fprintf(fout, "\tL1D_misses        = %llu\n", total_css.misses);
     fprintf(fout, "\tL1D_sector_misses = %llu\n", total_css.sector_misses);
+    fprintf(fout, "\n");
+    fprintf(fout, "\tL1D_reads         = %llu\n", total_css.reads);
+    fprintf(fout, "\tL1D_rd_bypasses   = %llu\n", total_css.rd_bypasses);
+    fprintf(fout, "\tL1D_rd_misses     = %llu\n", total_css.rd_misses);    
+    fprintf(fout, "\n");
     fprintf(fout, "\tL1D_MPKI = %f\n", l1d_mpki);
     if (total_css.accesses > 0) {
       if (m_shader_config->m_L1D_config.get_mshr_disable() == 'T') {
-        fprintf(fout, "\tL1D_miss_rate = %.4lf\n",
-          (double)(total_css.misses + total_css.sector_misses)
-          / (double)total_css.accesses);
+        fprintf(fout, "\tL1D_rd_bypass_rate = %.4lf = rd_bypasses:%llu / reads:%llu\n",
+          total_css.rd_bypasses / (double)total_css.reads,
+          total_css.rd_bypasses, total_css.reads);          
+        fprintf(fout, "\tL1D_rd_miss_rate = %.4lf = "
+          "(rd_misses:%llu + sector_rd_misses:%llu) / reads:%llu\n",
+          (total_css.rd_misses + total_css.sector_rd_misses) / (double)total_css.reads, 
+          total_css.rd_misses, total_css.sector_rd_misses, total_css.reads);
+        fprintf(fout, "\tL1D_wr_miss_rate = %.4lf\n",
+          (total_css.wr_misses + total_css.sector_wr_misses)
+          / (double)total_css.writes);
       } else {
-        fprintf(fout, "\tL1D_miss_rate = %.4lf\n",
-          (double)total_css.misses / (double)total_css.accesses);        
+        fprintf(fout, "\tL1D_rd_miss_rate = %.4lf = rd_misses:%llu / reads:%llu\n",
+          total_css.rd_misses / (double)total_css.reads,
+          total_css.rd_misses, total_css.reads
+        );
+        fprintf(fout, "\tL1D_wr_miss_rate = %.4lf\n",
+          total_css.wr_misses / (double)total_css.writes);          
       }
 
+      fprintf(fout, "\tL1D_sector_rd_miss_rate = %.4lf\n",
+        total_css.sector_rd_misses / (double)total_css.reads);
+      fprintf(fout, "\tL1D_sector_wr_miss_rate = %.4lf\n",
+        total_css.sector_wr_misses / (double)total_css.writes);
       fprintf(fout, "\tL1D_sector_miss_rate = %.4lf\n",
-              (double)total_css.sector_misses / (double)total_css.accesses);              
+              (double)total_css.sector_misses / (double)total_css.accesses);
     }
     fprintf(fout, "\tL1D_pending_hits = %llu\n",
             total_css.pending_hits);

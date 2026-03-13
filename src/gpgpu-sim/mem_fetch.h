@@ -57,6 +57,7 @@ class mem_fetch {
   friend class memory_sub_partition;
   friend class gpgpu_sim;
   friend class baseline_cache;
+  friend class data_cache;
   friend class tag_array;
   friend class ldst_unit;
  public:
@@ -123,9 +124,17 @@ class mem_fetch {
   unsigned get_return_timestamp() const { return m_timestamp2; }
   unsigned get_icnt_receive_time() const { return m_icnt_receive_time; }
   unsigned long long get_miss_serve_begin_time() const { return m_miss_serve_begin_time; }
-  void set_miss_serve_begin_time(unsigned long long miss_serve_begin_time) { 
-    m_miss_serve_begin_time = miss_serve_begin_time;
+  unsigned long long get_rd_miss_serve_begin_time() const { return m_l1d_rd_miss_serve_begin_time; }
+  unsigned long long get_wr_miss_serve_begin_time() const { return m_wr_miss_serve_begin_time; }
+  void set_miss_serve_begin_time(unsigned long long time) { 
+    m_miss_serve_begin_time = time;
   }
+  void set_rd_miss_serve_begin_time(unsigned long long time) { 
+    m_l1d_rd_miss_serve_begin_time = time;
+  }
+  void set_wr_miss_serve_begin_time(unsigned long long time) { 
+    m_wr_miss_serve_begin_time = time;
+  }    
   unsigned long long get_status_change_time() const { return m_status_change; }
   unsigned long long get_streamID() const { return m_streamID; }
 
@@ -162,8 +171,14 @@ class mem_fetch {
   unsigned long long get_victim_avg_evict_interval() const {
     return m_victim_avg_evict_interval;
   }
+  unsigned long long get_l1d_rd_miss_served_time() const {
+    return m_l1d_miss_served_time;
+  }
 
  private:
+  void set_l1d_rd_miss_served_time(unsigned long long time) {
+    m_l1d_miss_served_time = time;
+  }
   // Pass-through L2 sub-partition for debugging/tracing
   void set_sub_partition(unsigned sub_partition) {
     m_sub_partition = sub_partition;
@@ -206,6 +221,8 @@ class mem_fetch {
                                  // when fixed icnt latency mode is enabled
 
   unsigned long long m_miss_serve_begin_time;
+  unsigned long long m_l1d_rd_miss_serve_begin_time;
+  unsigned long long m_wr_miss_serve_begin_time;
 
   // requesting instruction (put last so mem_fetch prints nicer in gdb)
   warp_inst_t m_inst;
@@ -229,6 +246,7 @@ class mem_fetch {
   unsigned m_bank; // hold the bank_id from L1D request
   unsigned long long m_time; // hold the time when *mf being created from l1_latency_queue
   bool m_l1d_bypass_noalloc;
+  unsigned long long m_l1d_miss_served_time;  // miss->fill
 };
 
 #endif

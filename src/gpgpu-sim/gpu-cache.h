@@ -57,6 +57,7 @@ enum cache_request_status {
   RESERVATION_FAIL,
   SECTOR_MISS,
   MSHR_HIT, // only stats related
+  BYPASS, 
   NUM_CACHE_REQUEST_STATUS
 };
 
@@ -1646,9 +1647,71 @@ class tag_array {
   std::vector<std::set<new_addr_type>> get_l1d_unique_lines() {
     return m_l1d_unique_lines;
   }
+  void print_l1d_rd_bypass_conf_cnt() {
+    unsigned i = 0;
+    for (auto& iter : m_l1d_rd_bypass_confidence) {
+      fprintf(Trace::out, "%u: m_l1d_rd_bypass_confidence[block_addr:%#llx] = %d\n",
+        i, iter.first, iter.second);
+    }    
+  }
 
-  const std::set<REQ_PKT>& get_trashed_pkts() const {
+  void set_1st_time_l1d_rd_fill_to_evict(new_addr_type block_addr, bool is_1st_time) {
+    m_1st_time_l1d_rd_fill_to_evict[block_addr] = is_1st_time;
+  }
+  void set_l1d_rd_fill_time(new_addr_type block_addr, unsigned long long time) {
+    m_l1d_rd_fill_time[block_addr] = time;
+  }
+  void set_l1d_evict_time(new_addr_type block_addr, unsigned long long time) {
+    m_l1d_evict_time[block_addr] = time;
+  }
+  void set_l1d_rd_fill_to_evict_gap(new_addr_type block_addr, unsigned long long gap) {
+    m_l1d_rd_fill_to_evict_gap[block_addr] = gap;
+  }
+
+  unsigned long long get_l1d_evict_time(new_addr_type block_addr) {
+    return m_l1d_evict_time[block_addr];
+  }
+
+  void average_l1d_rd_fill_to_evict_gap(new_addr_type block_addr) {
+    assert(m_l1d_rd_fill_to_evict_gap.find(block_addr) != m_l1d_rd_fill_to_evict_gap.end());
+    unsigned long long this_gap = m_l1d_rd_fill_to_evict_gap[block_addr];
+    if (m_avg_l1d_rd_fill_to_evict_gap.find(block_addr) == m_avg_l1d_rd_fill_to_evict_gap.end()) {
+      m_avg_l1d_rd_fill_to_evict_gap[block_addr] = this_gap;
+    } else {
+      m_avg_l1d_rd_fill_to_evict_gap[block_addr] = 
+        (m_avg_l1d_rd_fill_to_evict_gap[block_addr] + this_gap) >> 1;
+    }
+  }
+
+  unsigned long long get_l1d_rd_fill_time(new_addr_type block_addr) {
+    return m_l1d_rd_fill_time[block_addr];
+  }
+  bool is_1st_time_l1d_rd_fill_to_evict(new_addr_type block_addr) {
+    return m_1st_time_l1d_rd_fill_to_evict[block_addr];
+  }
+  unsigned long long get_l1d_rd_fill_to_evict_gap(new_addr_type block_addr) {
+    return m_l1d_rd_fill_to_evict_gap[block_addr];
+  }  
+  unsigned long long get_avg_l1d_rd_fill_to_evict_gap(new_addr_type block_addr) {
+    return m_avg_l1d_rd_fill_to_evict_gap[block_addr];
+  }  
+
+  const std::set<new_addr_type>& get_trashed_pkts() const {
     return m_trashed_reqs;
+  }
+
+  bool hit_l1d_bypassed_item(mem_fetch* mf) {
+    auto it = m_trashed_reqs.find(m_config.block_addr(mf->get_addr()));
+    if (it != m_trashed_reqs.end() && !mf->is_write() && !mf->isatomic()) {
+      return true;
+    }
+    return false;
+  }
+  void clear_l1d_bypassed_item(mem_fetch* mf) {
+    auto it = m_trashed_reqs.find(m_config.block_addr(mf->get_addr()));
+    if (it != m_trashed_reqs.end() && !mf->is_write() && !mf->isatomic()) {
+      m_trashed_reqs.erase(it);
+    }
   }
 
   static bool cmpForSmallerTimestamp(
@@ -1822,7 +1885,8 @@ class tag_array {
 
   bool is_used;  // a flag if the whole cache has ever been accessed before
 
-  std::set<REQ_PKT> m_trashed_reqs;
+  // std::set<REQ_PKT> m_trashed_reqs;
+  std::set<new_addr_type> m_trashed_reqs;
 
   typedef tr1_hash_map<new_addr_type, unsigned> line_table;
   line_table pending_lines;
@@ -1832,10 +1896,27 @@ class tag_array {
   std::vector<unsigned long long> m_avg_reref_gap;
   std::vector<unsigned> m_l1d_max_evicts;
   std::vector<unsigned> m_l1d_avg_evicts;
-  std::map<
-    std::pair<unsigned /* uid */, new_addr_type>, unsigned /* evictions */> 
-    m_l1d_lines_evictions;    
+  // std::map<
+  //   std::pair<unsigned /* uid */, new_addr_type>, unsigned /* evictions */> 
+  //   m_l1d_lines_evictions; 
+  std::map<new_addr_type /* block_addr */, unsigned long long /* cycles */> m_l1d_rd_fill_time;
+  std::map<new_addr_type /* block_addr */, unsigned long long /* cycles */> m_l1d_evict_time;
+  std::map<new_addr_type /* block_addr */, unsigned long long /* cycles */> m_l1d_rd_fill_to_evict_gap;
+  std::map<new_addr_type /* block_addr */, bool> m_1st_time_l1d_rd_fill_to_evict;
+  std::map<new_addr_type /* block_addr */, int> m_l1d_rd_bypass_confidence;
+  std::map<new_addr_type /* block_addr */, bool> m_l1d_rd_bypass_activated;
+  std::map<new_addr_type /* block_addr */, unsigned long long /* cycles */> m_avg_l1d_rd_fill_to_evict_gap;
+  std::map<new_addr_type /* block_addr */, unsigned /* evictions */> m_l1d_lines_evictions;      
+  std::map<new_addr_type /* block_addr */, unsigned long long /* cycles */> m_l1d_evict_gap;
+  std::map<new_addr_type /* block_addr */, unsigned long long /* cycles */> m_l1d_last_evict_time;
+  std::map<new_addr_type /* block_addr */, unsigned long long /* cycles */> m_l1d_evictions_time;
+  std::map<new_addr_type /* block_addr */, float /* trashing degree*/> m_l1d_trashing_degree;
+  std::map<new_addr_type /* block_addr */, bool> m_l1d_has_trashed;
   std::set<new_addr_type> m_l1d_trashed_lines;
+  float m_l1d_mpki;
+  unsigned m_low_loc_threshold;
+  int m_trash_conf_cnt_bound;
+  unsigned m_activated_bypass_cnt;
 };
 
 class mshr_table {
@@ -1910,9 +1991,16 @@ class mshr_table {
 /// reservation fails.
 ///
 struct cache_sub_stats {
+  unsigned long long rd_bypasses;
   unsigned long long accesses;
+  unsigned long long reads;
+  unsigned long long writes;
   unsigned long long misses;
+  unsigned long long rd_misses;
+  unsigned long long wr_misses;  
   unsigned long long sector_misses;
+  unsigned long long sector_rd_misses;
+  unsigned long long sector_wr_misses;
   unsigned long long pending_hits;
   unsigned long long res_fails;
 
@@ -1926,9 +2014,16 @@ struct cache_sub_stats {
 
   cache_sub_stats() { clear(); }
   void clear() {
+    rd_bypasses = 0;
     accesses = 0;
+    reads = 0;
+    writes = 0;
     misses = 0;
+    rd_misses = 0;
+    wr_misses = 0;
     sector_misses = 0;
+    sector_rd_misses = 0;
+    sector_wr_misses = 0;
     pending_hits = 0;
     res_fails = 0;
     avg_evict_interval = 0;
@@ -1940,9 +2035,16 @@ struct cache_sub_stats {
     ///
     /// Overloading += operator to easily accumulate stats
     ///
+    rd_bypasses += css.rd_bypasses;
     accesses += css.accesses;
+    reads += css.reads;
+    writes += css.writes;
     misses += css.misses;
+    rd_misses += css.rd_misses;
+    wr_misses += css.wr_misses;
     sector_misses += css.sector_misses;
+    sector_rd_misses += css.sector_rd_misses;
+    sector_wr_misses += css.sector_wr_misses;
     pending_hits += css.pending_hits;
     res_fails += css.res_fails;
     avg_evict_interval = (avg_evict_interval + css.avg_evict_interval) >> 1;
@@ -1957,8 +2059,13 @@ struct cache_sub_stats {
     /// Overloading + operator to easily accumulate stats
     ///
     cache_sub_stats ret;
+    ret.rd_bypasses = rd_bypasses + cs.rd_bypasses;
     ret.accesses = accesses + cs.accesses;
+    ret.reads = reads + cs.reads;
+    ret.writes = writes + cs.writes;
     ret.misses = misses + cs.misses;
+    ret.rd_misses = rd_misses + cs.rd_misses;
+    ret.wr_misses = wr_misses + cs.wr_misses;
     ret.sector_misses = sector_misses + cs.sector_misses;
     ret.pending_hits = pending_hits + cs.pending_hits;
     ret.res_fails = res_fails + cs.res_fails;
@@ -2044,9 +2151,12 @@ class cache_stats {
   void clear_pw();
   unsigned get_mshr_merge_dist_cnt(unsigned long long streamID, unsigned sm_id, unsigned warp_id);
 
-  void inc_l1d_miss_served_cycles(
-    unsigned long long streamID, unsigned long long served_cycles);
-  void inc_l1d_misses(unsigned long long streamID);
+  void overall_average_l1d_rd_fill_to_evict_gap(unsigned long long streamID, unsigned long long served_cycles);
+  void avg_l1d_rd_miss_served_cycles(unsigned long long streamID, unsigned long long served_cycles);
+  void inc_l1d_wr_miss_served_cycles(unsigned long long streamID, unsigned long long served_cycles);
+  
+  void inc_l1d_rd_misses(unsigned long long streamID);
+  void inc_l1d_wr_misses(unsigned long long streamID);
 
   // Increment cache stats
   void inc_mshr_stats(unsigned long long streamID, unsigned sm_id, unsigned warp_id);
@@ -2083,7 +2193,7 @@ class cache_stats {
   // for m_accu_l2_dram_queue_size, m_accu_l2_icnt_queue_size, m_l2_dram_q_accesses
   unsigned operator()(unsigned l2_sub, unsigned long long streamID) const;
 
-  unsigned long long operator()( // l1d
+  unsigned long long operator() ( // l1d
     unsigned long long streamID, const char* tgt_name) const;
 
   unsigned long long operator()(
@@ -2108,6 +2218,9 @@ class cache_stats {
     FILE *fout, unsigned l2_icnt_q_capacity, unsigned long long streamID, const char *info = "") const;
 
   void print_avg_core_cache_miss_served_cycles(FILE* fout, unsigned long long streamID) const;
+  void print_avg_l1d_rd_fill_to_evict_gap(FILE* fout, unsigned long long streamID) const;
+  void print_avg_l1d_rd_miss_served_cycles(FILE* fout, unsigned long long streamID) const;  
+  void print_avg_l1d_wr_miss_served_cycles(FILE* fout, unsigned long long streamID) const;
   void print_avg_l2_miss_served_cycles(FILE* fout, unsigned long long streamID) const;
   void print_l2_mshr_slots_stats(
     FILE *fout, unsigned l2_mshr_allocated_slots, 
@@ -2150,8 +2263,15 @@ class cache_stats {
   // CUDA streamID -> cache stats[NUM_MEM_ACCESS_TYPE]
   std::map<unsigned long long, std::vector<std::vector<unsigned long long>>> m_stats;
   std::map<unsigned long long, unsigned /* avg_evict_interval */> m_evict_stats;
-  std::map<unsigned long long /* streamID */, unsigned long long /* miss_served_cycles */> m_l1d_miss_served_cycles;
+  std::map<unsigned long long /* streamID */, unsigned long long> m_overall_avg_l1d_rd_fill_to_evict_gap;
+  std::map<unsigned long long /* streamID */, unsigned long long> m_l1d_rd_miss_served_cycles;
+  std::map<unsigned long long /* streamID */, unsigned long long> m_l1d_wr_miss_served_cycles;
+  std::map<unsigned long long /* streamID */, unsigned> m_l1d_accesses;
+  std::map<unsigned long long /* streamID */, unsigned> m_l1d_reads;
+  std::map<unsigned long long /* streamID */, unsigned> m_l1d_writes;  
   std::map<unsigned long long /* streamID */, unsigned> m_l1d_misses;
+  std::map<unsigned long long /* streamID */, unsigned> m_l1d_rd_misses;
+  std::map<unsigned long long /* streamID */, unsigned> m_l1d_wr_misses;
   std::map<unsigned long long /* streamID */, std::vector<unsigned long long>> m_l2_sub_miss_served_cycles;
   std::map<unsigned long long /* streamID */, std::vector<unsigned>> m_l2_sub_misses;
 
@@ -2180,7 +2300,7 @@ class cache_stats {
 
   unsigned long long m_cache_port_available_cycles;
   unsigned long long m_cache_data_port_busy_cycles;
-  unsigned long long m_cache_fill_port_busy_cycles;
+  unsigned long long m_cache_fill_port_busy_cycles;  
 };
 
 class cache_t {

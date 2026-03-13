@@ -595,11 +595,13 @@ void memory_sub_partition::cache_cycle(
             mem_access_type_str(mem_access_type(mf->get_access_type()))
             );
         }
-        if (mf->get_l1d_bypass_noalloc()) {
-          m_L2cache->dumpCacheEvent(
-            unified_cycle, 
-            "memory_sub_partition::cache_cycle", 
-            "L1D bypassed pkt is returned: m_L2_icnt_queue->push(mf)", mf);
+        if (DTRACE(CACHE_EVENT)) {
+          if (mf->get_l1d_bypass_noalloc()) {
+            m_L2cache->dumpCacheEvent(
+              unified_cycle, 
+              "memory_sub_partition::cache_cycle", 
+              "L1D bypassed pkt is returned: m_L2_icnt_queue->push(mf)", mf);
+          }
         }
 
         m_L2cache->m_stats.inc_accu_l2_icnt_queue_size(

@@ -73,6 +73,8 @@ mem_fetch::mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
   m_timestamp = cycle;
   m_timestamp2 = 0;
   m_miss_serve_begin_time = 0;
+  m_l1d_rd_miss_serve_begin_time = 0;
+  m_wr_miss_serve_begin_time = 0;
   m_status = MEM_FETCH_INITIALIZED;
   m_status_change = cycle;
   m_mem_config = config;
@@ -84,6 +86,8 @@ mem_fetch::mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
     m_raw_addr.sub_partition = m_original_mf->get_tlx_addr().sub_partition;
   }
   m_l1d_bypass_noalloc = false;
+
+  m_l1d_miss_served_time     = 0; // miss->fill
 }
 
 mem_fetch::~mem_fetch() { m_status = MEM_FETCH_DELETED; }

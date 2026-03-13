@@ -75,7 +75,8 @@ const char *cache_request_status_str(enum cache_request_status status) {
       "MISS",
       "RESERVATION_FAIL",
       "SECTOR_MISS",
-      "MSHR_HIT"
+      "MSHR_HIT",
+      "BYPASS"
 };
 
   assert(sizeof(static_cache_request_status_str) / sizeof(const char *) ==
@@ -408,8 +409,26 @@ tag_array::tag_array(gpgpu_sim *gpu, cache_config &config, int core_id, int type
   
   m_l1d_max_evicts.resize(gpu->m_shader_config->num_shader(), 0);
   m_l1d_avg_evicts.resize(gpu->m_shader_config->num_shader(), 0);
-  m_l1d_trashed_lines.clear();
+  m_l1d_rd_fill_time.clear();
+  m_l1d_evict_time.clear();
+  m_l1d_rd_fill_to_evict_gap.clear();
+  m_1st_time_l1d_rd_fill_to_evict.clear();
+  m_l1d_rd_bypass_confidence.clear();
+  m_l1d_rd_bypass_activated.clear();
+  m_avg_l1d_rd_fill_to_evict_gap.clear();
   m_l1d_lines_evictions.clear();
+  m_l1d_evict_gap.clear();
+  m_l1d_last_evict_time.clear();
+  m_l1d_evictions_time.clear();
+  m_l1d_trashing_degree.clear();
+  m_l1d_has_trashed.clear();
+  m_l1d_trashed_lines.clear();
+  m_l1d_mpki = 0.0f;
+  m_low_loc_threshold = m_config.m_low_locality_threshold;
+  // m_trash_conf_cnt_bound = 3;
+  m_trash_conf_cnt_bound = 10; // ok (confirmed again with only inc/dec conf cnt inside tag_array::probe)
+  // m_trash_conf_cnt_bound = 5; // ok (activate: 2; deactivate: 4)
+  // m_trash_conf_cnt_bound = 7; // ok (activate: 2; deactivate: 4)
   // m_l1d_unique_lines.resize(gpu->m_shader_config->num_shader());
   m_reref_gap.resize(gpu->m_shader_config->num_shader());
   m_avg_reref_gap.resize(gpu->m_shader_config->num_shader(), 0);
@@ -835,36 +854,128 @@ enum cache_request_status tag_array::probe(
     }
   }
 
+  const shader_core_config *shader_cfg = m_gpu->getShaderCoreConfig();
+  struct cache_sub_stats total_css;
+  struct cache_sub_stats css;
+  for (unsigned i = 0; i < shader_cfg->n_simt_clusters; i++) {         
+    m_gpu->m_cluster[i]->get_L1D_sub_stats(css);
+    total_css += css;
+  }      
+  unsigned long long tot_insns = m_gpu->gpu_tot_sim_insn + m_gpu->gpu_sim_insn;
+  [[maybe_unused]] float last_l1d_mpki = m_l1d_mpki;
+  m_l1d_mpki = 1000 * (total_css.misses / (float)tot_insns);
+
   if (m_config.m_bypass_low_loc_lines == 'T' && m_is_l1d && mf) {
-    assert(!mf->get_l1d_bypass_noalloc());
 
     new_addr_type block_addr = m_config.block_addr(mf->get_addr());
-    const std::pair<unsigned, new_addr_type> loc_key(mf->get_inst().get_uid(), mf->get_addr());
+    [[maybe_unused]] const auto loc_key = block_addr;
 
-    if (!mf->isatomic() && !mf->is_write() && 
-      m_l1d_lines_evictions[loc_key] > m_config.m_low_locality_threshold) {
-
-      m_l1d_trashed_lines.insert(block_addr);
-      m_gpu->get_shader_stats()->m_n_l1d_trashed_lines[mf->get_sid()] = 
-        m_l1d_trashed_lines.size();
-
-        // Try commented to check if "was sent by SM into l1_latency_queue again" would appear
-        m_trashed_reqs.insert(REQ_PKT(mf->get_inst().get_uid(), mf->get_addr()));
-        mf->set_l1d_bypass_noalloc(true); // case can pass
-        return MISS; // case can pass ? [3/9 eve] to avoid an expected SECTOR_MISS returned to outside caller 
-        
-        if (DTRACE(BYPASS_L1D_ALLOC)) {
-          fprintf(Trace::out, "%llu L1D can bypass frequent evictions "
-            "of REQ_PKT<uid:%u addr:%#llx>\n",
-            time, mf->get_inst().get_uid(), mf->get_addr());
-        }
-      
-        if (DTRACE(L1D_FREQUENT_EVICTIONS)) {
-        fprintf(Trace::out, "%llu L1D frequent evictions "
-          "<sid:%u, addr:%#llx> = %u. Consider for bypassL1D\n",
-          time, mf->get_sid(), mf->get_addr(), m_l1d_lines_evictions[loc_key]);
+    /////////// Begin trashing degree
+    if (hit_l1d_bypassed_item(mf)) {
+      assert(m_is_l1d);
+      if (DTRACE(HIT_L1D_BYPASSED_ITEM)) {
+        fprintf(Trace::out, "%llu HIT_L1D_BYPASSED_ITEM block_addr:%#llx inside tag_array::probe\n",
+          time, block_addr);
       }
+
+    //     fprintf(Trace::out, "%llu L1D bypassed tag_array::probe "
+    //       "because hit mf addr:%#llx\n",
+    //       time, block_addr);
+      // }
+    //   return MISS;
     }
+    /////////// End trashing degree
+
+    /////////// Begin raw version
+    // if (!mf->isatomic() && !mf->is_write() && 
+    //   m_l1d_lines_evictions[loc_key] > m_config.m_low_locality_threshold) {
+
+    //   m_l1d_trashed_lines.insert(block_addr);
+    //   m_gpu->get_shader_stats()->m_n_l1d_trashed_lines[mf->get_sid()] = m_l1d_trashed_lines.size();
+    //   m_trashed_reqs.insert(m_config.block_addr(mf->get_addr()));
+    //   mf->set_l1d_bypass_noalloc(true); // case can pass (Reserved for accessing in L2/Shader)
+    //   return MISS; // case can pass [3/9 eve] to avoid an expected SECTOR_MISS returned to outside caller 
+
+    //   if (DTRACE(TRACE_BYPASSED_L1D_PKT)) {
+    //     // req_uid is not used for insertion, and just for checking in trace
+    //     fprintf(Trace::out, "%llu In tag_array::probe, "
+    //       "m_trashed_reqs.insert trashed mf <req_uid:%u uid:%u block_addr:%#llx> addr:%#llx. "
+    //       "set_l1d_bypass_noalloc(true)\n", 
+    //       time, mf->get_request_uid(), mf->get_inst().get_uid(), block_addr, mf->get_addr());
+    //   }
+
+    //   if (DTRACE(BYPASS_L1D_ALLOC)) {
+    //     fprintf(Trace::out, "%llu L1D can bypass frequent evictions "
+    //       "of REQ_PKT<uid:%u block_addr:%#llx>\n",
+    //       time, mf->get_inst().get_uid(), m_config.block_addr(mf->get_addr()));            
+    //   }
+    // }
+    /////////// End raw version
+
+    ///////////// Begin m_low_loc_threshold adaptive version
+    // if (m_l1d_mpki > last_l1d_mpki) {
+    //   m_low_loc_threshold += 5;
+    //   assert(m_low_loc_threshold >= 0);
+    //   assert(m_low_loc_threshold != ((unsigned) - 1));
+    // }
+    // if (!mf->isatomic() && !mf->is_write() && 
+    //   m_l1d_lines_evictions[loc_key] > m_low_loc_threshold) {
+
+    //   m_l1d_trashed_lines.insert(block_addr);
+    //   m_gpu->get_shader_stats()->m_n_l1d_trashed_lines[mf->get_sid()] = m_l1d_trashed_lines.size();
+    //   m_trashed_reqs.insert(m_config.block_addr(mf->get_addr()));
+    //   mf->set_l1d_bypass_noalloc(true); // case can pass (Reserved for accessing in L2/Shader)
+    //   return MISS; // case can pass [3/9 eve] to avoid an expected SECTOR_MISS returned to outside caller 
+
+    //   if (DTRACE(TRACE_BYPASSED_L1D_PKT)) {
+    //     // req_uid is not used for insertion, and just for checking in trace
+    //     fprintf(Trace::out, "%llu In tag_array::probe, "
+    //       "m_trashed_reqs.insert trashed mf <req_uid:%u uid:%u block_addr:%#llx> addr:%#llx. "
+    //       "set_l1d_bypass_noalloc(true)\n", 
+    //       time, mf->get_request_uid(), mf->get_inst().get_uid(), block_addr, mf->get_addr());
+    //   }
+
+    //   if (DTRACE(BYPASS_L1D_ALLOC)) {
+    //     fprintf(Trace::out, "%llu L1D can bypass frequent evictions "
+    //       "of REQ_PKT<uid:%u block_addr:%#llx>\n",
+    //       time, mf->get_inst().get_uid(), m_config.block_addr(mf->get_addr()));            
+    //   }
+    // }
+    ///////////// End m_low_loc_threshold adaptive version
+
+    // /////////// Begin m_l1d_mpki-aware version
+    // if (!mf->isatomic() && !mf->is_write() && 
+    //   m_l1d_lines_evictions[loc_key] > m_config.m_low_locality_threshold) {
+
+    //   if (m_l1d_mpki < last_l1d_mpki) {
+    //     m_l1d_trashed_lines.insert(block_addr);
+    //     m_gpu->get_shader_stats()->m_n_l1d_trashed_lines[mf->get_sid()] = m_l1d_trashed_lines.size();
+
+    //     m_trashed_reqs.insert(m_config.block_addr(mf->get_addr()));
+    //     mf->set_l1d_bypass_noalloc(true); // case can pass (Reserved for accessing in L2/Shader)
+    //     return MISS; // case can pass [3/9 eve] to avoid an expected SECTOR_MISS returned to outside caller           
+    //   }
+    //   // m_l1d_trashed_lines.insert(block_addr);
+    //   // m_gpu->get_shader_stats()->m_n_l1d_trashed_lines[mf->get_sid()] = m_l1d_trashed_lines.size();
+    //   // m_trashed_reqs.insert(m_config.block_addr(mf->get_addr()));
+    //   // mf->set_l1d_bypass_noalloc(true); // case can pass (Reserved for accessing in L2/Shader)
+    //   // return MISS; // case can pass [3/9 eve] to avoid an expected SECTOR_MISS returned to outside caller 
+
+    //   if (DTRACE(TRACE_BYPASSED_L1D_PKT)) {
+    //     // req_uid is not used for insertion, and just for checking in trace
+    //     fprintf(Trace::out, "%llu In tag_array::probe, "
+    //       "m_trashed_reqs.insert trashed mf <req_uid:%u uid:%u block_addr:%#llx> addr:%#llx. "
+    //       "set_l1d_bypass_noalloc(true)\n", 
+    //       time, mf->get_request_uid(), mf->get_inst().get_uid(), block_addr, mf->get_addr());
+    //   }
+
+    //   if (DTRACE(BYPASS_L1D_ALLOC)) {
+    //     fprintf(Trace::out, "%llu L1D can bypass frequent evictions "
+    //       "of REQ_PKT<uid:%u block_addr:%#llx>\n",
+    //       time, mf->get_inst().get_uid(), m_config.block_addr(mf->get_addr()));            
+    //   }
+    // }
+    // /////////// End m_l1d_mpki-aware version
   }
   
   if (DTRACE(TAG_PROBE)) {
@@ -883,7 +994,7 @@ enum cache_request_status tag_array::probe(
 
   unsigned set_index = 0;
   new_addr_type tag = m_config.tag(addr);
-  const shader_core_config *shader_cfg = m_gpu->getShaderCoreConfig();
+  // const shader_core_config *shader_cfg = m_gpu->getShaderCoreConfig();
   const bool warp_ctx_valid = mf && (mf->get_wid() < shader_cfg->max_warps_per_shader);
   if (m_is_l1d && warp_ctx_valid) {
     std::pair<unsigned, unsigned> set_index_pairs = m_config.set_index_pairs(addr, mf->get_wid());
@@ -1059,11 +1170,26 @@ enum cache_request_status tag_array::probe(
           idx = index;
           return HIT;
         } else {
+          if (DTRACE(TAG_PROBE)) {              
+            fprintf(Trace::out, "%llu %s tag_array::probe "
+              "is_write:%u is_readable:%u "
+              "SECTOR_MISS for addr:%#llx\n", 
+              time, m_config.get_cache_name(), 
+              is_write, line->is_readable(mask), addr);
+          }
           idx = index;
           return SECTOR_MISS;
         }
       } else if (line->is_valid_line() && line->get_status(mask) == INVALID) {
         idx = index;
+
+        if (DTRACE(TAG_PROBE)) {              
+          fprintf(Trace::out, "%llu %s tag_array::probe "
+            "is_valid_line && line->get_status(mask) == INVALID "
+            "SECTOR_MISS for addr:%#llx\n", 
+            time, m_config.get_cache_name(), addr);
+        }
+
         return SECTOR_MISS;
       } else {
         assert(line->get_status(mask) == INVALID);
@@ -1279,42 +1405,68 @@ enum cache_request_status tag_array::probe(
       }
     }
   }
-  // if (!strcmp(m_config.get_cache_name(), "L1D") && mf) {
-  //   m_lines_locality[mf->get_sid()][addr].total_evictions++;
-  //   m_lines_locality[mf->get_sid()][addr].updateThrash();
-  //   unsigned thrash_region = (m_lines_locality[mf->get_sid()][addr].thrash_dist > 1) ? 1 : 0;
-  //   m_gpu->get_shader_stats()->m_l1d_thrash[mf->get_sid()][thrash_region]++;
-  // }  
 
   if (idx == (unsigned) - 1) {
     fprintf(stderr, "tag_array::probe - Error: No victim found for addr %#llx in %s\n",
             addr, m_config.get_cache_name());
     abort();
   }
+  
+  if (m_is_l1d && mf && !mf->is_write() && !mf->isatomic()) {
+    const auto loc_key = m_config.block_addr(mf->get_addr());
+    auto it = m_l1d_rd_fill_to_evict_gap.find(loc_key);
+    if (it == m_l1d_rd_fill_to_evict_gap.end()) { // The 1st time evict after being filled
+      set_l1d_evict_time(loc_key, time);
+      set_l1d_rd_fill_to_evict_gap(loc_key, time - get_l1d_rd_fill_time(loc_key));
+      average_l1d_rd_fill_to_evict_gap(loc_key);
+      if (m_l1d_rd_bypass_confidence.find(loc_key) != m_l1d_rd_bypass_confidence.end()) {
+        assert(!m_l1d_rd_bypass_confidence[loc_key]);
+      }
+      m_l1d_rd_bypass_confidence[loc_key] = 0; // Initialize confidence
+    } else {
+      assert(m_l1d_rd_bypass_confidence.find(loc_key) != m_l1d_rd_bypass_confidence.end());
+      set_l1d_evict_time(loc_key, time);
+      set_l1d_rd_fill_to_evict_gap(loc_key, time - get_l1d_rd_fill_time(loc_key));
+      assert(m_avg_l1d_rd_fill_to_evict_gap.find(loc_key) != m_avg_l1d_rd_fill_to_evict_gap.end());
+      // Update confidence 
+      // 1. Inc confidence && possible insert into trash set
+      if (get_l1d_rd_fill_to_evict_gap(loc_key) < get_avg_l1d_rd_fill_to_evict_gap(loc_key)) {
+        m_l1d_rd_bypass_confidence[loc_key]++;
+        m_l1d_rd_bypass_confidence[loc_key] = 
+          (m_l1d_rd_bypass_confidence[loc_key] >= m_trash_conf_cnt_bound) ? 
+          m_trash_conf_cnt_bound : m_l1d_rd_bypass_confidence[loc_key];
+        if (m_l1d_rd_bypass_confidence[loc_key] == m_trash_conf_cnt_bound) {
+          m_trashed_reqs.insert(loc_key); // Activated bypass
+          m_activated_bypass_cnt++;          
+          if (DTRACE(ACTIVATE_L1D_BYPASS)) {
+            fprintf(Trace::out, "%llu ACTIVATE_L1D_BYPASS for block_addr:%#llx\n", time, loc_key);
+          }          
+        }
+      } else { // 2. Dec confidence
+        const int dec_step = 1;
+        m_l1d_rd_bypass_confidence[loc_key] -= dec_step;
+        m_l1d_rd_bypass_confidence[loc_key] = (m_l1d_rd_bypass_confidence[loc_key] < 0) ? 
+          0 : m_l1d_rd_bypass_confidence[loc_key];
+        if (!m_l1d_rd_bypass_confidence[loc_key]) {
+          m_trashed_reqs.erase(loc_key); // Deactivated bypass
+          m_l1d_rd_fill_to_evict_gap.erase(loc_key);
+          if (DTRACE(DEACTIVATE_L1D_BYPASS)) {
+            fprintf(Trace::out, "%llu DEACTIVATE_L1D_BYPASS for block_addr:%#llx\n", time, loc_key);
+          }
+        }
+      }
+    }
 
-  if (m_is_l1d && mf && !mf->is_write()) {
-    const std::pair<unsigned, new_addr_type> loc_key(mf->get_inst().get_uid(), mf->get_addr()); 
     m_l1d_lines_evictions[loc_key]++;
+    m_l1d_trashed_lines.insert(loc_key);
+    m_gpu->get_shader_stats()->m_n_l1d_trashed_lines[mf->get_sid()] = m_l1d_trashed_lines.size();
+
     m_l1d_max_evicts[mf->get_sid()] = std::max(m_l1d_max_evicts[mf->get_sid()], m_l1d_lines_evictions[loc_key]);
     m_gpu->get_shader_stats()->m_l1d_max_evicts[mf->get_sid()] = m_l1d_max_evicts[mf->get_sid()];
 
     m_l1d_avg_evicts[mf->get_sid()] = (m_l1d_avg_evicts[mf->get_sid()] + m_l1d_lines_evictions[loc_key]) >> 1;
     m_gpu->get_shader_stats()->m_l1d_avg_evicts[mf->get_sid()] = m_l1d_avg_evicts[mf->get_sid()];
-
-    if (DTRACE(TRASHED_PKT)) {
-      fprintf(Trace::out, "%llu m_l1d_lines_evictions[loc_key<uid:%u addr:%#llx>]++ = %u\n",
-        time, mf->get_inst().get_uid(), mf->get_addr(), m_l1d_lines_evictions[loc_key]);
-    }
-    if (DTRACE(L1D_EVICTIONS)) {
-      fprintf(Trace::out, 
-        "%llu m_l1d_lines_evictions[<sid:%u, addr:%#llx>]++ = %u "
-        "m_l1d_max_evicts[sid:%u] = %u m_l1d_avg_evicts[sid:%u] = %u\n",
-        time, mf->get_sid(), mf->get_addr(), m_l1d_lines_evictions[loc_key],
-        mf->get_sid(), m_l1d_max_evicts[mf->get_sid()],
-        mf->get_sid(), m_l1d_avg_evicts[mf->get_sid()]);
-    }
-
-  }
+  } // if (m_is_l1d && mf && !mf->is_write() && !mf->isatomic()) {
 
   // 2/25 Reset MSHR record
   // reset_record_in_mshr(idx);
@@ -1350,15 +1502,6 @@ enum cache_request_status tag_array::probe(
           last_size, m_reref_gap[mf->get_sid()].size()
         );
       }  
-    }
-  }
-
-  if (DTRACE(L1D_MISS) || DTRACE(L2_MISS)) {
-    if (mf) {
-      fprintf(Trace::out, "%llu caller:%s %s missed mf "
-        "[sid:%u][warp:%u][addr:%#llx]\n",
-        time, caller.c_str(), m_config.get_cache_name(), 
-        mf->get_sid(), mf->get_wid(), mf->get_addr());
     }
   }
 
@@ -1439,7 +1582,6 @@ enum cache_request_status tag_array::access(new_addr_type addr,
       if (m_config.m_alloc_policy == ON_MISS) {
         if (m_lines[idx]->is_modified_line()) {
           wb = true;
-          // m_lines[idx]->set_byte_mask(mf);
           evicted.set_info(m_lines[idx]->m_block_addr,
                            m_lines[idx]->get_modified_size(),
                            m_lines[idx]->get_dirty_byte_mask(),
@@ -1871,7 +2013,7 @@ void mshr_table::display_resp_q(FILE *fp, const char* cache_type) const {
 cache_stats::cache_stats() {
   m_cache_port_available_cycles = 0;
   m_cache_data_port_busy_cycles = 0;
-  m_cache_fill_port_busy_cycles = 0;
+  m_cache_fill_port_busy_cycles = 0;  
   m_l2_miss_q_pops = 0;
 }
 
@@ -1881,8 +2023,17 @@ void cache_stats::clear() {
   ///
   m_stats.clear();  
   
-  m_l1d_miss_served_cycles.clear();  
+  m_overall_avg_l1d_rd_fill_to_evict_gap.clear();
+  m_l1d_rd_miss_served_cycles.clear();  
+  m_l1d_wr_miss_served_cycles.clear();  
+
+  m_l1d_accesses.clear();
+  m_l1d_reads.clear();
+  m_l1d_writes.clear();
   m_l1d_misses.clear();
+  m_l1d_rd_misses.clear();
+  m_l1d_wr_misses.clear();
+
   m_l2_sub_miss_served_cycles.clear();
   m_l2_sub_misses.clear();
 
@@ -1902,7 +2053,7 @@ void cache_stats::clear() {
 
   m_cache_port_available_cycles = 0;
   m_cache_data_port_busy_cycles = 0;
-  m_cache_fill_port_busy_cycles = 0;
+  m_cache_fill_port_busy_cycles = 0;  
   m_l2_miss_q_pops = 0;
 }
 
@@ -1990,21 +2141,54 @@ void cache_stats::inc_l2_mshr_slots_fills(unsigned long long streamID, unsigned 
   m_l2_mshr_slots_fills.at(streamID)[l2_sub]++;
 }
 
-void cache_stats::inc_l1d_miss_served_cycles(
+void cache_stats::overall_average_l1d_rd_fill_to_evict_gap(
   unsigned long long streamID, unsigned long long served_cycles) {
-  if (m_l1d_miss_served_cycles.find(streamID) == m_l1d_miss_served_cycles.end()) {
+  if (m_overall_avg_l1d_rd_fill_to_evict_gap.find(streamID) == m_overall_avg_l1d_rd_fill_to_evict_gap.end()) {
     unsigned long long new_val;
-    m_l1d_miss_served_cycles.insert(
+    m_overall_avg_l1d_rd_fill_to_evict_gap.insert(
       std::pair<unsigned long long, unsigned long long>(streamID, new_val));    
   }
-  m_l1d_miss_served_cycles.at(streamID) += served_cycles;
+  [[maybe_unused]] unsigned long long last_avg_gap = 
+    m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID); // for debug
+
+  m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID) = 
+    (m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID) + served_cycles) >> 1;  
+  // printf("m_overall_avg_l1d_rd_fill_to_evict_gap[streamID:%llu]:%llu = "
+  //   "(last_avg_gap:%llu] + served_cycles:%llu) >> 1\n",
+    // streamID, m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID), last_avg_gap, served_cycles);
 }
-void cache_stats::inc_l1d_misses(unsigned long long streamID) {
-  if (m_l1d_misses.find(streamID) == m_l1d_misses.end()) {
-    unsigned new_val;
-    m_l1d_misses.insert(std::pair<unsigned long long, unsigned>(streamID, new_val));    
+void cache_stats::avg_l1d_rd_miss_served_cycles(
+  unsigned long long streamID, unsigned long long served_cycles) {
+  if (m_l1d_rd_miss_served_cycles.find(streamID) == m_l1d_rd_miss_served_cycles.end()) {
+    unsigned long long new_val;
+    m_l1d_rd_miss_served_cycles.insert(
+      std::pair<unsigned long long, unsigned long long>(streamID, new_val));    
   }
-  m_l1d_misses.at(streamID)++;
+  m_l1d_rd_miss_served_cycles.at(streamID) = 
+    (m_l1d_rd_miss_served_cycles.at(streamID) + served_cycles) >> 1;
+}
+void cache_stats::inc_l1d_wr_miss_served_cycles(
+  unsigned long long streamID, unsigned long long served_cycles) {
+  if (m_l1d_wr_miss_served_cycles.find(streamID) == m_l1d_wr_miss_served_cycles.end()) {
+    unsigned long long new_val;
+    m_l1d_wr_miss_served_cycles.insert(
+      std::pair<unsigned long long, unsigned long long>(streamID, new_val));    
+  }
+  m_l1d_wr_miss_served_cycles.at(streamID) += served_cycles;
+}
+void cache_stats::inc_l1d_rd_misses(unsigned long long streamID) {
+  if (m_l1d_rd_misses.find(streamID) == m_l1d_rd_misses.end()) {
+    unsigned new_val;
+    m_l1d_rd_misses.insert(std::pair<unsigned long long, unsigned>(streamID, new_val));    
+  }
+  m_l1d_rd_misses.at(streamID)++;
+}
+void cache_stats::inc_l1d_wr_misses(unsigned long long streamID) {
+  if (m_l1d_wr_misses.find(streamID) == m_l1d_wr_misses.end()) {
+    unsigned new_val;
+    m_l1d_wr_misses.insert(std::pair<unsigned long long, unsigned>(streamID, new_val));    
+  }
+  m_l1d_wr_misses.at(streamID)++;
 }
 
 void cache_stats::inc_l2_sub_miss_served_cycles(
@@ -2301,21 +2485,47 @@ unsigned long long cache_stats::operator()(
 }
 unsigned long long cache_stats::operator()(
   unsigned long long streamID, const char* tgt_name) const {
-  if (!strcmp(tgt_name, "m_l1d_miss_served_cycles")) {
-    auto it = m_l1d_miss_served_cycles.find(streamID);
-    if (it == m_l1d_miss_served_cycles.end()) {
-      return 0;
-    } else {
-      return it->second;
-    }
-  } else if (!strcmp(tgt_name, "m_l1d_misses")) {
-    auto it = m_l1d_misses.find(streamID);
-    if (it == m_l1d_misses.end()) {
+
+  if (!strcmp(tgt_name, "m_overall_avg_l1d_rd_fill_to_evict_gap")) {
+    auto it = m_overall_avg_l1d_rd_fill_to_evict_gap.find(streamID);
+    if (it == m_overall_avg_l1d_rd_fill_to_evict_gap.end()) {
       return 0;
     } else {
       return it->second;
     }
   }
+  else if (!strcmp(tgt_name, "m_l1d_rd_miss_served_cycles")) {
+    auto it = m_l1d_rd_miss_served_cycles.find(streamID);
+    if (it == m_l1d_rd_miss_served_cycles.end()) {
+      return 0;
+    } else {
+      return it->second;
+    }
+  } 
+  else if (!strcmp(tgt_name, "m_l1d_wr_miss_served_cycles")) {
+    auto it = m_l1d_wr_miss_served_cycles.find(streamID);
+    if (it == m_l1d_wr_miss_served_cycles.end()) {
+      return 0;
+    } else {
+      return it->second;
+    }
+  }
+  else if (!strcmp(tgt_name, "m_l1d_rd_misses")) {
+    auto it = m_l1d_rd_misses.find(streamID);
+    if (it == m_l1d_rd_misses.end()) {
+      return 0;
+    } else {
+      return static_cast<unsigned long long>(it->second);
+    }
+  }
+  else if (!strcmp(tgt_name, "m_l1d_wr_misses")) {
+    auto it = m_l1d_wr_misses.find(streamID);
+    if (it == m_l1d_wr_misses.end()) {
+      return 0;
+    } else {
+      return static_cast<unsigned long long>(it->second);
+    }
+  }    
 }
 
 cache_stats cache_stats::operator+(const cache_stats &cs) {
@@ -2371,20 +2581,46 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
     ret.m_mshr_occupancy_stats.insert(
       std::pair<unsigned long long,
         std::vector<std::vector<unsigned>>>(streamID, m_mshr_occupancy_stats.at(streamID)));
-  }
-  for (auto iter = m_l1d_miss_served_cycles.begin(); 
-    iter != m_l1d_miss_served_cycles.end(); ++iter) {
+  }     
+  for (auto iter = m_overall_avg_l1d_rd_fill_to_evict_gap.begin(); 
+    iter != m_overall_avg_l1d_rd_fill_to_evict_gap.end(); ++iter) {
     unsigned long long streamID = iter->first;
-    ret.m_l1d_miss_served_cycles.insert(
+    ret.m_overall_avg_l1d_rd_fill_to_evict_gap.insert(
       std::pair<unsigned long long, unsigned long long>(
-        streamID, m_l1d_miss_served_cycles.at(streamID)));
-  }  
+        streamID, m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID)));
+  }
+  for (auto iter = m_l1d_rd_miss_served_cycles.begin(); 
+    iter != m_l1d_rd_miss_served_cycles.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    ret.m_l1d_rd_miss_served_cycles.insert(
+      std::pair<unsigned long long, unsigned long long>(
+        streamID, m_l1d_rd_miss_served_cycles.at(streamID)));
+  }    
+  for (auto iter = m_l1d_wr_miss_served_cycles.begin(); 
+    iter != m_l1d_wr_miss_served_cycles.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    ret.m_l1d_wr_miss_served_cycles.insert(
+      std::pair<unsigned long long, unsigned long long>(
+        streamID, m_l1d_wr_miss_served_cycles.at(streamID)));
+  }     
   for (auto iter = m_l1d_misses.begin(); 
     iter != m_l1d_misses.end(); ++iter) {
     unsigned long long streamID = iter->first;
     ret.m_l1d_misses.insert(
       std::pair<unsigned long long, unsigned>(streamID, m_l1d_misses.at(streamID)));
   }
+  for (auto iter = m_l1d_rd_misses.begin(); 
+    iter != m_l1d_rd_misses.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    ret.m_l1d_rd_misses.insert(
+      std::pair<unsigned long long, unsigned>(streamID, m_l1d_rd_misses.at(streamID)));
+  }  
+  for (auto iter = m_l1d_wr_misses.begin(); 
+    iter != m_l1d_wr_misses.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    ret.m_l1d_wr_misses.insert(
+      std::pair<unsigned long long, unsigned>(streamID, m_l1d_wr_misses.at(streamID)));
+  }  
   for (auto iter = m_l2_sub_miss_served_cycles.begin(); 
     iter != m_l2_sub_miss_served_cycles.end(); ++iter) {
     unsigned long long streamID = iter->first;
@@ -2471,18 +2707,42 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
       }
     }
   }
-  for (auto iter = cs.m_l1d_miss_served_cycles.begin(); 
-    iter != cs.m_l1d_miss_served_cycles.end(); ++iter) {  
+  for (auto iter = cs.m_overall_avg_l1d_rd_fill_to_evict_gap.begin(); 
+    iter != cs.m_overall_avg_l1d_rd_fill_to_evict_gap.end(); ++iter) {  
     unsigned long long streamID = iter->first;
-    if (ret.m_l1d_miss_served_cycles.find(streamID) == 
-      ret.m_l1d_miss_served_cycles.end()) {
-      ret.m_l1d_miss_served_cycles.insert(
+    if (ret.m_overall_avg_l1d_rd_fill_to_evict_gap.find(streamID) == 
+      ret.m_overall_avg_l1d_rd_fill_to_evict_gap.end()) {
+      ret.m_overall_avg_l1d_rd_fill_to_evict_gap.insert(
         std::pair<unsigned long long, unsigned long long>(
-          streamID, cs.m_l1d_miss_served_cycles.at(streamID)));
+          streamID, cs.m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID)));
     } else {
-        ret.m_l1d_miss_served_cycles.at(streamID) += cs.m_l1d_miss_served_cycles.at(streamID);      
+        ret.m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID) += cs.m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID);
     }
-  }
+  }   
+  for (auto iter = cs.m_l1d_rd_miss_served_cycles.begin(); 
+    iter != cs.m_l1d_rd_miss_served_cycles.end(); ++iter) {  
+    unsigned long long streamID = iter->first;
+    if (ret.m_l1d_rd_miss_served_cycles.find(streamID) == 
+      ret.m_l1d_rd_miss_served_cycles.end()) {
+      ret.m_l1d_rd_miss_served_cycles.insert(
+        std::pair<unsigned long long, unsigned long long>(
+          streamID, cs.m_l1d_rd_miss_served_cycles.at(streamID)));
+    } else {
+        ret.m_l1d_rd_miss_served_cycles.at(streamID) += cs.m_l1d_rd_miss_served_cycles.at(streamID);      
+    }
+  }  
+  for (auto iter = cs.m_l1d_wr_miss_served_cycles.begin(); 
+    iter != cs.m_l1d_wr_miss_served_cycles.end(); ++iter) {  
+    unsigned long long streamID = iter->first;
+    if (ret.m_l1d_wr_miss_served_cycles.find(streamID) == 
+      ret.m_l1d_wr_miss_served_cycles.end()) {
+      ret.m_l1d_wr_miss_served_cycles.insert(
+        std::pair<unsigned long long, unsigned long long>(
+          streamID, cs.m_l1d_wr_miss_served_cycles.at(streamID)));
+    } else {
+        ret.m_l1d_wr_miss_served_cycles.at(streamID) += cs.m_l1d_wr_miss_served_cycles.at(streamID);      
+    }
+  }    
   for (auto iter = cs.m_l1d_misses.begin(); 
     iter != cs.m_l1d_misses.end(); ++iter) {  
     unsigned long long streamID = iter->first;
@@ -2492,6 +2752,28 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
         std::pair<unsigned long long, unsigned>(streamID, cs.m_l1d_misses.at(streamID)));
     } else {
         ret.m_l1d_misses.at(streamID) += cs.m_l1d_misses.at(streamID);      
+    }
+  }
+  for (auto iter = cs.m_l1d_rd_misses.begin(); 
+    iter != cs.m_l1d_rd_misses.end(); ++iter) {  
+    unsigned long long streamID = iter->first;
+    if (ret.m_l1d_rd_misses.find(streamID) == 
+      ret.m_l1d_rd_misses.end()) {
+      ret.m_l1d_rd_misses.insert(
+        std::pair<unsigned long long, unsigned>(streamID, cs.m_l1d_rd_misses.at(streamID)));
+    } else {
+        ret.m_l1d_rd_misses.at(streamID) += cs.m_l1d_rd_misses.at(streamID);      
+    }
+  }  
+  for (auto iter = cs.m_l1d_wr_misses.begin(); 
+    iter != cs.m_l1d_wr_misses.end(); ++iter) {  
+    unsigned long long streamID = iter->first;
+    if (ret.m_l1d_wr_misses.find(streamID) == 
+      ret.m_l1d_wr_misses.end()) {
+      ret.m_l1d_wr_misses.insert(
+        std::pair<unsigned long long, unsigned>(streamID, cs.m_l1d_wr_misses.at(streamID)));
+    } else {
+        ret.m_l1d_wr_misses.at(streamID) += cs.m_l1d_wr_misses.at(streamID);      
     }
   }
 
@@ -2638,7 +2920,7 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
       }
     }
   }    
-
+  
   ret.m_cache_port_available_cycles =
       m_cache_port_available_cycles + cs.m_cache_port_available_cycles;
   ret.m_cache_data_port_busy_cycles =
@@ -2843,18 +3125,42 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
     }
   } // for (auto iter = cs.m_mshr_occupancy_stats.begin(); iter != cs.m_mshr_occupancy_stats.end(); ++iter) {
 
-  for (auto iter = cs.m_l1d_miss_served_cycles.begin(); 
-    iter != cs.m_l1d_miss_served_cycles.end(); ++iter) {
+  for (auto iter = cs.m_overall_avg_l1d_rd_fill_to_evict_gap.begin(); 
+    iter != cs.m_overall_avg_l1d_rd_fill_to_evict_gap.end(); ++iter) {
     unsigned long long streamID = iter->first;
-    if (m_l1d_miss_served_cycles.find(streamID) == m_l1d_miss_served_cycles.end()) {
-      m_l1d_miss_served_cycles.insert(
+    if (m_overall_avg_l1d_rd_fill_to_evict_gap.find(streamID) == m_overall_avg_l1d_rd_fill_to_evict_gap.end()) {
+      m_overall_avg_l1d_rd_fill_to_evict_gap.insert(
         std::pair<unsigned long long, unsigned long long>(
-          streamID, cs.m_l1d_miss_served_cycles.at(streamID)));
+          streamID, cs.m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID)));
     } else {
-      const char* tgt_item = "m_l1d_miss_served_cycles";
-      m_l1d_miss_served_cycles.at(streamID) += cs(streamID, tgt_item);
+      const char* tgt_item = "m_overall_avg_l1d_rd_fill_to_evict_gap";
+      m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID) += cs(streamID, tgt_item);
     }
   }
+  for (auto iter = cs.m_l1d_rd_miss_served_cycles.begin(); 
+    iter != cs.m_l1d_rd_miss_served_cycles.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    if (m_l1d_rd_miss_served_cycles.find(streamID) == m_l1d_rd_miss_served_cycles.end()) {
+      m_l1d_rd_miss_served_cycles.insert(
+        std::pair<unsigned long long, unsigned long long>(
+          streamID, cs.m_l1d_rd_miss_served_cycles.at(streamID)));
+    } else {
+      const char* tgt_item = "m_l1d_rd_miss_served_cycles";
+      m_l1d_rd_miss_served_cycles.at(streamID) += cs(streamID, tgt_item);
+    }
+  }  
+  for (auto iter = cs.m_l1d_wr_miss_served_cycles.begin(); 
+    iter != cs.m_l1d_wr_miss_served_cycles.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    if (m_l1d_wr_miss_served_cycles.find(streamID) == m_l1d_wr_miss_served_cycles.end()) {
+      m_l1d_wr_miss_served_cycles.insert(
+        std::pair<unsigned long long, unsigned long long>(
+          streamID, cs.m_l1d_wr_miss_served_cycles.at(streamID)));
+    } else {
+      const char* tgt_item = "m_l1d_wr_miss_served_cycles";
+      m_l1d_wr_miss_served_cycles.at(streamID) += cs(streamID, tgt_item);
+    }
+  }    
   for (auto iter = cs.m_l1d_misses.begin(); 
     iter != cs.m_l1d_misses.end(); ++iter) {
     unsigned long long streamID = iter->first;
@@ -2867,6 +3173,30 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
       m_l1d_misses.at(streamID) += static_cast<unsigned>(cs(streamID, tgt_item));
     }
   }  
+  for (auto iter = cs.m_l1d_rd_misses.begin(); 
+    iter != cs.m_l1d_rd_misses.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    if (m_l1d_rd_misses.find(streamID) == m_l1d_rd_misses.end()) {
+      m_l1d_rd_misses.insert(
+        std::pair<unsigned long long, unsigned>(
+          streamID, cs.m_l1d_rd_misses.at(streamID)));
+    } else {
+      const char* tgt_item = "m_l1d_rd_misses";
+      m_l1d_rd_misses.at(streamID) += static_cast<unsigned>(cs(streamID, tgt_item));
+    }
+  }  
+  for (auto iter = cs.m_l1d_wr_misses.begin(); 
+    iter != cs.m_l1d_wr_misses.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    if (m_l1d_wr_misses.find(streamID) == m_l1d_wr_misses.end()) {
+      m_l1d_wr_misses.insert(
+        std::pair<unsigned long long, unsigned>(
+          streamID, cs.m_l1d_wr_misses.at(streamID)));
+    } else {
+      const char* tgt_item = "m_l1d_wr_misses";
+      m_l1d_wr_misses.at(streamID) += static_cast<unsigned>(cs(streamID, tgt_item));
+    }
+  }    
 
   for (auto iter = cs.m_l2_sub_miss_served_cycles.begin(); 
     iter != cs.m_l2_sub_miss_served_cycles.end(); ++iter) {
@@ -3186,19 +3516,44 @@ void cache_stats::print_l2_icnt_queue_stats(
   }
 }
 
-void cache_stats::print_avg_core_cache_miss_served_cycles(
+void cache_stats::print_avg_l1d_rd_fill_to_evict_gap(
   FILE* fout, unsigned long long streamID) const {
-  for (auto iter = m_l1d_miss_served_cycles.begin();
-    iter != m_l1d_miss_served_cycles.end(); ++iter)
+  for (auto iter = m_overall_avg_l1d_rd_fill_to_evict_gap.begin();
+    iter != m_overall_avg_l1d_rd_fill_to_evict_gap.end(); ++iter)
   {
     if ((streamID != ((unsigned long long) - 1)) && (iter->first != streamID)) {
       continue;
     }
-
-    float avg_l1d_miss_served_cycles = 
-    ((float)m_l1d_miss_served_cycles.at(streamID) / m_l1d_misses.at(streamID));
-
-    fprintf(fout, "\tavg_l1d_miss_served_cycles = %f\n", avg_l1d_miss_served_cycles);      
+    fprintf(fout, "\tm_overall_avg_l1d_rd_fill_to_evict_gap = %llu\n", 
+      m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID));
+    printf("\tm_overall_avg_l1d_rd_fill_to_evict_gap = %llu\n", 
+      m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID));
+  }
+}
+void cache_stats::print_avg_l1d_rd_miss_served_cycles(
+  FILE* fout, unsigned long long streamID) const {
+  for (auto iter = m_l1d_rd_miss_served_cycles.begin();
+    iter != m_l1d_rd_miss_served_cycles.end(); ++iter)
+  {
+    if ((streamID != ((unsigned long long) - 1)) && (iter->first != streamID)) {
+      continue;
+    }
+    fprintf(fout, "\tavg_l1d_rd_miss_served_cycles = %llu\n", 
+      m_l1d_rd_miss_served_cycles.at(streamID));
+    printf("\tavg_l1d_rd_miss_served_cycles = %llu\n", 
+      m_l1d_rd_miss_served_cycles.at(streamID));
+  }  
+}
+void cache_stats::print_avg_l1d_wr_miss_served_cycles(
+  FILE* fout, unsigned long long streamID) const {
+  for (auto iter = m_l1d_wr_miss_served_cycles.begin();
+    iter != m_l1d_wr_miss_served_cycles.end(); ++iter)
+  {
+    if ((streamID != ((unsigned long long) - 1)) && (iter->first != streamID)) {
+      continue;
+    }
+    fprintf(fout, "\tavg_l1d_wr_miss_served_cycles = %llu\n", 
+      m_l1d_wr_miss_served_cycles.at(streamID));
   }  
 }
 
@@ -3300,14 +3655,48 @@ void cache_stats::get_sub_stats(struct cache_sub_stats &css) const {
     unsigned long long streamID = iter->first;
     for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
       for (unsigned status = 0; status < NUM_CACHE_REQUEST_STATUS; ++status) {
-        if (status == HIT || status == MISS || status == SECTOR_MISS || status == HIT_RESERVED) {
+        if (status == BYPASS) {
+          t_css.rd_bypasses += m_stats.at(streamID)[type][status];
+        } 
+        else if (status == HIT || status == MISS || status == SECTOR_MISS || status == HIT_RESERVED) {
           t_css.accesses += m_stats.at(streamID)[type][status];
-        }      
+          if (type == GLOBAL_ACC_R || type == CONST_ACC_R || type == INST_ACC_R) {
+            t_css.reads += m_stats.at(streamID)[type][status];
+            // for debug
+            if (DTRACE(TRACE_RD_MISS_CNT)) {
+              fprintf(Trace::out, "t_css.reads:%llu += "
+                "m_stats.at(streamID)[type][status]:%llu\n", 
+                t_css.reads, m_stats.at(streamID)[type][status]);
+            }
+            // printf("t_css.reads += %llu -> = %llu\n", 
+            //   m_stats.at(streamID)[type][status], t_css.reads);            
+          } else {
+            t_css.writes += m_stats.at(streamID)[type][status];
+          }
+        }
         if (status == MISS) {
+          if (type == GLOBAL_ACC_R || type == CONST_ACC_R || type == INST_ACC_R) {
+            t_css.rd_misses += m_stats.at(streamID)[type][status];
+          } else if (type == GLOBAL_ACC_W) {
+            t_css.wr_misses += m_stats.at(streamID)[type][status];
+          }
           t_css.misses += m_stats.at(streamID)[type][status];
           t_css.avg_evict_interval += m_evict_stats.at(streamID);
         }
-        if (status == SECTOR_MISS) {          
+        if (status == SECTOR_MISS) {
+          if (type == GLOBAL_ACC_R || type == CONST_ACC_R || type == INST_ACC_R) {
+            t_css.sector_rd_misses += m_stats.at(streamID)[type][status];
+            // for debug
+            if (DTRACE(TRACE_RD_MISS_CNT)) {
+              fprintf(Trace::out, "t_css.sector_rd_misses:%llu += "
+                "m_stats.at(streamID)[type][status]:%llu\n", 
+                t_css.sector_rd_misses, m_stats.at(streamID)[type][status]);
+            }
+            // printf("t_css.sector_rd_misses += %llu -> = %llu\n", 
+            //   m_stats.at(streamID)[type][status], t_css.sector_rd_misses);
+          } else {
+            t_css.sector_wr_misses += m_stats.at(streamID)[type][status];
+          }      
           t_css.sector_misses += m_stats.at(streamID)[type][status];
         }        
         if (status == HIT_RESERVED) {
@@ -3342,8 +3731,7 @@ void cache_stats::get_sub_stats_pw(struct cache_sub_stats_pw &css) const {
           t_css.accesses += m_stats_pw.at(streamID)[type][status];
         }
         if (status == HIT) {
-          if (type == GLOBAL_ACC_R || type == CONST_ACC_R ||
-              type == INST_ACC_R) {
+          if (type == GLOBAL_ACC_R || type == CONST_ACC_R || type == INST_ACC_R) {
             t_css.read_hits += m_stats_pw.at(streamID)[type][status];
           } else if (type == GLOBAL_ACC_W) {
             t_css.write_hits += m_stats_pw.at(streamID)[type][status];
@@ -3610,25 +3998,25 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
   // [GPGPU-SIM][TODO]
   // assert(mf->get_original_mf());
 
-  if (m_config.m_bypass_low_loc_lines == 'T') 
-  {
-    assert(m_is_l1d);
-    if (mf->get_l1d_bypass_noalloc()) {
-      assert(!mf->is_write());
-      assert(!mf->isatomic());
-      extra_mf_fields_lookup::iterator e = m_extra_mf_fields.find(mf);
-      if (e != m_extra_mf_fields.end()) {
-        if (DTRACE(VERIFY_L1D_BYPASS)) {
-          fprintf(Trace::out, "%llu L1D bypassed fill for mf uid:%u addr:%#llx\n",
-            time, mf->get_inst().get_uid(), mf->get_addr());
-        }
-      }
-      // case can pass (m_lfb.push_back should not be bypassed)
-      // m_extra_mf_fields.erase(e);
-      // mf->set_l1d_bypass_noalloc(false);
-      // return;
-    }
-  }
+  // if (m_config.m_bypass_low_loc_lines == 'T') 
+  // {
+  //   assert(m_is_l1d);
+  //   if (mf->get_l1d_bypass_noalloc()) {
+  //     assert(!mf->is_write());
+  //     assert(!mf->isatomic());
+  //     extra_mf_fields_lookup::iterator e = m_extra_mf_fields.find(mf);
+  //     if (e != m_extra_mf_fields.end()) {
+  //       if (DTRACE(VERIFY_L1D_BYPASS)) {
+  //         fprintf(Trace::out, "%llu L1D bypassed fill for mf uid:%u addr:%#llx\n",
+  //           time, mf->get_inst().get_uid(), mf->get_addr());
+  //       }
+  //     }
+  //     // case can pass (m_lfb.push_back should not be bypassed)
+  //     // m_extra_mf_fields.erase(e);
+  //     // mf->set_l1d_bypass_noalloc(false);
+  //     // return;
+  //   }
+  // }
 
   extra_mf_fields_lookup::iterator e = m_extra_mf_fields.find(mf);
   assert(e != m_extra_mf_fields.end());
@@ -3640,28 +4028,32 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
     if (DTRACE(CACHE_MISS)) {      
       dump_cache_fill_info("::fill ", e->second.m_addr, mf, time);
     }
-    if (DTRACE(CACHE_EVENT)) {
-      // 5537 L1D stage(::fill) cache_event(ap:ON_MISS m_tag_array->fill) 
-      // mf:{TPC:0 SM:0 WARP:3 req_uid:1088 addr:0xfffdc000000000 acc_type:GLOBAL_ACC_R 
-      // pos:IN_SHADER_LDST_RESPONSE_FIFO}
-      dumpCacheEvent(time, "::fill", "ap:ON_MISS m_tag_array->fill", mf);
-    }
 
     if (m_config.m_bypass_low_loc_lines == 'T') {
       assert(m_is_l1d);
-      auto trashed_addresses = m_tag_array->get_trashed_pkts();
-      REQ_PKT req_pkt(mf->get_inst().get_uid(), mf->get_addr());
-      auto it = trashed_addresses.find(req_pkt);
-      if (it == trashed_addresses.end()) {
+      if (!m_tag_array->hit_l1d_bypassed_item(mf)) {
+        if (DTRACE(CACHE_EVENT)) {
+          dumpCacheEvent(time, "::fill", "ap:ON_MISS m_tag_array->fill", mf);
+        }
         m_tag_array->fill(e->second.m_cache_index, time, mf);
       } else {
-        if (DTRACE(TRACE_BYPASSED_L1D_PKT)) {
+        // [Bugfix]
+        // <uid, addr> matches does not mean req_uid also matches
+        // mf indicates specific req_uid.
+        // Hence, mf->get_l1d_bypass_noalloc() might failed here for detecting a different req_uid
+        // req_uid:184804 != req_uid:184805
+        // 37245 In tag_array::probe, m_trashed_reqs.insert trashed mf <req_uid:184804 uid:174712 block_addr:0x7fc72575dd80> addr:0x7fc72575dda0. set_l1d_bypass_noalloc(true)
+        // 38003 L1D stage(baseline_cache::fill) cache_event(Why hit trashed_addresses but !get_l1d_bypass_noalloc ?) 
+        // mf:{TPC:0 SM:0 WARP:7 req_uid:184805 uid:174712 block_addr:0x7fc72575dd80 addr:0x7fc72575dd80 acc_type:GLOBAL_ACC_R pos:IN_SHADER_LDST_RESPONSE_FIFO}
+        if (DTRACE(TRACE_BYPASSED_L1D_PKT) || DTRACE(HIT_L1D_BYPASSED_ITEM)) {
           dumpCacheEvent(time, "baseline_cache::fill", 
-            "L1D bypassed m_tag_array->fill", mf);
-        }
-        assert(mf->get_l1d_bypass_noalloc()); // case can pass
+            "HIT_L1D_BYPASSED_ITEM L1D bypassed m_tag_array->fill", mf);
+        }        
       }
     } else {
+      if (DTRACE(CACHE_EVENT)) {
+        dumpCacheEvent(time, "::fill", "ap:ON_MISS m_tag_array->fill", mf);
+      }
       m_tag_array->fill(e->second.m_cache_index, time, mf);
     }
     // m_tag_array->fill(e->second.m_cache_index, time, mf); // default logic
@@ -3679,43 +4071,71 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
   if (m_config.m_mshr_disable == 'T') {
     has_atomic = mf->isatomic();
     m_lfb.push_back(mf); // !!! L1D bypass should only be applied to replacement
-
-    if (m_config.m_bypass_low_loc_lines == 'T' && mf->get_l1d_bypass_noalloc()) {
+    
+    if (m_config.m_bypass_low_loc_lines == 'T' && m_tag_array->hit_l1d_bypassed_item(mf)) {
       assert(m_is_l1d);
-      if (DTRACE(TRACE_BYPASSED_L1D_PKT)) {
+      if (DTRACE(TRACE_BYPASSED_L1D_PKT) || DTRACE(HIT_L1D_BYPASSED_ITEM)) {
         dumpCacheEvent(time, "baseline_cache::fill", 
-          "Bypassed L1D pkt should still m_lfb.push_back", mf);
+          "HIT_L1D_BYPASSED_ITEM Bypassed L1D pkt should still m_lfb.push_back", mf);
       }
     }
 
-    if (!strcmp(m_config.m_cache_name,"L2")) {
+    if (m_is_l2) {
       m_stats.inc_l2_sub_miss_served_cycles(
         mf->get_streamID(), mf->get_sub_partition(),
         time - mf->m_miss_serve_begin_time);
       m_stats.inc_l2_sub_misses(mf->get_streamID(), mf->get_sub_partition());
-    } else if (!strcmp(m_config.m_cache_name,"L1D")) {
-      m_stats.inc_l1d_miss_served_cycles(
-        mf->get_streamID(), time - mf->m_miss_serve_begin_time);
-      m_stats.inc_l1d_misses(mf->get_streamID());
+    } else if (m_is_l1d) {
+      if (!mf->is_write() && !mf->isatomic()) {
+        m_tag_array->set_l1d_rd_fill_time(m_config.block_addr(mf->get_addr()), time);
+
+        if (DTRACE(L1D_FILL_TIME)) {
+          fprintf(Trace::out, "%llu "
+            "m_tag_array->m_l1d_rd_fill_time[block_addr:%#llx] = %llu "
+            "for mf <req_uid:%u uid:%u addr:%#llx>\n",
+            time, m_config.block_addr(mf->get_addr()), time,
+            mf->get_request_uid(), mf->get_inst().get_uid(), mf->get_addr());
+        }  
+
+        mf->set_l1d_rd_miss_served_time(time - mf->m_l1d_rd_miss_serve_begin_time);
+        m_stats.avg_l1d_rd_miss_served_cycles(
+          mf->get_streamID(), time - mf->m_l1d_rd_miss_serve_begin_time);
+        m_stats.inc_l1d_rd_misses(mf->get_streamID());
+        if (DTRACE(L1D_MISS_SERVED_CYCLES)) {
+          fprintf(Trace::out, "%llu l1d_rd_miss_served_cycles[addr:%#llx] = %llu\n", 
+            time, mf->get_addr(), 
+            time - mf->m_l1d_rd_miss_serve_begin_time);
+        }
+      } else if (mf->is_write()) {
+        m_stats.inc_l1d_wr_miss_served_cycles(
+          mf->get_streamID(), time - mf->m_wr_miss_serve_begin_time);
+        m_stats.inc_l1d_wr_misses(mf->get_streamID());
+      }
     }
-  } else {
+  } else {  
     m_mshrs.mark_ready(m_is_l2 ? "L2" : m_is_l1d ? "L1D" : "other$", 
       e->second.m_block_addr, has_atomic, time);
     m_tag_array->m_total_records_in_mshr++;
 
-    if (!strcmp(m_config.m_cache_name,"L2")) {
+    if (m_is_l2) {
       m_stats.inc_l2_sub_miss_served_cycles(
         mf->get_streamID(), mf->get_sub_partition(),
         time - mf->m_miss_serve_begin_time);
       m_stats.inc_l2_sub_misses(mf->get_streamID(), mf->get_sub_partition());
-    } else if (!strcmp(m_config.m_cache_name,"L1D")) {
-      m_stats.inc_l1d_miss_served_cycles(
-        mf->get_streamID(), time - mf->m_miss_serve_begin_time);
-      m_stats.inc_l1d_misses(mf->get_streamID());
+    } else if (m_is_l1d) {
+      if (!mf->is_write() && !mf->isatomic()) {
+        m_stats.avg_l1d_rd_miss_served_cycles(
+          mf->get_streamID(), time - mf->m_l1d_rd_miss_serve_begin_time);
+        m_stats.inc_l1d_rd_misses(mf->get_streamID());
+      } else if (mf->is_write()) {
+        m_stats.inc_l1d_wr_miss_served_cycles(
+          mf->get_streamID(), time - mf->m_wr_miss_serve_begin_time);
+        m_stats.inc_l1d_wr_misses(mf->get_streamID());
+      }
     }
 
     std::string str_cache_name = m_config.get_cache_name();
-    if (!strcmp(m_config.get_cache_name(), "L2") && mf) {
+    if (m_is_l2 && mf) {
       str_cache_name += "_sub[";
       str_cache_name += std::to_string(mf->get_sub_partition());
       str_cache_name += "]";
@@ -3785,14 +4205,15 @@ void baseline_cache::dumpCacheEvent(
     );
   } else {
     fprintf(Trace::out, "%llu %s%s stage(%s) cache_event(%s) "
-      "mf:{TPC:%u SM:%u WARP:%u req_uid:%u uid:%u addr:%#llx acc_type:%s pos:%s}\n", 
+      "mf:{TPC:%u SM:%u WARP:%u req_uid:%u uid:%u block_addr:%#llx addr:%#llx acc_type:%s pos:%s}\n", 
       time, cache_name, suffix.c_str(), stage, event,
       mf->get_tpc(), mf->get_sid(), mf->get_wid(), 
       mf->get_request_uid(), mf->get_inst().get_uid(), 
+      m_config.block_addr(mf->get_addr()),
       mf->get_addr(), // mf info
       mem_access_type_str(mem_access_type(mf->get_access_type())),
       mf->mem_fetch_status_str(mf->get_status())
-    );
+    );    
   }
 }
 
@@ -3925,24 +4346,22 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
       if (read_only) {
         m_tag_array->access(block_addr, time, cache_index, mf);
       } else {
+        // 3/10 Seems alike above but performs better ?
         if (m_config.m_bypass_low_loc_lines == 'T') {
           assert(m_is_l1d);
-          // case can pass
-          auto trashed_addresses = m_tag_array->get_trashed_pkts();
-          REQ_PKT req_pkt(mf->get_inst().get_uid(), mf->get_addr());
-          auto it = trashed_addresses.find(req_pkt);
-          if (it == trashed_addresses.end()) { // case can pass as well                
-            assert(!mf->get_l1d_bypass_noalloc());
+          if (!m_tag_array->hit_l1d_bypassed_item(mf)) {
             m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);  
           } else {
-            if (DTRACE(TRACE_BYPASSED_L1D_PKT) || DTRACE(BYPASS_L1D_ALLOC)) {
+            if (DTRACE(TRACE_BYPASSED_L1D_PKT) || 
+                DTRACE(BYPASS_L1D_ALLOC) || DTRACE(HIT_L1D_BYPASSED_ITEM)) {
               dumpCacheEvent(time, "baseline_cache::send_read_request", 
-                "Bypassed m_tag_array->access", mf);
+                "HIT_L1D_BYPASSED_ITEM Bypassed m_tag_array->access", mf);
             }
           }
         } else {
           m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
-        }        
+        }
+
         // m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf); // default
       }
 
@@ -3950,7 +4369,7 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
       m_extra_mf_fields[mf] = extra_mf_fields(
           mshr_addr, mf->get_addr(), 
           cache_index, mf->get_data_size(), 
-          m_config, mf->get_l1d_bypass_noalloc());
+          m_config, m_tag_array->hit_l1d_bypassed_item(mf));
 
       mf->set_data_size(m_config.get_atom_sz());
       mf->set_addr(mshr_addr);
@@ -3963,9 +4382,10 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
           "2. mf set MetaData {data_size, addr, status} "
           "3. m_miss_queue.push_back(mf)", mf);
       }
-      if (DTRACE(TRACE_BYPASSED_L1D_PKT)) {
-        if (mf->get_l1d_bypass_noalloc()) {
+      if (DTRACE(TRACE_BYPASSED_L1D_PKT) || DTRACE(HIT_L1D_BYPASSED_ITEM)) {
+        if (m_tag_array->hit_l1d_bypassed_item(mf)) {
           dumpCacheEvent(time, "baseline_cache::send_read_request", 
+            "HIT_L1D_BYPASSED_ITEM l1d_bypassed_item should also "
             "1. new extra_mf_fields[mf] "
             "2. mf set MetaData {data_size, addr, status} "
             "3. m_miss_queue.push_back(mf)", mf);          
@@ -4079,10 +4499,7 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
       bool is_new_mshr_entry = false;
 
       if (m_config.m_bypass_low_loc_lines == 'T') {
-        auto trashed_addresses = m_tag_array->get_trashed_pkts();
-        REQ_PKT req_pkt(mf->get_inst().get_uid(), mf->get_addr());
-        auto it = trashed_addresses.find(req_pkt);
-        if (it == trashed_addresses.end()) {
+        if (!m_tag_array->hit_l1d_bypassed_item(mf)) {
           m_tag_array->set_recorded_in_mshr(cache_index);
         } else {
           // assert(!(*it)->isatomic());
@@ -4107,7 +4524,7 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
       m_extra_mf_fields[mf] = extra_mf_fields(
           mshr_addr, mf->get_addr(), cache_index, 
           mf->get_data_size(), 
-          m_config, mf->get_l1d_bypass_noalloc());
+          m_config, m_tag_array->hit_l1d_bypassed_item(mf));
 
       mf->set_data_size(m_config.get_atom_sz());
       mf->set_addr(mshr_addr);
@@ -4753,16 +5170,13 @@ enum cache_request_status data_cache::rd_hit_base(
     unsigned long long time,
     std::list<cache_event> &events, enum cache_request_status status) {
   new_addr_type block_addr = m_config.block_addr(addr);
-  if (!mf->get_l1d_bypass_noalloc()) {
-    // assert(!mf->isatomic());
-    m_tag_array->access(block_addr, time, cache_index, mf);  
-  } else {
-    if (DTRACE(TRACE_BYPASSED_L1D_PKT)) {
-      dumpCacheEvent(time, "data_cache::rd_hit_base", 
-        "Bypassed m_tag_array->access", mf);
-    }
+
+  if (m_config.m_bypass_low_loc_lines == 'T') {
+    // L1D bypassed pkt can never enter here
+    assert(!m_tag_array->hit_l1d_bypassed_item(mf));
   }
-  // m_tag_array->access(block_addr, time, cache_index, mf); // default
+
+  m_tag_array->access(block_addr, time, cache_index, mf); // default
   // Atomics treated as global read/write requests - Perform read, mark line as
   // MODIFIED
   if (mf->isatomic()) {
@@ -4926,7 +5340,7 @@ enum cache_request_status data_cache::process_tag_probe(
 
       access_status = (this->*m_wr_miss)(addr, cache_index, mf, time, events, probe_status);
       if (access_status == cache_request_status::MISS) {
-        mf->set_miss_serve_begin_time(time);
+        mf->set_wr_miss_serve_begin_time(time);
       }      
     } else {
       // the only reason for reservation fail here is LINE_ALLOC_FAIL (i.e all
@@ -4937,9 +5351,11 @@ enum cache_request_status data_cache::process_tag_probe(
   } else {  // Read
     if (probe_status == HIT) {
       // newly added assertion to ensure bypassed L1D req would never enter read hit path
-      // case can pass ?
-      if (mf->get_l1d_bypass_noalloc()) {
-        assert(!m_is_l1d);
+      // case can pass
+      if (m_config.m_bypass_low_loc_lines == 'T') {
+        if (m_tag_array->hit_l1d_bypassed_item(mf)) {
+         assert(!m_is_l1d);
+        }
       }
 
       access_status = (this->*m_rd_hit)(addr, cache_index, mf, time, events, probe_status);
@@ -4950,7 +5366,7 @@ enum cache_request_status data_cache::process_tag_probe(
       }
       access_status = (this->*m_rd_miss)(addr, cache_index, mf, time, events, probe_status);
       if (access_status == cache_request_status::MISS) {
-        mf->set_miss_serve_begin_time(time);
+        mf->set_rd_miss_serve_begin_time(time);
       }
     } else {
       // the only reason for reservation fail here is LINE_ALLOC_FAIL (i.e all
@@ -4991,13 +5407,13 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
 
   enum cache_request_status probe_status = cache_request_status::MISS;
   if (m_config.m_bypass_low_loc_lines == 'T') {
-    if (mf->get_l1d_bypass_noalloc()) {
+    if (m_tag_array->hit_l1d_bypassed_item(mf)) {
       assert(!mf->is_write());
       assert(!mf->isatomic());
 
-      if (DTRACE(TRACE_BYPASSED_L1D_PKT)) {
+      if (DTRACE(TRACE_BYPASSED_L1D_PKT) || DTRACE(HIT_L1D_BYPASSED_ITEM)) {
         dumpCacheEvent(time, "data_cache::access", 
-          "Bypassed m_tag_array->probe", mf);
+          "HIT_L1D_BYPASSED_ITEM Bypassed m_tag_array->probe", mf);
       }
     } else {
       if (DTRACE(TAG_PROBE)) {
@@ -5005,7 +5421,7 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
           "get_l1d_bypass_noalloc = %u. Before tag_array->probe "
           "for mf uid:%u addr:%#llx, probe_status = %s\n",
           time, m_config.get_cache_name(), 
-          mf->get_l1d_bypass_noalloc(),
+          m_tag_array->hit_l1d_bypassed_item(mf),
           mf->get_inst().get_uid(), mf->get_addr(),
           cache_request_status_str(probe_status));                  
       }
@@ -5023,7 +5439,7 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
           "get_l1d_bypass_noalloc = %u. After tag_array->probe "
           "for mf uid:%u addr:%#llx, probe_status = %s\n",
           time, m_config.get_cache_name(), 
-          mf->get_l1d_bypass_noalloc(),
+          m_tag_array->hit_l1d_bypassed_item(mf),
           mf->get_inst().get_uid(), mf->get_addr(),
           cache_request_status_str(probe_status));
       }
@@ -5041,7 +5457,7 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
         "After tag_array->probe "
         "for mf uid:%u addr:%#llx, probe_status = %s\n",
         time, m_config.get_cache_name(), 
-        mf->get_l1d_bypass_noalloc(),
+        m_tag_array->hit_l1d_bypassed_item(mf),
         mf->get_inst().get_uid(), mf->get_addr(),
         cache_request_status_str(probe_status));
     }       
@@ -5080,33 +5496,58 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
   // std::vector<std::set<new_addr_type>> l1d_unique_lines = m_tag_array->get_l1d_unique_lines();
   // m_gpu->get_shader_stats()->m_unique_cachelines[sid] = l1d_unique_lines[sid].size();
 
-  if (m_config.m_bypass_low_loc_lines == 'T' && m_is_l1d && mf && mf->get_l1d_bypass_noalloc()) {
-    if (probe_status != cache_request_status::MISS) {
-      if (DTRACE(TRACE_BYPASSED_L1D_PKT)) {
-        fprintf(Trace::out, "%llu %s Why probe_status:%s != MISS for bypassed "
-          "mf uid:%u addr:%#llx\n",
-          time, m_config.get_cache_name(), 
-          cache_request_status_str(probe_status),
-          mf->get_inst().get_uid(), mf->get_addr());
+  [[maybe_unused]] bool bypass_inc_miss_cnt = false;
+  if (m_config.m_bypass_low_loc_lines == 'T') {
+    if (m_tag_array->hit_l1d_bypassed_item(mf)) {
+      bypass_inc_miss_cnt = true;
+      assert(m_is_l1d);
+      new_addr_type block_addr = m_config.block_addr(mf->get_addr());
+      // Update shader stats by L1D probed result
+      m_stats.overall_average_l1d_rd_fill_to_evict_gap(
+        mf->get_streamID(), m_tag_array->get_l1d_rd_fill_to_evict_gap(block_addr));
+       
+      if (DTRACE(HIT_L1D_BYPASSED_ITEM)) {
+        dumpCacheEvent(time, "data_cache::access", 
+          "HIT_L1D_BYPASSED_ITEM Bypassed m_tag_array->probe", mf);
       }
+
+      if (probe_status != cache_request_status::MISS) {
+        if (DTRACE(TRACE_BYPASSED_L1D_PKT)) {
+          fprintf(Trace::out, "%llu %s Why probe_status:%s != MISS for bypassed "
+            "mf uid:%u addr:%#llx\n",
+            time, m_config.get_cache_name(), 
+            cache_request_status_str(probe_status),
+            mf->get_inst().get_uid(), mf->get_addr());
+        }
+      }
+      assert(probe_status == cache_request_status::MISS);
     }
-    assert(probe_status == cache_request_status::MISS);
   }
 
   enum cache_request_status access_status = process_tag_probe(wr, probe_status, addr, cache_index, mf, time, events);
+  enum cache_request_status access_stats_bak = access_status;
 
   if (DTRACE(CACHE_EVENT)) {
     dumpCacheEvent(time, "data_cache::access", "process_tag_probe", mf);
   }
-      
+
+  if (m_config.m_bypass_low_loc_lines == 'T') {
+    if (m_tag_array->hit_l1d_bypassed_item(mf)) {
+      access_status = cache_request_status::BYPASS; // only for inc_stats
+    }
+  }
+
   m_stats.inc_stats(mf->get_access_type(),
                     m_stats.select_stats_status(probe_status, access_status),
                     mf->get_streamID());
+
   m_stats.update_evict_stats(mf->get_streamID(), mf->get_victim_avg_evict_interval());
 
   m_stats.inc_stats_pw(mf->get_access_type(),
                        m_stats.select_stats_status(probe_status, access_status),
                        mf->get_streamID());
+
+  access_status = access_stats_bak; // Restore access_status for ack with upper-level
 
   if (m_is_l1d) {
     uint64_t lat_from_sched_to_access = time - m_gpu->sched_cycle[mf->get_pc()];

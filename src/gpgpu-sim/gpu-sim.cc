@@ -1630,8 +1630,14 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
   printf("gpu_ipc = %12.4f\n", (float)gpu_sim_insn / gpu_sim_cycle);
   printf("gpu_tot_sim_cycle = %lld\n", gpu_tot_sim_cycle + gpu_sim_cycle);
   printf("gpu_tot_sim_insn = %lld\n", gpu_tot_sim_insn + gpu_sim_insn);
-  printf("gpu_tot_ipc = %12.4f\n", (float)(gpu_tot_sim_insn + gpu_sim_insn) /
-                                       (gpu_tot_sim_cycle + gpu_sim_cycle));
+  // printf("gpu_tot_ipc = %12.4f\n", (float)(gpu_tot_sim_insn + gpu_sim_insn) /
+  //                                      (gpu_tot_sim_cycle + gpu_sim_cycle));
+  printf("gpu_tot_ipc = %12.4f = "
+    "(gpu_tot_sim_insn:%llu + gpu_sim_insn:%llu) / "
+    "(gpu_tot_sim_cycle:%llu + gpu_sim_cycle:%llu)\n", 
+    (float)(gpu_tot_sim_insn + gpu_sim_insn) / (gpu_tot_sim_cycle + gpu_sim_cycle),
+    gpu_tot_sim_insn, gpu_sim_insn, gpu_tot_sim_cycle, gpu_sim_cycle);
+
   printf("gpu_tot_issued_cta = %lld\n",
          gpu_tot_issued_cta + m_total_cta_launched);
   printf("gpu_occupancy = %.4f%% \n", gpu_occupancy.get_occ_fraction() * 100);
@@ -2165,8 +2171,12 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
   printf("\nTotal_core_cache_stats:\n");
   core_cache_stats.print_stats(stdout, streamID, "Total_core_cache_stats_breakdown");
 
-  printf("Gather average core_cache_miss_served_cycles:\n");
-  core_cache_stats.print_avg_core_cache_miss_served_cycles(stdout, streamID);  
+  printf("Gather average l1d_rd_fill_to_evict_gap:\n");
+  core_cache_stats.print_avg_l1d_rd_fill_to_evict_gap(stdout, streamID);
+  printf("Gather average l1d_rd_miss_served_cycles:\n");
+  core_cache_stats.print_avg_l1d_rd_miss_served_cycles(stdout, streamID);
+  printf("Gather average l1d_wr_miss_served_cycles:\n");
+  core_cache_stats.print_avg_l1d_wr_miss_served_cycles(stdout, streamID);
 
   printf("\nTotal_core_cache_fail_stats:\n");
   core_cache_stats.print_fail_stats(stdout, streamID, "breakdown");
