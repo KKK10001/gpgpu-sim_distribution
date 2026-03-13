@@ -1630,8 +1630,6 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
   printf("gpu_ipc = %12.4f\n", (float)gpu_sim_insn / gpu_sim_cycle);
   printf("gpu_tot_sim_cycle = %lld\n", gpu_tot_sim_cycle + gpu_sim_cycle);
   printf("gpu_tot_sim_insn = %lld\n", gpu_tot_sim_insn + gpu_sim_insn);
-  // printf("gpu_tot_ipc = %12.4f\n", (float)(gpu_tot_sim_insn + gpu_sim_insn) /
-  //                                      (gpu_tot_sim_cycle + gpu_sim_cycle));
   printf("gpu_tot_ipc = %12.4f = "
     "(gpu_tot_sim_insn:%llu + gpu_sim_insn:%llu) / "
     "(gpu_tot_sim_cycle:%llu + gpu_sim_cycle:%llu)\n", 

@@ -57,7 +57,8 @@ enum cache_request_status {
   RESERVATION_FAIL,
   SECTOR_MISS,
   MSHR_HIT, // only stats related
-  BYPASS, 
+  BYPASS_ACTIVATED,
+  BYPASS_DEACTIVATED,
   NUM_CACHE_REQUEST_STATUS
 };
 
@@ -1638,11 +1639,21 @@ struct REQ_PKT
 
 class tag_array {
   friend class baseline_cache;
-  friend class cache_config;
+  friend class data_cache;
+  friend class cache_config;  
  public:
   // Use this constructor
   tag_array(gpgpu_sim *gpu, cache_config &config, int core_id, int type_id);
   ~tag_array();
+
+  unsigned get_avg_l1d_byp_activated_times() {
+    unsigned total_times = 0;
+    for (const auto& entry : m_l1d_rd_byp_activated_times) {
+      total_times += entry.second;
+    }
+    float avg_times = total_times / (float)m_l1d_rd_byp_activated_times.size();
+    return static_cast<unsigned>(avg_times);
+  }
 
   std::vector<std::set<new_addr_type>> get_l1d_unique_lines() {
     return m_l1d_unique_lines;
@@ -1902,6 +1913,8 @@ class tag_array {
   std::map<new_addr_type /* block_addr */, unsigned long long /* cycles */> m_l1d_rd_fill_time;
   std::map<new_addr_type /* block_addr */, unsigned long long /* cycles */> m_l1d_evict_time;
   std::map<new_addr_type /* block_addr */, unsigned long long /* cycles */> m_l1d_rd_fill_to_evict_gap;
+  std::map<new_addr_type /* block_addr */, unsigned> m_l1d_rd_byp_activated_times;
+  std::map<new_addr_type /* block_addr */, unsigned> m_l1d_rd_byp_deactivated_times;
   std::map<new_addr_type /* block_addr */, bool> m_1st_time_l1d_rd_fill_to_evict;
   std::map<new_addr_type /* block_addr */, int> m_l1d_rd_bypass_confidence;
   std::map<new_addr_type /* block_addr */, bool> m_l1d_rd_bypass_activated;
@@ -1916,7 +1929,6 @@ class tag_array {
   float m_l1d_mpki;
   unsigned m_low_loc_threshold;
   int m_trash_conf_cnt_bound;
-  unsigned m_activated_bypass_cnt;
 };
 
 class mshr_table {
@@ -1991,7 +2003,6 @@ class mshr_table {
 /// reservation fails.
 ///
 struct cache_sub_stats {
-  unsigned long long rd_bypasses;
   unsigned long long accesses;
   unsigned long long reads;
   unsigned long long writes;
@@ -2007,6 +2018,8 @@ struct cache_sub_stats {
   // different from others' overloading of "+" and "+="
   // Here actually implements average
   unsigned long long avg_evict_interval;
+  unsigned long long avg_rd_byp_activates;
+  unsigned long long avg_rd_byp_deactivates;
 
   unsigned long long port_available_cycles;
   unsigned long long data_port_busy_cycles;
@@ -2014,7 +2027,6 @@ struct cache_sub_stats {
 
   cache_sub_stats() { clear(); }
   void clear() {
-    rd_bypasses = 0;
     accesses = 0;
     reads = 0;
     writes = 0;
@@ -2027,15 +2039,16 @@ struct cache_sub_stats {
     pending_hits = 0;
     res_fails = 0;
     avg_evict_interval = 0;
-    port_available_cycles = 0;
-    data_port_busy_cycles = 0;
-    fill_port_busy_cycles = 0;
+    avg_rd_byp_activates   = 0;
+    avg_rd_byp_deactivates = 0;
+    port_available_cycles  = 0;
+    data_port_busy_cycles  = 0;
+    fill_port_busy_cycles  = 0;
   }
   cache_sub_stats &operator+=(const cache_sub_stats &css) {
     ///
     /// Overloading += operator to easily accumulate stats
     ///
-    rd_bypasses += css.rd_bypasses;
     accesses += css.accesses;
     reads += css.reads;
     writes += css.writes;
@@ -2047,7 +2060,9 @@ struct cache_sub_stats {
     sector_wr_misses += css.sector_wr_misses;
     pending_hits += css.pending_hits;
     res_fails += css.res_fails;
-    avg_evict_interval = (avg_evict_interval + css.avg_evict_interval) >> 1;
+    avg_evict_interval     = (avg_evict_interval + css.avg_evict_interval) >> 1;
+    avg_rd_byp_activates   = (avg_rd_byp_activates + css.avg_rd_byp_activates) >> 1;
+    avg_rd_byp_deactivates = (avg_rd_byp_deactivates + css.avg_rd_byp_deactivates) >> 1;
     port_available_cycles += css.port_available_cycles;
     data_port_busy_cycles += css.data_port_busy_cycles;
     fill_port_busy_cycles += css.fill_port_busy_cycles;
@@ -2059,7 +2074,6 @@ struct cache_sub_stats {
     /// Overloading + operator to easily accumulate stats
     ///
     cache_sub_stats ret;
-    ret.rd_bypasses = rd_bypasses + cs.rd_bypasses;
     ret.accesses = accesses + cs.accesses;
     ret.reads = reads + cs.reads;
     ret.writes = writes + cs.writes;
@@ -2069,7 +2083,9 @@ struct cache_sub_stats {
     ret.sector_misses = sector_misses + cs.sector_misses;
     ret.pending_hits = pending_hits + cs.pending_hits;
     ret.res_fails = res_fails + cs.res_fails;
-    ret.avg_evict_interval = (avg_evict_interval + cs.avg_evict_interval) >> 1;
+    ret.avg_evict_interval     = (avg_evict_interval + cs.avg_evict_interval) >> 1;
+    ret.avg_rd_byp_activates   = (avg_rd_byp_activates + cs.avg_rd_byp_activates) >> 1;
+    ret.avg_rd_byp_deactivates = (avg_rd_byp_deactivates + cs.avg_rd_byp_deactivates) >> 1;
     ret.port_available_cycles =
         port_available_cycles + cs.port_available_cycles;
     ret.data_port_busy_cycles =
@@ -2249,6 +2265,8 @@ class cache_stats {
   const unsigned get_l2_icnt_queue_capacity() const { return m_l2_icnt_queue_capacity; }
   const unsigned get_sub_partition() const { return m_sub_partition; }  
   const unsigned get_sub_partitions() const { return m_sub_partitions; }
+  void update_l1d_avg_rd_byp_activates(unsigned new_val, unsigned long long streamID);
+  void update_l1d_avg_rd_byp_deactivates(unsigned new_val, unsigned long long streamID);
 
  private:
   const char* m_cache_name;
@@ -2263,6 +2281,8 @@ class cache_stats {
   // CUDA streamID -> cache stats[NUM_MEM_ACCESS_TYPE]
   std::map<unsigned long long, std::vector<std::vector<unsigned long long>>> m_stats;
   std::map<unsigned long long, unsigned /* avg_evict_interval */> m_evict_stats;
+  std::map<unsigned long long /* streamID */, unsigned> m_l1d_avg_rd_byp_activates;
+  std::map<unsigned long long /* streamID */, unsigned> m_l1d_avg_rd_byp_deactivates;
   std::map<unsigned long long /* streamID */, unsigned long long> m_overall_avg_l1d_rd_fill_to_evict_gap;
   std::map<unsigned long long /* streamID */, unsigned long long> m_l1d_rd_miss_served_cycles;
   std::map<unsigned long long /* streamID */, unsigned long long> m_l1d_wr_miss_served_cycles;

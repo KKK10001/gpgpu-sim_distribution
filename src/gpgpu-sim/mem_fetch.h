@@ -67,7 +67,11 @@ class mem_fetch {
             unsigned long long cycle, mem_fetch *original_mf = NULL,
             mem_fetch *original_wr_mf = NULL);
   ~mem_fetch();
-  
+
+  int get_l1d_rd_byp_change() const { return m_l1d_rd_byp_change; }
+  void set_l1d_rd_byp_activated() { m_l1d_rd_byp_change = 2; } // 2'b10
+  void set_l1d_rd_byp_deactivated() { m_l1d_rd_byp_change = 1; } // 2'b01
+
   void set_l1d_bypass_noalloc(bool v) { m_l1d_bypass_noalloc = v; }
   bool get_l1d_bypass_noalloc() const { return m_l1d_bypass_noalloc; }
 
@@ -247,6 +251,7 @@ class mem_fetch {
   unsigned long long m_time; // hold the time when *mf being created from l1_latency_queue
   bool m_l1d_bypass_noalloc;
   unsigned long long m_l1d_miss_served_time;  // miss->fill
+  int m_l1d_rd_byp_change; // [1]: activated [0]: deactivated
 };
 
 #endif

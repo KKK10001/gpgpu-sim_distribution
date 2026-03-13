@@ -76,7 +76,8 @@ const char *cache_request_status_str(enum cache_request_status status) {
       "RESERVATION_FAIL",
       "SECTOR_MISS",
       "MSHR_HIT",
-      "BYPASS"
+      "BYPASS_ACTIVATED",
+      "BYPASS_DEACTIVATED",
 };
 
   assert(sizeof(static_cache_request_status_str) / sizeof(const char *) ==
@@ -410,6 +411,8 @@ tag_array::tag_array(gpgpu_sim *gpu, cache_config &config, int core_id, int type
   m_l1d_max_evicts.resize(gpu->m_shader_config->num_shader(), 0);
   m_l1d_avg_evicts.resize(gpu->m_shader_config->num_shader(), 0);
   m_l1d_rd_fill_time.clear();
+  m_l1d_rd_byp_activated_times.clear();
+  m_l1d_rd_byp_deactivated_times.clear();
   m_l1d_evict_time.clear();
   m_l1d_rd_fill_to_evict_gap.clear();
   m_1st_time_l1d_rd_fill_to_evict.clear();
@@ -1437,18 +1440,24 @@ enum cache_request_status tag_array::probe(
           m_trash_conf_cnt_bound : m_l1d_rd_bypass_confidence[loc_key];
         if (m_l1d_rd_bypass_confidence[loc_key] == m_trash_conf_cnt_bound) {
           m_trashed_reqs.insert(loc_key); // Activated bypass
-          m_activated_bypass_cnt++;          
+          mf->set_l1d_rd_byp_activated(); // m_l1d_rd_byp_change = 2 = 2'b10
+          m_l1d_rd_byp_activated_times[loc_key]++;
+          assert(hit_l1d_bypassed_item(mf));
           if (DTRACE(ACTIVATE_L1D_BYPASS)) {
             fprintf(Trace::out, "%llu ACTIVATE_L1D_BYPASS for block_addr:%#llx\n", time, loc_key);
-          }          
+          }
         }
       } else { // 2. Dec confidence
-        const int dec_step = 1;
+        // const int dec_step = 1;
+        const int dec_step = 2;
         m_l1d_rd_bypass_confidence[loc_key] -= dec_step;
         m_l1d_rd_bypass_confidence[loc_key] = (m_l1d_rd_bypass_confidence[loc_key] < 0) ? 
           0 : m_l1d_rd_bypass_confidence[loc_key];
         if (!m_l1d_rd_bypass_confidence[loc_key]) {
           m_trashed_reqs.erase(loc_key); // Deactivated bypass
+          mf->set_l1d_rd_byp_deactivated(); // m_l1d_rd_byp_change = 1 = 2'b01
+          m_l1d_rd_byp_deactivated_times[loc_key]++;
+          assert(!hit_l1d_bypassed_item(mf));          
           m_l1d_rd_fill_to_evict_gap.erase(loc_key);
           if (DTRACE(DEACTIVATE_L1D_BYPASS)) {
             fprintf(Trace::out, "%llu DEACTIVATE_L1D_BYPASS for block_addr:%#llx\n", time, loc_key);
@@ -2028,6 +2037,8 @@ void cache_stats::clear() {
   m_l1d_wr_miss_served_cycles.clear();  
 
   m_l1d_accesses.clear();
+  m_l1d_avg_rd_byp_activates.clear();
+  m_l1d_avg_rd_byp_deactivates.clear();
   m_l1d_reads.clear();
   m_l1d_writes.clear();
   m_l1d_misses.clear();
@@ -2223,6 +2234,34 @@ void cache_stats::gather_lines_stats(unsigned long long streamID, unsigned unfol
   }
 }
 
+void cache_stats::update_l1d_avg_rd_byp_activates(
+  unsigned new_val, unsigned long long streamID) {
+
+  if (m_l1d_avg_rd_byp_activates.find(streamID) == m_l1d_avg_rd_byp_activates.end()) {
+    unsigned new_val;
+    m_l1d_avg_rd_byp_activates.insert(
+      std::pair<unsigned long long, unsigned>(streamID, new_val));
+    // for debug
+    if (DTRACE(DEBUG_STATS)) {
+      fprintf(Trace::out, "m_l1d_avg_rd_byp_activates.insert(streamID:%llu, new_val:%u)\n", 
+        streamID, new_val);
+    }    
+  }
+  m_l1d_avg_rd_byp_activates.at(streamID) = 
+    (m_l1d_avg_rd_byp_activates.at(streamID) + new_val) >> 1;
+}
+void cache_stats::update_l1d_avg_rd_byp_deactivates(
+  unsigned new_val, unsigned long long streamID) {
+
+  if (m_l1d_avg_rd_byp_deactivates.find(streamID) == m_l1d_avg_rd_byp_deactivates.end()) {
+    unsigned new_val;
+    m_l1d_avg_rd_byp_deactivates.insert(
+      std::pair<unsigned long long, unsigned>(streamID, new_val));
+  }
+  m_l1d_avg_rd_byp_deactivates.at(streamID) = 
+    (m_l1d_avg_rd_byp_deactivates.at(streamID) + new_val) >> 1;
+}
+
 void cache_stats::inc_stats(int access_type, int access_outcome,
                             unsigned long long streamID) {
   ///
@@ -2255,6 +2294,18 @@ void cache_stats::update_evict_stats(
   m_evict_stats.at(streamID) = 
   (m_evict_stats.at(streamID) + victim_avg_evict_interval) >> 1;
 }
+// void cache_stats::update_bypass_stats(
+//     unsigned long long streamID, 
+//     unsigned long long new_bypass) {
+  
+//   if (m_evict_stats.find(streamID) == m_evict_stats.end()) {
+//     unsigned new_val;
+//     m_evict_stats.insert(std::pair<unsigned long long, unsigned>(streamID, new_val));
+//   }
+
+//   m_evict_stats.at(streamID) = 
+//   (m_evict_stats.at(streamID) + victim_avg_evict_interval) >> 1;
+// }
 
 void cache_stats::inc_stats_pw(int access_type, int access_outcome,
                                unsigned long long streamID) {
@@ -2603,6 +2654,18 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
       std::pair<unsigned long long, unsigned long long>(
         streamID, m_l1d_wr_miss_served_cycles.at(streamID)));
   }     
+  for (auto iter = m_l1d_avg_rd_byp_activates.begin(); 
+    iter != m_l1d_avg_rd_byp_activates.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    ret.m_l1d_avg_rd_byp_activates.insert(
+      std::pair<unsigned long long, unsigned>(streamID, m_l1d_avg_rd_byp_activates.at(streamID)));
+  }  
+  for (auto iter = m_l1d_avg_rd_byp_deactivates.begin(); 
+    iter != m_l1d_avg_rd_byp_deactivates.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    ret.m_l1d_avg_rd_byp_deactivates.insert(
+      std::pair<unsigned long long, unsigned>(streamID, m_l1d_avg_rd_byp_deactivates.at(streamID)));
+  }    
   for (auto iter = m_l1d_misses.begin(); 
     iter != m_l1d_misses.end(); ++iter) {
     unsigned long long streamID = iter->first;
@@ -2663,6 +2726,48 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
       }
     }
   }
+
+  for (auto iter = cs.m_stats.begin(); iter != cs.m_stats.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    if (ret.m_stats.find(streamID) == ret.m_stats.end()) {
+      ret.m_stats.insert(std::pair<unsigned long long,
+          std::vector<std::vector<unsigned long long>>>(streamID, cs.m_stats.at(streamID)));
+    } else {
+      for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
+        for (unsigned status = 0; status < NUM_CACHE_REQUEST_STATUS; ++status) {
+          ret.m_stats.at(streamID)[type][status] += cs(type, status, false, streamID);
+          // 12-22 for debug
+          fprintf(Trace::out, "In cache_stats::operator+ ret.m_stats.at(%d)[%d][%d] += cs(%d, %d, false, %d);\n",
+            (int)streamID, type, status, type, status, (int)streamID);
+        }
+      }
+    }
+  }  
+  for (auto iter = cs.m_l1d_avg_rd_byp_activates.begin(); 
+    iter != cs.m_l1d_avg_rd_byp_activates.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    if (ret.m_l1d_avg_rd_byp_activates.find(streamID) == 
+        ret.m_l1d_avg_rd_byp_activates.end()) {
+      ret.m_l1d_avg_rd_byp_activates.insert(
+          std::pair<unsigned long long, unsigned>(
+            streamID, cs.m_l1d_avg_rd_byp_activates.at(streamID)));
+    } else {
+      m_l1d_avg_rd_byp_activates.at(streamID) += cs.m_l1d_avg_rd_byp_activates.at(streamID);
+    }
+  }
+  for (auto iter = cs.m_l1d_avg_rd_byp_deactivates.begin(); 
+    iter != cs.m_l1d_avg_rd_byp_deactivates.end(); ++iter) {
+    unsigned long long streamID = iter->first;
+    if (ret.m_l1d_avg_rd_byp_deactivates.find(streamID) == 
+        ret.m_l1d_avg_rd_byp_deactivates.end()) {
+      ret.m_l1d_avg_rd_byp_deactivates.insert(
+          std::pair<unsigned long long, unsigned>(
+            streamID, cs.m_l1d_avg_rd_byp_deactivates.at(streamID)));
+    } else {
+      m_l1d_avg_rd_byp_deactivates.at(streamID) += cs.m_l1d_avg_rd_byp_deactivates.at(streamID);
+    }
+  }     
+
   for (auto iter = cs.m_stats_pw.begin(); iter != cs.m_stats_pw.end(); ++iter) {
     unsigned long long streamID = iter->first;
     if (ret.m_stats_pw.find(streamID) == ret.m_stats_pw.end()) {
@@ -2752,6 +2857,28 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
         std::pair<unsigned long long, unsigned>(streamID, cs.m_l1d_misses.at(streamID)));
     } else {
         ret.m_l1d_misses.at(streamID) += cs.m_l1d_misses.at(streamID);      
+    }
+  }
+  for (auto iter = cs.m_l1d_avg_rd_byp_activates.begin(); 
+    iter != cs.m_l1d_avg_rd_byp_activates.end(); ++iter) {  
+    unsigned long long streamID = iter->first;
+    if (ret.m_l1d_avg_rd_byp_activates.find(streamID) == 
+      ret.m_l1d_avg_rd_byp_activates.end()) {
+      ret.m_l1d_avg_rd_byp_activates.insert(
+        std::pair<unsigned long long, unsigned>(streamID, cs.m_l1d_avg_rd_byp_activates.at(streamID)));
+    } else {
+        ret.m_l1d_avg_rd_byp_activates.at(streamID) += cs.m_l1d_avg_rd_byp_activates.at(streamID);      
+    }
+  }  
+  for (auto iter = cs.m_l1d_avg_rd_byp_deactivates.begin(); 
+    iter != cs.m_l1d_avg_rd_byp_deactivates.end(); ++iter) {  
+    unsigned long long streamID = iter->first;
+    if (ret.m_l1d_avg_rd_byp_deactivates.find(streamID) == 
+      ret.m_l1d_avg_rd_byp_deactivates.end()) {
+      ret.m_l1d_avg_rd_byp_deactivates.insert(
+        std::pair<unsigned long long, unsigned>(streamID, cs.m_l1d_avg_rd_byp_deactivates.at(streamID)));
+    } else {
+        ret.m_l1d_avg_rd_byp_deactivates.at(streamID) += cs.m_l1d_avg_rd_byp_deactivates.at(streamID);      
     }
   }
   for (auto iter = cs.m_l1d_rd_misses.begin(); 
@@ -3160,7 +3287,33 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
       const char* tgt_item = "m_l1d_wr_miss_served_cycles";
       m_l1d_wr_miss_served_cycles.at(streamID) += cs(streamID, tgt_item);
     }
-  }    
+  }
+
+  // for (auto iter = cs.m_l1d_avg_rd_byp_activates.begin(); 
+  //   iter != cs.m_l1d_avg_rd_byp_activates.end(); ++iter) {
+  //   unsigned long long streamID = iter->first;
+  //   if (m_l1d_avg_rd_byp_activates.find(streamID) == m_l1d_avg_rd_byp_activates.end()) {
+  //     m_l1d_avg_rd_byp_activates.insert(
+  //       std::pair<unsigned long long, unsigned>(
+  //         streamID, cs.m_l1d_avg_rd_byp_activates.at(streamID)));
+  //   } else {
+  //     const char* tgt_item = "m_l1d_avg_rd_byp_activates";
+  //     m_l1d_avg_rd_byp_activates.at(streamID) += static_cast<unsigned>(cs(streamID, tgt_item));
+  //   }
+  // }
+  // for (auto iter = cs.m_l1d_avg_rd_byp_deactivates.begin(); 
+  //   iter != cs.m_l1d_avg_rd_byp_deactivates.end(); ++iter) {
+  //   unsigned long long streamID = iter->first;
+  //   if (m_l1d_avg_rd_byp_deactivates.find(streamID) == m_l1d_avg_rd_byp_deactivates.end()) {
+  //     m_l1d_avg_rd_byp_deactivates.insert(
+  //       std::pair<unsigned long long, unsigned>(
+  //         streamID, cs.m_l1d_avg_rd_byp_deactivates.at(streamID)));
+  //   } else {
+  //     const char* tgt_item = "m_l1d_avg_rd_byp_deactivates";
+  //     m_l1d_avg_rd_byp_deactivates.at(streamID) += static_cast<unsigned>(cs(streamID, tgt_item));
+  //   }
+  // }   
+
   for (auto iter = cs.m_l1d_misses.begin(); 
     iter != cs.m_l1d_misses.end(); ++iter) {
     unsigned long long streamID = iter->first;
@@ -3655,10 +3808,19 @@ void cache_stats::get_sub_stats(struct cache_sub_stats &css) const {
     unsigned long long streamID = iter->first;
     for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
       for (unsigned status = 0; status < NUM_CACHE_REQUEST_STATUS; ++status) {
-        if (status == BYPASS) {
-          t_css.rd_bypasses += m_stats.at(streamID)[type][status];
+        if (status == BYPASS_ACTIVATED) {
+          // for debug
+          // if (m_l1d_avg_rd_byp_activates.find(streamID) == m_l1d_avg_rd_byp_activates.end()) {
+          //   assert(0);
+          // }
+          // t_css.avg_rd_byp_activates = 
+          //   (t_css.avg_rd_byp_activates + m_l1d_avg_rd_byp_activates.at(streamID)) >> 1;
         } 
-        else if (status == HIT || status == MISS || status == SECTOR_MISS || status == HIT_RESERVED) {
+        else if (status == BYPASS_DEACTIVATED) {
+          // t_css.avg_rd_byp_deactivates = 
+          //   (t_css.avg_rd_byp_deactivates + m_l1d_avg_rd_byp_deactivates.at(streamID)) >> 1;
+        }         
+        if (status == HIT || status == MISS || status == SECTOR_MISS || status == HIT_RESERVED) {
           t_css.accesses += m_stats.at(streamID)[type][status];
           if (type == GLOBAL_ACC_R || type == CONST_ACC_R || type == INST_ACC_R) {
             t_css.reads += m_stats.at(streamID)[type][status];
@@ -3681,7 +3843,7 @@ void cache_stats::get_sub_stats(struct cache_sub_stats &css) const {
             t_css.wr_misses += m_stats.at(streamID)[type][status];
           }
           t_css.misses += m_stats.at(streamID)[type][status];
-          t_css.avg_evict_interval += m_evict_stats.at(streamID);
+          t_css.avg_evict_interval += m_evict_stats.at(streamID);          
         }
         if (status == SECTOR_MISS) {
           if (type == GLOBAL_ACC_R || type == CONST_ACC_R || type == INST_ACC_R) {
@@ -3692,8 +3854,6 @@ void cache_stats::get_sub_stats(struct cache_sub_stats &css) const {
                 "m_stats.at(streamID)[type][status]:%llu\n", 
                 t_css.sector_rd_misses, m_stats.at(streamID)[type][status]);
             }
-            // printf("t_css.sector_rd_misses += %llu -> = %llu\n", 
-            //   m_stats.at(streamID)[type][status], t_css.sector_rd_misses);
           } else {
             t_css.sector_wr_misses += m_stats.at(streamID)[type][status];
           }      
@@ -5532,8 +5692,21 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
   }
 
   if (m_config.m_bypass_low_loc_lines == 'T') {
-    if (m_tag_array->hit_l1d_bypassed_item(mf)) {
-      access_status = cache_request_status::BYPASS; // only for inc_stats
+    if (mf->get_l1d_rd_byp_change() == 2) {
+      access_status = cache_request_status::BYPASS_ACTIVATED; // A hook for inc_stats
+    } else if (mf->get_l1d_rd_byp_change() == 1) {
+      access_status = cache_request_status::BYPASS_DEACTIVATED; // A hook for inc_stats
+    }
+  }
+
+  if (mf) {
+    [[maybe_unused]] new_addr_type loc_key = m_config.block_addr(mf->get_addr());
+    if (mf->get_l1d_rd_byp_change() == 2) {
+      m_stats.update_l1d_avg_rd_byp_activates(
+        m_tag_array->m_l1d_rd_byp_activated_times[loc_key], mf->get_streamID());
+    } else if (mf->get_l1d_rd_byp_change() == 1) {
+      m_stats.update_l1d_avg_rd_byp_deactivates(
+        m_tag_array->m_l1d_rd_byp_deactivated_times[loc_key], mf->get_streamID());
     }
   }
 

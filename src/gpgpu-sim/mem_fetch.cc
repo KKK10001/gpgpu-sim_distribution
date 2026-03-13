@@ -86,8 +86,8 @@ mem_fetch::mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
     m_raw_addr.sub_partition = m_original_mf->get_tlx_addr().sub_partition;
   }
   m_l1d_bypass_noalloc = false;
-
-  m_l1d_miss_served_time     = 0; // miss->fill
+  m_l1d_miss_served_time = 0; // miss->fill
+  m_l1d_rd_byp_change = 0; // 2'b00
 }
 
 mem_fetch::~mem_fetch() { m_status = MEM_FETCH_DELETED; }

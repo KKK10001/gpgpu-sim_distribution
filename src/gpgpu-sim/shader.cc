@@ -4054,24 +4054,30 @@ void gpgpu_sim::shader_print_cache_stats(FILE *fout) const {
               css.res_fails);
 
       total_css += css;
-    }
+    } // for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
     unsigned long long tot_insns = gpu_tot_sim_insn + gpu_sim_insn;
     float l1d_mpki = 1000 * (total_css.misses / (float)tot_insns);
+
+    // avg_rd_byp_activates
+
     fprintf(fout, "\tL1D_avg_evict_interval = %llu\n", total_css.avg_evict_interval);
+    fprintf(fout, "\n");    
     fprintf(fout, "\tL1D_accesses      = %llu\n", total_css.accesses);
     fprintf(fout, "\tL1D_misses        = %llu\n", total_css.misses);
     fprintf(fout, "\tL1D_sector_misses = %llu\n", total_css.sector_misses);
     fprintf(fout, "\n");
+    fprintf(fout, "\tL1D_rd_misses     = %llu\n", total_css.rd_misses);
     fprintf(fout, "\tL1D_reads         = %llu\n", total_css.reads);
-    fprintf(fout, "\tL1D_rd_bypasses   = %llu\n", total_css.rd_bypasses);
-    fprintf(fout, "\tL1D_rd_misses     = %llu\n", total_css.rd_misses);    
+    fprintf(fout, "\n");    
+    fprintf(fout, "\tL1D_avg_rd_byp_activates   = %llu\n", total_css.avg_rd_byp_activates);
+    fprintf(fout, "\tL1D_avg_rd_byp_deactivates = %llu\n", total_css.avg_rd_byp_deactivates);    
     fprintf(fout, "\n");
     fprintf(fout, "\tL1D_MPKI = %f\n", l1d_mpki);
     if (total_css.accesses > 0) {
       if (m_shader_config->m_L1D_config.get_mshr_disable() == 'T') {
-        fprintf(fout, "\tL1D_rd_bypass_rate = %.4lf = rd_bypasses:%llu / reads:%llu\n",
-          total_css.rd_bypasses / (double)total_css.reads,
-          total_css.rd_bypasses, total_css.reads);          
+        // fprintf(fout, "\tL1D_rd_bypass_rate = %.4lf = rd_byp_activated:%llu / reads:%llu\n",
+        //   total_css.rd_byp_activated / (double)total_css.reads,
+        //   total_css.rd_byp_activated, total_css.reads);          
         fprintf(fout, "\tL1D_rd_miss_rate = %.4lf = "
           "(rd_misses:%llu + sector_rd_misses:%llu) / reads:%llu\n",
           (total_css.rd_misses + total_css.sector_rd_misses) / (double)total_css.reads, 
