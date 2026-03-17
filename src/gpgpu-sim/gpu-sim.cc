@@ -2169,6 +2169,16 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
   printf("\nTotal_core_cache_stats:\n");
   core_cache_stats.print_stats(stdout, streamID, "Total_core_cache_stats_breakdown");
 
+  u64 cycles = gpu_tot_sim_cycle + gpu_sim_cycle;
+  core_cache_stats.print_l1d_accesses(stdout, streamID);
+  core_cache_stats.print_l1d_rd_misses(stdout, streamID, cycles);
+  core_cache_stats.print_l1d_reads(stdout, streamID, cycles);
+  core_cache_stats.print_l1d_wr_misses(stdout, streamID);
+  core_cache_stats.print_l1d_writes(stdout, streamID);  
+  core_cache_stats.print_l1d_avg_rd_byp_activates(stdout, streamID);
+  core_cache_stats.print_l1d_avg_rd_byp_deactivates(stdout, streamID);
+  core_cache_stats.print_l1d_avg_rd_byp_act_rate(stdout, streamID);
+
   printf("Gather average l1d_rd_fill_to_evict_gap:\n");
   core_cache_stats.print_avg_l1d_rd_fill_to_evict_gap(stdout, streamID);
   printf("Gather average l1d_rd_miss_served_cycles:\n");

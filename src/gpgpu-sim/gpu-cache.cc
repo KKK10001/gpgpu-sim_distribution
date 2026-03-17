@@ -429,8 +429,8 @@ tag_array::tag_array(gpgpu_sim *gpu, cache_config &config, int core_id, int type
   m_l1d_mpki = 0.0f;
   m_low_loc_threshold = m_config.m_low_locality_threshold;
   // m_trash_conf_cnt_bound = 3;
-  m_trash_conf_cnt_bound = 10; // ok (confirmed again with only inc/dec conf cnt inside tag_array::probe)
-  // m_trash_conf_cnt_bound = 5; // ok (activate: 2; deactivate: 4)
+  // m_trash_conf_cnt_bound = 10; // ok (confirmed again with only inc/dec conf cnt inside tag_array::probe)
+  m_trash_conf_cnt_bound = 5; // ok (activate: 2; deactivate: 4)
   // m_trash_conf_cnt_bound = 7; // ok (activate: 2; deactivate: 4)
   // m_l1d_unique_lines.resize(gpu->m_shader_config->num_shader());
   m_reref_gap.resize(gpu->m_shader_config->num_shader());
@@ -866,120 +866,7 @@ enum cache_request_status tag_array::probe(
   }      
   unsigned long long tot_insns = m_gpu->gpu_tot_sim_insn + m_gpu->gpu_sim_insn;
   [[maybe_unused]] float last_l1d_mpki = m_l1d_mpki;
-  m_l1d_mpki = 1000 * (total_css.misses / (float)tot_insns);
-
-  if (m_config.m_bypass_low_loc_lines == 'T' && m_is_l1d && mf) {
-
-    new_addr_type block_addr = m_config.block_addr(mf->get_addr());
-    [[maybe_unused]] const auto loc_key = block_addr;
-
-    /////////// Begin trashing degree
-    if (hit_l1d_bypassed_item(mf)) {
-      assert(m_is_l1d);
-      if (DTRACE(HIT_L1D_BYPASSED_ITEM)) {
-        fprintf(Trace::out, "%llu HIT_L1D_BYPASSED_ITEM block_addr:%#llx inside tag_array::probe\n",
-          time, block_addr);
-      }
-
-    //     fprintf(Trace::out, "%llu L1D bypassed tag_array::probe "
-    //       "because hit mf addr:%#llx\n",
-    //       time, block_addr);
-      // }
-    //   return MISS;
-    }
-    /////////// End trashing degree
-
-    /////////// Begin raw version
-    // if (!mf->isatomic() && !mf->is_write() && 
-    //   m_l1d_lines_evictions[loc_key] > m_config.m_low_locality_threshold) {
-
-    //   m_l1d_trashed_lines.insert(block_addr);
-    //   m_gpu->get_shader_stats()->m_n_l1d_trashed_lines[mf->get_sid()] = m_l1d_trashed_lines.size();
-    //   m_trashed_reqs.insert(m_config.block_addr(mf->get_addr()));
-    //   mf->set_l1d_bypass_noalloc(true); // case can pass (Reserved for accessing in L2/Shader)
-    //   return MISS; // case can pass [3/9 eve] to avoid an expected SECTOR_MISS returned to outside caller 
-
-    //   if (DTRACE(TRACE_BYPASSED_L1D_PKT)) {
-    //     // req_uid is not used for insertion, and just for checking in trace
-    //     fprintf(Trace::out, "%llu In tag_array::probe, "
-    //       "m_trashed_reqs.insert trashed mf <req_uid:%u uid:%u block_addr:%#llx> addr:%#llx. "
-    //       "set_l1d_bypass_noalloc(true)\n", 
-    //       time, mf->get_request_uid(), mf->get_inst().get_uid(), block_addr, mf->get_addr());
-    //   }
-
-    //   if (DTRACE(BYPASS_L1D_ALLOC)) {
-    //     fprintf(Trace::out, "%llu L1D can bypass frequent evictions "
-    //       "of REQ_PKT<uid:%u block_addr:%#llx>\n",
-    //       time, mf->get_inst().get_uid(), m_config.block_addr(mf->get_addr()));            
-    //   }
-    // }
-    /////////// End raw version
-
-    ///////////// Begin m_low_loc_threshold adaptive version
-    // if (m_l1d_mpki > last_l1d_mpki) {
-    //   m_low_loc_threshold += 5;
-    //   assert(m_low_loc_threshold >= 0);
-    //   assert(m_low_loc_threshold != ((unsigned) - 1));
-    // }
-    // if (!mf->isatomic() && !mf->is_write() && 
-    //   m_l1d_lines_evictions[loc_key] > m_low_loc_threshold) {
-
-    //   m_l1d_trashed_lines.insert(block_addr);
-    //   m_gpu->get_shader_stats()->m_n_l1d_trashed_lines[mf->get_sid()] = m_l1d_trashed_lines.size();
-    //   m_trashed_reqs.insert(m_config.block_addr(mf->get_addr()));
-    //   mf->set_l1d_bypass_noalloc(true); // case can pass (Reserved for accessing in L2/Shader)
-    //   return MISS; // case can pass [3/9 eve] to avoid an expected SECTOR_MISS returned to outside caller 
-
-    //   if (DTRACE(TRACE_BYPASSED_L1D_PKT)) {
-    //     // req_uid is not used for insertion, and just for checking in trace
-    //     fprintf(Trace::out, "%llu In tag_array::probe, "
-    //       "m_trashed_reqs.insert trashed mf <req_uid:%u uid:%u block_addr:%#llx> addr:%#llx. "
-    //       "set_l1d_bypass_noalloc(true)\n", 
-    //       time, mf->get_request_uid(), mf->get_inst().get_uid(), block_addr, mf->get_addr());
-    //   }
-
-    //   if (DTRACE(BYPASS_L1D_ALLOC)) {
-    //     fprintf(Trace::out, "%llu L1D can bypass frequent evictions "
-    //       "of REQ_PKT<uid:%u block_addr:%#llx>\n",
-    //       time, mf->get_inst().get_uid(), m_config.block_addr(mf->get_addr()));            
-    //   }
-    // }
-    ///////////// End m_low_loc_threshold adaptive version
-
-    // /////////// Begin m_l1d_mpki-aware version
-    // if (!mf->isatomic() && !mf->is_write() && 
-    //   m_l1d_lines_evictions[loc_key] > m_config.m_low_locality_threshold) {
-
-    //   if (m_l1d_mpki < last_l1d_mpki) {
-    //     m_l1d_trashed_lines.insert(block_addr);
-    //     m_gpu->get_shader_stats()->m_n_l1d_trashed_lines[mf->get_sid()] = m_l1d_trashed_lines.size();
-
-    //     m_trashed_reqs.insert(m_config.block_addr(mf->get_addr()));
-    //     mf->set_l1d_bypass_noalloc(true); // case can pass (Reserved for accessing in L2/Shader)
-    //     return MISS; // case can pass [3/9 eve] to avoid an expected SECTOR_MISS returned to outside caller           
-    //   }
-    //   // m_l1d_trashed_lines.insert(block_addr);
-    //   // m_gpu->get_shader_stats()->m_n_l1d_trashed_lines[mf->get_sid()] = m_l1d_trashed_lines.size();
-    //   // m_trashed_reqs.insert(m_config.block_addr(mf->get_addr()));
-    //   // mf->set_l1d_bypass_noalloc(true); // case can pass (Reserved for accessing in L2/Shader)
-    //   // return MISS; // case can pass [3/9 eve] to avoid an expected SECTOR_MISS returned to outside caller 
-
-    //   if (DTRACE(TRACE_BYPASSED_L1D_PKT)) {
-    //     // req_uid is not used for insertion, and just for checking in trace
-    //     fprintf(Trace::out, "%llu In tag_array::probe, "
-    //       "m_trashed_reqs.insert trashed mf <req_uid:%u uid:%u block_addr:%#llx> addr:%#llx. "
-    //       "set_l1d_bypass_noalloc(true)\n", 
-    //       time, mf->get_request_uid(), mf->get_inst().get_uid(), block_addr, mf->get_addr());
-    //   }
-
-    //   if (DTRACE(BYPASS_L1D_ALLOC)) {
-    //     fprintf(Trace::out, "%llu L1D can bypass frequent evictions "
-    //       "of REQ_PKT<uid:%u block_addr:%#llx>\n",
-    //       time, mf->get_inst().get_uid(), m_config.block_addr(mf->get_addr()));            
-    //   }
-    // }
-    // /////////// End m_l1d_mpki-aware version
-  }
+  [[maybe_unused]] m_l1d_mpki = 1000 * (total_css.misses / (float)tot_insns);
   
   if (DTRACE(TAG_PROBE)) {
     fprintf(Trace::out, "%llu %s called tag_array::probe(3rd in-arg mask) addr:%#llx\n", 
@@ -1421,16 +1308,13 @@ enum cache_request_status tag_array::probe(
     if (it == m_l1d_rd_fill_to_evict_gap.end()) { // The 1st time evict after being filled
       set_l1d_evict_time(loc_key, time);
       set_l1d_rd_fill_to_evict_gap(loc_key, time - get_l1d_rd_fill_time(loc_key));
-      average_l1d_rd_fill_to_evict_gap(loc_key);
-      if (m_l1d_rd_bypass_confidence.find(loc_key) != m_l1d_rd_bypass_confidence.end()) {
-        assert(!m_l1d_rd_bypass_confidence[loc_key]);
-      }
+      average_l1d_rd_fill_to_evict_gap(loc_key);      
       m_l1d_rd_bypass_confidence[loc_key] = 0; // Initialize confidence
     } else {
-      assert(m_l1d_rd_bypass_confidence.find(loc_key) != m_l1d_rd_bypass_confidence.end());
       set_l1d_evict_time(loc_key, time);
       set_l1d_rd_fill_to_evict_gap(loc_key, time - get_l1d_rd_fill_time(loc_key));
-      assert(m_avg_l1d_rd_fill_to_evict_gap.find(loc_key) != m_avg_l1d_rd_fill_to_evict_gap.end());
+      average_l1d_rd_fill_to_evict_gap(loc_key);      
+      assert(m_l1d_rd_bypass_confidence.find(loc_key) != m_l1d_rd_bypass_confidence.end());
       // Update confidence 
       // 1. Inc confidence && possible insert into trash set
       if (get_l1d_rd_fill_to_evict_gap(loc_key) < get_avg_l1d_rd_fill_to_evict_gap(loc_key)) {
@@ -1448,8 +1332,8 @@ enum cache_request_status tag_array::probe(
           }
         }
       } else { // 2. Dec confidence
-        // const int dec_step = 1;
-        const int dec_step = 2;
+        const int dec_step = 1;
+        // const int dec_step = 2;
         m_l1d_rd_bypass_confidence[loc_key] -= dec_step;
         m_l1d_rd_bypass_confidence[loc_key] = (m_l1d_rd_bypass_confidence[loc_key] < 0) ? 
           0 : m_l1d_rd_bypass_confidence[loc_key];
@@ -1458,7 +1342,8 @@ enum cache_request_status tag_array::probe(
           mf->set_l1d_rd_byp_deactivated(); // m_l1d_rd_byp_change = 1 = 2'b01
           m_l1d_rd_byp_deactivated_times[loc_key]++;
           assert(!hit_l1d_bypassed_item(mf));          
-          m_l1d_rd_fill_to_evict_gap.erase(loc_key);
+          // m_l1d_rd_fill_to_evict_gap.erase(loc_key);
+          // m_avg_l1d_rd_fill_to_evict_gap.erase(loc_key); // 3/17 16:57 
           if (DTRACE(DEACTIVATE_L1D_BYPASS)) {
             fprintf(Trace::out, "%llu DEACTIVATE_L1D_BYPASS for block_addr:%#llx\n", time, loc_key);
           }
@@ -1669,7 +1554,7 @@ void tag_array::fill(new_addr_type addr, unsigned long long time,
   bool before = m_lines[idx]->is_modified_line();
   // assert(status==MISS||status==SECTOR_MISS); // MSHR should have prevented
   // redundant memory request
-  if (status == MISS) {
+  if (status == MISS) {    
     m_lines[idx]->allocate(m_config.tag(addr), m_config.block_addr(addr), time, mask);
   } else if (status == SECTOR_MISS) {
     assert(m_config.m_cache_type == SECTOR);
@@ -2037,13 +1922,15 @@ void cache_stats::clear() {
   m_l1d_wr_miss_served_cycles.clear();  
 
   m_l1d_accesses.clear();
-  m_l1d_avg_rd_byp_activates.clear();
-  m_l1d_avg_rd_byp_deactivates.clear();
   m_l1d_reads.clear();
   m_l1d_writes.clear();
+
   m_l1d_misses.clear();
   m_l1d_rd_misses.clear();
   m_l1d_wr_misses.clear();
+
+  m_l1d_rd_byp_activates.clear();
+  m_l1d_rd_byp_deactivates.clear();
 
   m_l2_sub_miss_served_cycles.clear();
   m_l2_sub_misses.clear();
@@ -2164,61 +2051,55 @@ void cache_stats::overall_average_l1d_rd_fill_to_evict_gap(
 
   m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID) = 
     (m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID) + served_cycles) >> 1;  
-  // printf("m_overall_avg_l1d_rd_fill_to_evict_gap[streamID:%llu]:%llu = "
-  //   "(last_avg_gap:%llu] + served_cycles:%llu) >> 1\n",
-    // streamID, m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID), last_avg_gap, served_cycles);
 }
-void cache_stats::avg_l1d_rd_miss_served_cycles(
-  unsigned long long streamID, unsigned long long served_cycles) {
+void cache_stats::avg_l1d_rd_miss_served_cycles(u64 streamID, u64 served_cycles) {
   if (m_l1d_rd_miss_served_cycles.find(streamID) == m_l1d_rd_miss_served_cycles.end()) {
-    unsigned long long new_val;
-    m_l1d_rd_miss_served_cycles.insert(
-      std::pair<unsigned long long, unsigned long long>(streamID, new_val));    
+    m_l1d_rd_miss_served_cycles[streamID] = served_cycles;    
+  } else {
+    m_l1d_rd_miss_served_cycles[streamID] = 
+      (m_l1d_rd_miss_served_cycles[streamID] + served_cycles) >> 1;
   }
-  m_l1d_rd_miss_served_cycles.at(streamID) = 
-    (m_l1d_rd_miss_served_cycles.at(streamID) + served_cycles) >> 1;
 }
-void cache_stats::inc_l1d_wr_miss_served_cycles(
-  unsigned long long streamID, unsigned long long served_cycles) {
+void cache_stats::avg_l1d_wr_miss_served_cycles(u64 streamID, u64 served_cycles) {
   if (m_l1d_wr_miss_served_cycles.find(streamID) == m_l1d_wr_miss_served_cycles.end()) {
-    unsigned long long new_val;
-    m_l1d_wr_miss_served_cycles.insert(
-      std::pair<unsigned long long, unsigned long long>(streamID, new_val));    
+    m_l1d_wr_miss_served_cycles[streamID] = served_cycles;
+  } else {
+    m_l1d_wr_miss_served_cycles[streamID] = 
+      (m_l1d_wr_miss_served_cycles[streamID] + served_cycles) >> 1;
   }
-  m_l1d_wr_miss_served_cycles.at(streamID) += served_cycles;
 }
-void cache_stats::inc_l1d_rd_misses(unsigned long long streamID) {
-  if (m_l1d_rd_misses.find(streamID) == m_l1d_rd_misses.end()) {
-    unsigned new_val;
-    m_l1d_rd_misses.insert(std::pair<unsigned long long, unsigned>(streamID, new_val));    
-  }
-  m_l1d_rd_misses.at(streamID)++;
+
+void cache_stats::inc_l1d_accesses(unsigned long long streamID) {
+  m_l1d_accesses[streamID]++;
+}
+void cache_stats::inc_l1d_reads(unsigned long long streamID) {
+  m_l1d_reads[streamID]++;
+}
+void cache_stats::inc_l1d_rd_misses(u64 streamID) {
+  m_l1d_rd_misses[streamID]++;
+}
+void cache_stats::inc_l1d_writes(unsigned long long streamID) {
+  m_l1d_writes[streamID]++;
 }
 void cache_stats::inc_l1d_wr_misses(unsigned long long streamID) {
-  if (m_l1d_wr_misses.find(streamID) == m_l1d_wr_misses.end()) {
-    unsigned new_val;
-    m_l1d_wr_misses.insert(std::pair<unsigned long long, unsigned>(streamID, new_val));    
-  }
-  m_l1d_wr_misses.at(streamID)++;
+  m_l1d_wr_misses[streamID]++;
 }
 
 void cache_stats::inc_l2_sub_miss_served_cycles(
-  unsigned long long streamID, unsigned l2_sub,
-  unsigned long long served_cycles) {
+  u64 streamID, unsigned l2_sub, u64 served_cycles) {
   if (m_l2_sub_miss_served_cycles.find(streamID) == m_l2_sub_miss_served_cycles.end()) {
-    std::vector<unsigned long long> new_val;
+    std::vector<u64> new_val;
     new_val.resize(get_sub_partitions());
     m_l2_sub_miss_served_cycles.insert(
-      std::pair<unsigned long long, std::vector<unsigned long long>>(streamID, new_val));    
+      std::pair<u64, std::vector<u64>>(streamID, new_val));    
   }
   m_l2_sub_miss_served_cycles.at(streamID)[l2_sub] += served_cycles;
 }
-void cache_stats::inc_l2_sub_misses(unsigned long long streamID, unsigned l2_sub) {
+void cache_stats::inc_l2_sub_misses(u64 streamID, unsigned l2_sub) {
   if (m_l2_sub_misses.find(streamID) == m_l2_sub_misses.end()) {
     std::vector<unsigned> new_val;
     new_val.resize(get_sub_partitions());
-    m_l2_sub_misses.insert(
-      std::pair<unsigned long long, std::vector<unsigned>>(streamID, new_val));    
+    m_l2_sub_misses.insert(std::pair<u64, std::vector<unsigned>>(streamID, new_val));    
   }
   m_l2_sub_misses.at(streamID)[l2_sub]++;
 }
@@ -2234,36 +2115,53 @@ void cache_stats::gather_lines_stats(unsigned long long streamID, unsigned unfol
   }
 }
 
-void cache_stats::update_l1d_avg_rd_byp_activates(
-  unsigned new_val, unsigned long long streamID) {
+void cache_stats::update_l1d_rd_byp_act(
+  bool en, u64 block_addr, u32 activates, u64 streamID) {
 
-  if (m_l1d_avg_rd_byp_activates.find(streamID) == m_l1d_avg_rd_byp_activates.end()) {
-    unsigned new_val;
-    m_l1d_avg_rd_byp_activates.insert(
-      std::pair<unsigned long long, unsigned>(streamID, new_val));
-    // for debug
-    if (DTRACE(DEBUG_STATS)) {
-      fprintf(Trace::out, "m_l1d_avg_rd_byp_activates.insert(streamID:%llu, new_val:%u)\n", 
-        streamID, new_val);
-    }    
+  // if (m_l1d_rd_byp_activates.find(streamID) == m_l1d_rd_byp_activates.end()) {
+  //   std::map<u64, u32> new_record;
+  //   m_l1d_rd_byp_activates[streamID] = new_record;
+  // }
+  if (en) {
+    if (m_l1d_rd_byp_activates.find(streamID) == m_l1d_rd_byp_activates.end()) {
+      std::map<u64, u32> new_record;
+      new_record[block_addr] = activates;
+      m_l1d_rd_byp_activates[streamID] = new_record;
+    } else {
+      std::map<u64, u32>& record = m_l1d_rd_byp_activates.at(streamID);
+      auto it = record.find(block_addr);
+      if (it != record.end()) {
+        record[block_addr] += activates;
+      } else {
+        record[block_addr] = activates;
+      }
+    }
   }
-  m_l1d_avg_rd_byp_activates.at(streamID) = 
-    (m_l1d_avg_rd_byp_activates.at(streamID) + new_val) >> 1;
 }
-void cache_stats::update_l1d_avg_rd_byp_deactivates(
-  unsigned new_val, unsigned long long streamID) {
-
-  if (m_l1d_avg_rd_byp_deactivates.find(streamID) == m_l1d_avg_rd_byp_deactivates.end()) {
-    unsigned new_val;
-    m_l1d_avg_rd_byp_deactivates.insert(
-      std::pair<unsigned long long, unsigned>(streamID, new_val));
+void cache_stats::update_l1d_rd_byp_deact(
+  bool en, u64 block_addr, u32 deactivates, u64 streamID) {
+  // if (m_l1d_rd_byp_deactivates.find(streamID) == m_l1d_rd_byp_deactivates.end()) {
+  //   std::map<u64, u32> new_assemble;
+  //   m_l1d_rd_byp_deactivates[streamID] = new_assemble;
+  // }
+  if (en) {
+    if (m_l1d_rd_byp_deactivates.find(streamID) == m_l1d_rd_byp_deactivates.end()) {
+      std::map<u64, u32> new_record;
+      new_record[block_addr] = deactivates;
+      m_l1d_rd_byp_deactivates[streamID] = new_record;
+    } else {
+      std::map<u64, u32>& record = m_l1d_rd_byp_deactivates.at(streamID);
+      auto it = record.find(block_addr);
+      if (it != record.end()) {
+        record[block_addr] += deactivates;
+      } else {
+        record[block_addr] = deactivates;
+      }
+    }
   }
-  m_l1d_avg_rd_byp_deactivates.at(streamID) = 
-    (m_l1d_avg_rd_byp_deactivates.at(streamID) + new_val) >> 1;
 }
 
-void cache_stats::inc_stats(int access_type, int access_outcome,
-                            unsigned long long streamID) {
+void cache_stats::inc_stats(int access_type, int access_outcome, u64 streamID) {
   ///
   /// Increment the stat corresponding to (access_type, access_outcome) by 1.
   ///
@@ -2271,24 +2169,21 @@ void cache_stats::inc_stats(int access_type, int access_outcome,
     assert(0 && "Unknown cache access type or access outcome");
 
   if (m_stats.find(streamID) == m_stats.end()) {
-    std::vector<std::vector<unsigned long long>> new_val;
+    std::vector<std::vector<u64>> new_val;
     new_val.resize(NUM_MEM_ACCESS_TYPE);
     for (unsigned j = 0; j < NUM_MEM_ACCESS_TYPE; ++j) {
       new_val[j].resize(NUM_CACHE_REQUEST_STATUS, 0);
     }
-    m_stats.insert(std::pair<unsigned long long,
-        std::vector<std::vector<unsigned long long>>>(streamID, new_val));
+    m_stats.insert(std::pair<u64, std::vector<std::vector<u64>>>(streamID, new_val));
   }
   m_stats.at(streamID)[access_type][access_outcome]++;
 }
 
-void cache_stats::update_evict_stats(
-    unsigned long long streamID, 
-    unsigned long long victim_avg_evict_interval) {
+void cache_stats::update_evict_stats(u64 streamID, u64 victim_avg_evict_interval) {
   
   if (m_evict_stats.find(streamID) == m_evict_stats.end()) {
-    unsigned new_val;
-    m_evict_stats.insert(std::pair<unsigned long long, unsigned>(streamID, new_val));
+    u32 new_val = 0;
+    m_evict_stats.insert(std::pair<u64, u32>(streamID, new_val));
   }
 
   m_evict_stats.at(streamID) = 
@@ -2534,9 +2429,69 @@ unsigned long long cache_stats::operator()(
     }
   } 
 }
-unsigned long long cache_stats::operator()(
-  unsigned long long streamID, const char* tgt_name) const {
 
+u32 cache_stats::getU32(u64 streamID, const char* tgt_name) const {
+  // m_l1d_accesses
+  // m_l1d_reads
+  // m_l1d_writes
+  // m_l1d_misses
+  // m_l1d_rd_misses
+  // m_l1d_wr_misses
+  if (!strcmp(tgt_name, "m_l1d_accesses")) {
+    auto it = m_l1d_accesses.find(streamID);
+    if (it == m_l1d_accesses.end()) {
+      return 0;
+    } else {
+      return it->second;
+    }
+  }
+  else if (!strcmp(tgt_name, "m_l1d_reads")) {
+    auto it = m_l1d_reads.find(streamID);
+    if (it == m_l1d_reads.end()) {
+      return 0;
+    } else {
+      return it->second;
+    }
+  }  
+  else if (!strcmp(tgt_name, "m_l1d_writes")) {
+    auto it = m_l1d_writes.find(streamID);
+    if (it == m_l1d_writes.end()) {
+      return 0;
+    } else {
+      return it->second;
+    }
+  }    
+  else if (!strcmp(tgt_name, "m_l1d_misses")) {
+    auto it = m_l1d_misses.find(streamID);
+    if (it == m_l1d_misses.end()) {
+      return 0;
+    } else {
+      return it->second;
+    }
+  }   
+  else if (!strcmp(tgt_name, "m_l1d_rd_misses")) {
+    auto it = m_l1d_rd_misses.find(streamID);
+    if (it == m_l1d_rd_misses.end()) {
+      return 0;
+    } else {
+      return it->second;
+    }
+  }
+  else if (!strcmp(tgt_name, "m_l1d_wr_misses")) {
+    auto it = m_l1d_wr_misses.find(streamID);
+    if (it == m_l1d_wr_misses.end()) {
+      return 0;
+    } else {
+      return it->second;
+    }
+  }  
+}
+
+u64 cache_stats::operator()(u64 streamID, const char* tgt_name) const {
+// m_overall_avg_l1d_rd_fill_to_evict_gap
+// m_l1d_rd_miss_served_cycles
+// m_l1d_wr_miss_served_cycles
+// m_l2_sub_miss_served_cycles
   if (!strcmp(tgt_name, "m_overall_avg_l1d_rd_fill_to_evict_gap")) {
     auto it = m_overall_avg_l1d_rd_fill_to_evict_gap.find(streamID);
     if (it == m_overall_avg_l1d_rd_fill_to_evict_gap.end()) {
@@ -2552,7 +2507,7 @@ unsigned long long cache_stats::operator()(
     } else {
       return it->second;
     }
-  } 
+  }
   else if (!strcmp(tgt_name, "m_l1d_wr_miss_served_cycles")) {
     auto it = m_l1d_wr_miss_served_cycles.find(streamID);
     if (it == m_l1d_wr_miss_served_cycles.end()) {
@@ -2561,22 +2516,6 @@ unsigned long long cache_stats::operator()(
       return it->second;
     }
   }
-  else if (!strcmp(tgt_name, "m_l1d_rd_misses")) {
-    auto it = m_l1d_rd_misses.find(streamID);
-    if (it == m_l1d_rd_misses.end()) {
-      return 0;
-    } else {
-      return static_cast<unsigned long long>(it->second);
-    }
-  }
-  else if (!strcmp(tgt_name, "m_l1d_wr_misses")) {
-    auto it = m_l1d_wr_misses.find(streamID);
-    if (it == m_l1d_wr_misses.end()) {
-      return 0;
-    } else {
-      return static_cast<unsigned long long>(it->second);
-    }
-  }    
 }
 
 cache_stats cache_stats::operator+(const cache_stats &cs) {
@@ -2586,187 +2525,187 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
   // 1-1 Init
   cache_stats ret;
   for (auto iter = m_stats.begin(); iter != m_stats.end(); ++iter) {
-    unsigned long long streamID = iter->first;
-    ret.m_stats.insert(std::pair<unsigned long long,
-      std::vector<std::vector<unsigned long long>>>(streamID, m_stats.at(streamID)));
+    u64 streamID = iter->first;
+    ret.m_stats.insert(std::pair<u64,
+      std::vector<std::vector<u64>>>(streamID, m_stats.at(streamID)));
   }
   for (auto iter = m_stats_pw.begin(); iter != m_stats_pw.end(); ++iter) {
-    unsigned long long streamID = iter->first;
-    ret.m_stats_pw.insert(std::pair<unsigned long long,
-      std::vector<std::vector<unsigned long long>>>(streamID, m_stats_pw.at(streamID)));
+    u64 streamID = iter->first;
+    ret.m_stats_pw.insert(std::pair<u64,
+      std::vector<std::vector<u64>>>(streamID, m_stats_pw.at(streamID)));
   }
 
   for (auto iter = m_fail_stats.begin(); iter != m_fail_stats.end(); ++iter) {
-    unsigned long long streamID = iter->first;
-    ret.m_fail_stats.insert(std::pair<unsigned long long,
-      std::vector<std::vector<unsigned long long>>>(streamID, m_fail_stats.at(streamID)));
+    u64 streamID = iter->first;
+    ret.m_fail_stats.insert(std::pair<u64,
+      std::vector<std::vector<u64>>>(streamID, m_fail_stats.at(streamID)));
   }
   for (auto iter = m_line_alloc_fail.begin(); iter != m_line_alloc_fail.end(); ++iter) {
-    unsigned long long streamID = iter->first;
-    ret.m_line_alloc_fail.insert(std::pair<unsigned long long,
-      std::vector<std::vector<unsigned long long>>>(streamID, m_line_alloc_fail.at(streamID)));
+    u64 streamID = iter->first;
+    ret.m_line_alloc_fail.insert(std::pair<u64,
+      std::vector<std::vector<u64>>>(streamID, m_line_alloc_fail.at(streamID)));
   }  
   for (auto iter = m_mshr_entry_fail.begin(); iter != m_mshr_entry_fail.end(); ++iter) {
-    unsigned long long streamID = iter->first;
-    ret.m_mshr_entry_fail.insert(std::pair<unsigned long long,
-      std::vector<std::vector<unsigned long long>>>(streamID, m_mshr_entry_fail.at(streamID)));
+    u64 streamID = iter->first;
+    ret.m_mshr_entry_fail.insert(std::pair<u64,
+      std::vector<std::vector<u64>>>(streamID, m_mshr_entry_fail.at(streamID)));
   }    
   for (auto iter = m_miss_q_full.begin(); iter != m_miss_q_full.end(); ++iter) {
-    unsigned long long streamID = iter->first;
-    ret.m_miss_q_full.insert(std::pair<unsigned long long,
-      std::vector<std::vector<unsigned long long>>>(streamID, m_miss_q_full.at(streamID)));
+    u64 streamID = iter->first;
+    ret.m_miss_q_full.insert(std::pair<u64, 
+      std::vector<std::vector<u64>>>(streamID, m_miss_q_full.at(streamID)));
   }  
   for (auto iter = m_mshr_merge_entry_fail.begin(); iter != m_mshr_merge_entry_fail.end(); ++iter) {
-    unsigned long long streamID = iter->first;
-    ret.m_mshr_merge_entry_fail.insert(std::pair<unsigned long long,
-      std::vector<std::vector<unsigned long long>>>(streamID, m_mshr_merge_entry_fail.at(streamID)));
+    u64 streamID = iter->first;
+    ret.m_mshr_merge_entry_fail.insert(std::pair<u64,
+      std::vector<std::vector<u64>>>(streamID, m_mshr_merge_entry_fail.at(streamID)));
   }  
   for (auto iter = m_fail_stats_total.begin(); iter != m_fail_stats_total.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     ret.m_fail_stats_total.insert(
-      std::pair<unsigned long long, std::vector<unsigned long long>>(
-      streamID, m_fail_stats_total.at(streamID)));      
+      std::pair<u64, std::vector<u64>>(streamID, m_fail_stats_total.at(streamID)));     
   }
   for (auto iter = m_mshr_occupancy_stats.begin(); iter != m_mshr_occupancy_stats.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     ret.m_mshr_occupancy_stats.insert(
-      std::pair<unsigned long long,
-        std::vector<std::vector<unsigned>>>(streamID, m_mshr_occupancy_stats.at(streamID)));
+      std::pair<u64,
+        std::vector<std::vector<u32>>>(streamID, m_mshr_occupancy_stats.at(streamID)));
   }     
   for (auto iter = m_overall_avg_l1d_rd_fill_to_evict_gap.begin(); 
     iter != m_overall_avg_l1d_rd_fill_to_evict_gap.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     ret.m_overall_avg_l1d_rd_fill_to_evict_gap.insert(
-      std::pair<unsigned long long, unsigned long long>(
+      std::pair<u64, u64>(
         streamID, m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID)));
   }
   for (auto iter = m_l1d_rd_miss_served_cycles.begin(); 
     iter != m_l1d_rd_miss_served_cycles.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     ret.m_l1d_rd_miss_served_cycles.insert(
-      std::pair<unsigned long long, unsigned long long>(
-        streamID, m_l1d_rd_miss_served_cycles.at(streamID)));
+      std::pair<u64, u64>(streamID, m_l1d_rd_miss_served_cycles.at(streamID)));
   }    
   for (auto iter = m_l1d_wr_miss_served_cycles.begin(); 
     iter != m_l1d_wr_miss_served_cycles.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     ret.m_l1d_wr_miss_served_cycles.insert(
-      std::pair<unsigned long long, unsigned long long>(
-        streamID, m_l1d_wr_miss_served_cycles.at(streamID)));
+      std::pair<u64, u64>(streamID, m_l1d_wr_miss_served_cycles.at(streamID)));
   }     
-  for (auto iter = m_l1d_avg_rd_byp_activates.begin(); 
-    iter != m_l1d_avg_rd_byp_activates.end(); ++iter) {
-    unsigned long long streamID = iter->first;
-    ret.m_l1d_avg_rd_byp_activates.insert(
-      std::pair<unsigned long long, unsigned>(streamID, m_l1d_avg_rd_byp_activates.at(streamID)));
+
+  for (auto iter = m_l1d_rd_byp_activates.begin(); 
+    iter != m_l1d_rd_byp_activates.end(); ++iter) {
+    u64 streamID = iter->first;
+    ret.m_l1d_rd_byp_activates[streamID] = m_l1d_rd_byp_activates.at(streamID);
   }  
-  for (auto iter = m_l1d_avg_rd_byp_deactivates.begin(); 
-    iter != m_l1d_avg_rd_byp_deactivates.end(); ++iter) {
-    unsigned long long streamID = iter->first;
-    ret.m_l1d_avg_rd_byp_deactivates.insert(
-      std::pair<unsigned long long, unsigned>(streamID, m_l1d_avg_rd_byp_deactivates.at(streamID)));
-  }    
+  for (auto iter = m_l1d_rd_byp_deactivates.begin(); 
+    iter != m_l1d_rd_byp_deactivates.end(); ++iter) {
+    u64 streamID = iter->first;
+    ret.m_l1d_rd_byp_deactivates[streamID] = m_l1d_rd_byp_deactivates.at(streamID);
+  }
+
   for (auto iter = m_l1d_misses.begin(); 
     iter != m_l1d_misses.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     ret.m_l1d_misses.insert(
-      std::pair<unsigned long long, unsigned>(streamID, m_l1d_misses.at(streamID)));
+      std::pair<u64, u32>(streamID, m_l1d_misses.at(streamID)));
   }
+  for (auto iter = m_l1d_reads.begin(); 
+    iter != m_l1d_reads.end(); ++iter) {
+    u64 streamID = iter->first;
+    ret.m_l1d_reads.insert(std::pair<u64, u32>(streamID, m_l1d_reads.at(streamID)));
+  }    
   for (auto iter = m_l1d_rd_misses.begin(); 
     iter != m_l1d_rd_misses.end(); ++iter) {
-    unsigned long long streamID = iter->first;
-    ret.m_l1d_rd_misses.insert(
-      std::pair<unsigned long long, unsigned>(streamID, m_l1d_rd_misses.at(streamID)));
+    u64 streamID = iter->first;
+    ret.m_l1d_rd_misses.insert(std::pair<u64, u32>(streamID, m_l1d_rd_misses.at(streamID)));
   }  
   for (auto iter = m_l1d_wr_misses.begin(); 
     iter != m_l1d_wr_misses.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     ret.m_l1d_wr_misses.insert(
-      std::pair<unsigned long long, unsigned>(streamID, m_l1d_wr_misses.at(streamID)));
+      std::pair<u64, u32>(streamID, m_l1d_wr_misses.at(streamID)));
   }  
   for (auto iter = m_l2_sub_miss_served_cycles.begin(); 
     iter != m_l2_sub_miss_served_cycles.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     ret.m_l2_sub_miss_served_cycles.insert(
-      std::pair<unsigned long long, std::vector<unsigned long long>>(
-        streamID, m_l2_sub_miss_served_cycles.at(streamID)));
+      std::pair<u64, std::vector<u64>>(streamID, m_l2_sub_miss_served_cycles.at(streamID)));
   }  
   for (auto iter = m_l2_sub_misses.begin(); 
     iter != m_l2_sub_misses.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     ret.m_l2_sub_misses.insert(
-      std::pair<unsigned long long, std::vector<unsigned>>(
-        streamID, m_l2_sub_misses.at(streamID)));
+      std::pair<u64, std::vector<u32>>(streamID, m_l2_sub_misses.at(streamID)));
   }    
   for (auto iter = m_accu_l2_dram_queue_size.begin(); iter != m_accu_l2_dram_queue_size.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     ret.m_accu_l2_dram_queue_size.insert(
-      std::pair<unsigned long long, std::vector<unsigned>>(streamID, m_accu_l2_dram_queue_size.at(streamID)));
+      std::pair<u64, std::vector<u32>>(streamID, m_accu_l2_dram_queue_size.at(streamID)));
   }
   for (auto iter = m_accu_l2_icnt_queue_size.begin(); iter != m_accu_l2_icnt_queue_size.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     ret.m_accu_l2_icnt_queue_size.insert(
-      std::pair<unsigned long long, std::vector<unsigned>>(streamID, m_accu_l2_icnt_queue_size.at(streamID)));
+      std::pair<u64, std::vector<u32>>(streamID, m_accu_l2_icnt_queue_size.at(streamID)));
   }
 
   // 1-2 Overload "+"
   for (auto iter = cs.m_stats.begin(); iter != cs.m_stats.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (ret.m_stats.find(streamID) == ret.m_stats.end()) {
-      ret.m_stats.insert(std::pair<unsigned long long,
-          std::vector<std::vector<unsigned long long>>>(streamID, cs.m_stats.at(streamID)));
+      ret.m_stats.insert(
+        std::pair<u64, std::vector<std::vector<u64>>>(streamID, cs.m_stats.at(streamID)));
     } else {
       for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
         for (unsigned status = 0; status < NUM_CACHE_REQUEST_STATUS; ++status) {
           ret.m_stats.at(streamID)[type][status] += cs(type, status, false, streamID);
-          // 12-22 for debug
-          fprintf(Trace::out, "In cache_stats::operator+ ret.m_stats.at(%d)[%d][%d] += cs(%d, %d, false, %d);\n",
-            (int)streamID, type, status, type, status, (int)streamID);
         }
       }
     }
   }
 
   for (auto iter = cs.m_stats.begin(); iter != cs.m_stats.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (ret.m_stats.find(streamID) == ret.m_stats.end()) {
-      ret.m_stats.insert(std::pair<unsigned long long,
-          std::vector<std::vector<unsigned long long>>>(streamID, cs.m_stats.at(streamID)));
+      ret.m_stats.insert(
+        std::pair<u64, std::vector<std::vector<u64>>>(streamID, cs.m_stats.at(streamID)));
     } else {
       for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
         for (unsigned status = 0; status < NUM_CACHE_REQUEST_STATUS; ++status) {
           ret.m_stats.at(streamID)[type][status] += cs(type, status, false, streamID);
-          // 12-22 for debug
-          fprintf(Trace::out, "In cache_stats::operator+ ret.m_stats.at(%d)[%d][%d] += cs(%d, %d, false, %d);\n",
-            (int)streamID, type, status, type, status, (int)streamID);
         }
       }
     }
-  }  
-  for (auto iter = cs.m_l1d_avg_rd_byp_activates.begin(); 
-    iter != cs.m_l1d_avg_rd_byp_activates.end(); ++iter) {
-    unsigned long long streamID = iter->first;
-    if (ret.m_l1d_avg_rd_byp_activates.find(streamID) == 
-        ret.m_l1d_avg_rd_byp_activates.end()) {
-      ret.m_l1d_avg_rd_byp_activates.insert(
-          std::pair<unsigned long long, unsigned>(
-            streamID, cs.m_l1d_avg_rd_byp_activates.at(streamID)));
+  }
+
+  for (auto iter = cs.m_l1d_rd_byp_activates.begin(); 
+    iter != cs.m_l1d_rd_byp_activates.end(); ++iter) {
+    u64 streamID = iter->first;
+    if (ret.m_l1d_rd_byp_activates.find(streamID) == ret.m_l1d_rd_byp_activates.end()) {
+      ret.m_l1d_rd_byp_activates[streamID] = cs.m_l1d_rd_byp_activates.at(streamID);
     } else {
-      m_l1d_avg_rd_byp_activates.at(streamID) += cs.m_l1d_avg_rd_byp_activates.at(streamID);
+      std::map<u64, u32>& recorded = m_l1d_rd_byp_activates.at(streamID);
+      std::map<u64, u32> in_coming = cs.m_l1d_rd_byp_activates.at(streamID);
+      for (auto& iter : in_coming)
+      {
+        const u64 block_addr = iter.first;
+        recorded[block_addr] += iter.second;
+      }
     }
   }
-  for (auto iter = cs.m_l1d_avg_rd_byp_deactivates.begin(); 
-    iter != cs.m_l1d_avg_rd_byp_deactivates.end(); ++iter) {
-    unsigned long long streamID = iter->first;
-    if (ret.m_l1d_avg_rd_byp_deactivates.find(streamID) == 
-        ret.m_l1d_avg_rd_byp_deactivates.end()) {
-      ret.m_l1d_avg_rd_byp_deactivates.insert(
-          std::pair<unsigned long long, unsigned>(
-            streamID, cs.m_l1d_avg_rd_byp_deactivates.at(streamID)));
+  for (auto iter = cs.m_l1d_rd_byp_deactivates.begin(); 
+    iter != cs.m_l1d_rd_byp_deactivates.end(); ++iter) {
+    u64 streamID = iter->first;
+    if (ret.m_l1d_rd_byp_deactivates.find(streamID) == ret.m_l1d_rd_byp_deactivates.end()) {
+      ret.m_l1d_rd_byp_deactivates[streamID] = cs.m_l1d_rd_byp_deactivates.at(streamID);
     } else {
-      m_l1d_avg_rd_byp_deactivates.at(streamID) += cs.m_l1d_avg_rd_byp_deactivates.at(streamID);
+      std::map<u64, u32>& recorded = m_l1d_rd_byp_deactivates.at(streamID);
+      std::map<u64, u32> in_coming = cs.m_l1d_rd_byp_deactivates.at(streamID);
+      for (auto& iter : in_coming)
+      {
+        const u64 block_addr = iter.first;
+        recorded[block_addr] += iter.second;
+      }
     }
-  }     
+  }
 
   for (auto iter = cs.m_stats_pw.begin(); iter != cs.m_stats_pw.end(); ++iter) {
     unsigned long long streamID = iter->first;
@@ -2859,28 +2798,17 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
         ret.m_l1d_misses.at(streamID) += cs.m_l1d_misses.at(streamID);      
     }
   }
-  for (auto iter = cs.m_l1d_avg_rd_byp_activates.begin(); 
-    iter != cs.m_l1d_avg_rd_byp_activates.end(); ++iter) {  
+  for (auto iter = cs.m_l1d_reads.begin(); 
+    iter != cs.m_l1d_reads.end(); ++iter) {  
     unsigned long long streamID = iter->first;
-    if (ret.m_l1d_avg_rd_byp_activates.find(streamID) == 
-      ret.m_l1d_avg_rd_byp_activates.end()) {
-      ret.m_l1d_avg_rd_byp_activates.insert(
-        std::pair<unsigned long long, unsigned>(streamID, cs.m_l1d_avg_rd_byp_activates.at(streamID)));
+    if (ret.m_l1d_reads.find(streamID) == 
+      ret.m_l1d_reads.end()) {
+      ret.m_l1d_reads.insert(
+        std::pair<unsigned long long, unsigned>(streamID, cs.m_l1d_reads.at(streamID)));
     } else {
-        ret.m_l1d_avg_rd_byp_activates.at(streamID) += cs.m_l1d_avg_rd_byp_activates.at(streamID);      
+        ret.m_l1d_reads.at(streamID) += cs.m_l1d_reads.at(streamID);      
     }
-  }  
-  for (auto iter = cs.m_l1d_avg_rd_byp_deactivates.begin(); 
-    iter != cs.m_l1d_avg_rd_byp_deactivates.end(); ++iter) {  
-    unsigned long long streamID = iter->first;
-    if (ret.m_l1d_avg_rd_byp_deactivates.find(streamID) == 
-      ret.m_l1d_avg_rd_byp_deactivates.end()) {
-      ret.m_l1d_avg_rd_byp_deactivates.insert(
-        std::pair<unsigned long long, unsigned>(streamID, cs.m_l1d_avg_rd_byp_deactivates.at(streamID)));
-    } else {
-        ret.m_l1d_avg_rd_byp_deactivates.at(streamID) += cs.m_l1d_avg_rd_byp_deactivates.at(streamID);      
-    }
-  }
+  }    
   for (auto iter = cs.m_l1d_rd_misses.begin(); 
     iter != cs.m_l1d_rd_misses.end(); ++iter) {  
     unsigned long long streamID = iter->first;
@@ -3058,6 +2986,176 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
   return ret;
 }
 
+// m_overall_avg_l1d_rd_fill_to_evict_gap
+// m_l1d_rd_miss_served_cycles
+// m_l1d_wr_miss_served_cycles
+// m_l1d_rd_byp_activates
+// m_l1d_rd_byp_deactivates
+// m_l1d_accesses
+// m_l1d_reads
+// m_l1d_writes
+// m_l1d_misses
+// m_l1d_rd_misses
+// m_l1d_wr_misses
+// m_l2_sub_miss_served_cycles
+// m_l2_sub_misses
+void cache_stats::accu_single_stat(const char* tgt_item, const cache_stats &cs) {
+  if (!strcmp(tgt_item, "m_overall_avg_l1d_rd_fill_to_evict_gap")) {
+    for (auto iter = cs.m_overall_avg_l1d_rd_fill_to_evict_gap.begin(); 
+      iter != cs.m_overall_avg_l1d_rd_fill_to_evict_gap.end(); ++iter) {
+      u64 streamID = iter->first;
+      if (m_overall_avg_l1d_rd_fill_to_evict_gap.find(streamID) == 
+        m_overall_avg_l1d_rd_fill_to_evict_gap.end()) {
+        m_overall_avg_l1d_rd_fill_to_evict_gap.insert(
+          std::pair<u64, u64>(streamID, cs.m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID)));
+      } else {
+        m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID) += cs(streamID, tgt_item);
+      }
+    }
+  } else if (!strcmp(tgt_item, "m_l1d_rd_miss_served_cycles")) {
+    for (auto iter = cs.m_l1d_rd_miss_served_cycles.begin(); iter != cs.m_l1d_rd_miss_served_cycles.end(); ++iter) {
+      u64 streamID = iter->first;
+      if (m_l1d_rd_miss_served_cycles.find(streamID) == m_l1d_rd_miss_served_cycles.end()) {
+        m_l1d_rd_miss_served_cycles.insert(
+          std::pair<u64, u64>(streamID, cs.m_l1d_rd_miss_served_cycles.at(streamID)));
+      } else {
+        m_l1d_rd_miss_served_cycles.at(streamID) += cs(streamID, tgt_item);
+      }
+    }
+  } else if (!strcmp(tgt_item, "m_l1d_wr_miss_served_cycles")) {
+    for (auto iter = cs.m_l1d_wr_miss_served_cycles.begin(); iter != cs.m_l1d_wr_miss_served_cycles.end(); ++iter) {
+      u64 streamID = iter->first;
+      if (m_l1d_wr_miss_served_cycles.find(streamID) == m_l1d_wr_miss_served_cycles.end()) {
+        m_l1d_wr_miss_served_cycles.insert(
+          std::pair<u64, u64>(streamID, cs.m_l1d_wr_miss_served_cycles.at(streamID)));
+      } else {
+        m_l1d_wr_miss_served_cycles.at(streamID) += cs(streamID, tgt_item);
+      }
+    }
+  } else if (!strcmp(tgt_item, "m_l1d_rd_byp_activates")) {
+    for (auto iter = cs.m_l1d_rd_byp_activates.begin(); 
+      iter != cs.m_l1d_rd_byp_activates.end(); ++iter) {
+      u64 streamID = iter->first;
+      if (m_l1d_rd_byp_activates.find(streamID) == m_l1d_rd_byp_activates.end()) {
+        m_l1d_rd_byp_activates.insert(
+          std::pair<u64, std::map<u64, u32>>(streamID, cs.m_l1d_rd_byp_activates.at(streamID)));
+      } else {
+        std::map<u64, u32>& recorded = m_l1d_rd_byp_activates.at(streamID);
+        std::map<u64, u32> in_coming = cs.m_l1d_rd_byp_activates.at(streamID);
+        for (auto& iter : in_coming) {
+          const u64 block_addr = iter.first;
+          recorded[block_addr] += iter.second;
+        }
+      }
+    }
+  } else if (!strcmp(tgt_item, "m_l1d_rd_byp_deactivates")) {
+    for (auto iter = cs.m_l1d_rd_byp_deactivates.begin(); 
+      iter != cs.m_l1d_rd_byp_deactivates.end(); ++iter) {
+      u64 streamID = iter->first;
+      if (m_l1d_rd_byp_deactivates.find(streamID) == m_l1d_rd_byp_deactivates.end()) {
+        m_l1d_rd_byp_deactivates.insert(
+          std::pair<u64, std::map<u64, u32>>(streamID, cs.m_l1d_rd_byp_deactivates.at(streamID)));
+      } else {
+        std::map<u64, u32>& recorded = m_l1d_rd_byp_deactivates.at(streamID);
+        std::map<u64, u32> in_coming = cs.m_l1d_rd_byp_deactivates.at(streamID);
+        for (auto& iter : in_coming) {
+          const u64 block_addr = iter.first;
+          recorded[block_addr] += iter.second;
+        }
+      }
+    }
+  } else if (!strcmp(tgt_item, "m_l1d_accesses")) {
+    for (auto iter = cs.m_l1d_accesses.begin(); iter != cs.m_l1d_accesses.end(); ++iter) {
+      u64 streamID = iter->first;
+      if (m_l1d_accesses.find(streamID) == m_l1d_accesses.end()) {
+        m_l1d_accesses.insert(
+          std::pair<u64, u32>(streamID, cs.m_l1d_accesses.at(streamID)));
+      } else {
+        m_l1d_accesses.at(streamID) += cs.getU32(streamID, tgt_item);
+      }
+    }
+  } else if (!strcmp(tgt_item, "m_l1d_misses")) {
+    for (auto iter = cs.m_l1d_misses.begin(); iter != cs.m_l1d_misses.end(); ++iter) {
+      u64 streamID = iter->first;
+      if (m_l1d_misses.find(streamID) == m_l1d_misses.end()) {
+        m_l1d_misses.insert(
+          std::pair<u64, u32>(streamID, cs.m_l1d_misses.at(streamID)));
+      } else {
+        m_l1d_misses.at(streamID) += cs.getU32(streamID, tgt_item);
+      }
+    }
+  } else if (!strcmp(tgt_item, "m_l1d_reads")) {
+    for (auto iter = cs.m_l1d_reads.begin(); iter != cs.m_l1d_reads.end(); ++iter) {
+      u64 streamID = iter->first;
+      if (m_l1d_reads.find(streamID) == m_l1d_reads.end()) {
+        m_l1d_reads.insert(
+          std::pair<u64, u32>(streamID, cs.m_l1d_reads.at(streamID)));
+      } else {
+        m_l1d_reads.at(streamID) += cs.getU32(streamID, tgt_item);
+      }
+    }
+  } else if (!strcmp(tgt_item, "m_l1d_writes")) {
+    for (auto iter = cs.m_l1d_writes.begin(); iter != cs.m_l1d_writes.end(); ++iter) {
+      u64 streamID = iter->first;
+      if (m_l1d_writes.find(streamID) == m_l1d_writes.end()) {
+        m_l1d_writes.insert(
+          std::pair<u64, u32>(streamID, cs.m_l1d_writes.at(streamID)));
+      } else {
+        m_l1d_writes.at(streamID) += cs.getU32(streamID, tgt_item);
+      }
+    }
+  } else if (!strcmp(tgt_item, "m_l1d_rd_misses")) {
+    for (auto iter = cs.m_l1d_rd_misses.begin(); iter != cs.m_l1d_rd_misses.end(); ++iter) {
+      u64 streamID = iter->first;
+      if (m_l1d_rd_misses.find(streamID) == m_l1d_rd_misses.end()) {
+        m_l1d_rd_misses.insert(
+          std::pair<u64, u32>(streamID, cs.m_l1d_rd_misses.at(streamID)));
+      } else {
+        m_l1d_rd_misses.at(streamID) += cs.getU32(streamID, tgt_item);
+      }
+    }
+  } else if (!strcmp(tgt_item, "m_l1d_wr_misses")) {
+    for (auto iter = cs.m_l1d_wr_misses.begin(); iter != cs.m_l1d_wr_misses.end(); ++iter) {
+      u64 streamID = iter->first;
+      if (m_l1d_wr_misses.find(streamID) == m_l1d_wr_misses.end()) {
+        m_l1d_wr_misses.insert(
+          std::pair<u64, u32>(streamID, cs.m_l1d_wr_misses.at(streamID)));
+      } else {
+        m_l1d_wr_misses.at(streamID) += cs.getU32(streamID, tgt_item);
+      }
+    }
+  } else if (!strcmp(tgt_item, "m_l2_sub_miss_served_cycles")) {
+    for (auto iter = cs.m_l2_sub_miss_served_cycles.begin(); 
+      iter != cs.m_l2_sub_miss_served_cycles.end(); ++iter) {
+      u64 streamID = iter->first;
+      if (m_l2_sub_miss_served_cycles.find(streamID) == m_l2_sub_miss_served_cycles.end()) {
+        m_l2_sub_miss_served_cycles.insert(
+          std::pair<u64, std::vector<u64>>(
+            streamID, cs.m_l2_sub_miss_served_cycles.at(streamID)));
+      } else {
+        for (u32 l2_sub = 0; l2_sub < get_sub_partitions(); ++l2_sub) {
+          m_l2_sub_miss_served_cycles.at(streamID)[l2_sub] += cs(l2_sub, streamID, tgt_item);
+        }      
+      }
+    }    
+  } else if (!strcmp(tgt_item, "m_l2_sub_misses")) {
+    for (auto iter = cs.m_l2_sub_misses.begin(); 
+      iter != cs.m_l2_sub_misses.end(); ++iter) {
+      u64 streamID = iter->first;
+      if (m_l2_sub_misses.find(streamID) == m_l2_sub_misses.end()) {
+        m_l2_sub_misses.insert(
+          std::pair<u64, std::vector<u32>>(
+            streamID, cs.m_l2_sub_misses.at(streamID)));
+      } else {
+        for (u32 l2_sub = 0; l2_sub < get_sub_partitions(); ++l2_sub) {
+          m_l2_sub_misses.at(streamID)[l2_sub] += cs(l2_sub, streamID, tgt_item);
+        }      
+      }
+    }    
+  }   
+
+}
+
 cache_stats &cache_stats::operator+=(const cache_stats &cs) {
   ///
   /// Overloaded += operator to allow for simple stat accumulation
@@ -3071,7 +3169,7 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
   }
 
   for (auto iter = cs.m_stats.begin(); iter != cs.m_stats.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (m_stats.find(streamID) == m_stats.end()) {
       if (DTRACE(M_STATS)) {
         fprintf(Trace::out, "%s %sm_stats.size:%lu m_stats.insert(cs.m_stats.at(streamID:%llu))\n",
@@ -3081,8 +3179,8 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
         );
       }
 
-      m_stats.insert(std::pair<unsigned long long,
-        std::vector<std::vector<unsigned long long>>>(streamID, cs.m_stats.at(streamID)));
+      m_stats.insert(std::pair<u64,
+        std::vector<std::vector<u64>>>(streamID, cs.m_stats.at(streamID)));
 
       if (DTRACE(M_STATS)) {
         for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
@@ -3109,7 +3207,7 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
       }      
       for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
         for (unsigned status = 0; status < NUM_CACHE_REQUEST_STATUS; ++status) {
-          unsigned long long orig_stats_val = m_stats.at(streamID)[type][status];
+          u64 orig_stats_val = m_stats.at(streamID)[type][status];
           m_stats.at(streamID)[type][status] += cs(type, status, false, streamID);
           if (DTRACE(M_STATS)) {
             fprintf(Trace::out, "%s %sm_stats.size:%lu cache_stats::operator+= "
@@ -3130,10 +3228,10 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
     } // m_stats.find(streamID) != m_stats.end()
   } // for (auto iter = cs.m_stats.begin(); iter != cs.m_stats.end(); ++iter) 
   for (auto iter = cs.m_stats_pw.begin(); iter != cs.m_stats_pw.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (m_stats_pw.find(streamID) == m_stats_pw.end()) {
-      m_stats_pw.insert(std::pair<unsigned long long,
-                                  std::vector<std::vector<unsigned long long>>>(
+      m_stats_pw.insert(std::pair<u64,
+                                  std::vector<std::vector<u64>>>(
           streamID, cs.m_stats_pw.at(streamID)));
     } else {
       for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
@@ -3144,16 +3242,16 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
     }
   }
   for (auto iter = cs.m_fail_stats.begin(); iter != cs.m_fail_stats.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (m_fail_stats.find(streamID) == m_fail_stats.end()) {
-      m_fail_stats.insert(std::pair<unsigned long long,
-          std::vector<std::vector<unsigned long long>>>(streamID, cs.m_fail_stats.at(streamID)));            
-      m_fail_stats_total.insert(std::pair<unsigned long long,
-          std::vector<unsigned long long>>(streamID, cs.m_fail_stats_total.at(streamID)));
+      m_fail_stats.insert(std::pair<u64,
+          std::vector<std::vector<u64>>>(streamID, cs.m_fail_stats.at(streamID)));            
+      m_fail_stats_total.insert(std::pair<u64,
+          std::vector<u64>>(streamID, cs.m_fail_stats_total.at(streamID)));
     } else {
       for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
         for (unsigned status = 0; status < NUM_CACHE_RESERVATION_FAIL_STATUS; ++status) {
-          unsigned long long orig_fail_stats = m_fail_stats.at(streamID)[type][status];
+          u64 orig_fail_stats = m_fail_stats.at(streamID)[type][status];
           m_fail_stats.at(streamID)[type][status] += cs(type, status, true, streamID);
           m_fail_stats_total.at(streamID)[type] += cs(type, status, true, streamID);
           if (DTRACE(M_STATS)) {
@@ -3172,10 +3270,10 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
   } // for (auto iter = cs.m_fail_stats.begin(); iter != cs.m_fail_stats.end(); ++iter) {
 
   for (auto iter = cs.m_line_alloc_fail.begin(); iter != cs.m_line_alloc_fail.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (m_line_alloc_fail.find(streamID) == m_line_alloc_fail.end()) {
-      m_line_alloc_fail.insert(std::pair<unsigned long long,
-          std::vector<std::vector<unsigned long long>>>(streamID, cs.m_line_alloc_fail.at(streamID)));
+      m_line_alloc_fail.insert(std::pair<u64,
+          std::vector<std::vector<u64>>>(streamID, cs.m_line_alloc_fail.at(streamID)));
     } else {
       for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
         for (unsigned driver = 0; driver < NUM_LINE_ALLOC_FAIL_DRIVER; ++driver) {          
@@ -3185,10 +3283,10 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
     }
   }  
   for (auto iter = cs.m_mshr_entry_fail.begin(); iter != cs.m_mshr_entry_fail.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (m_mshr_entry_fail.find(streamID) == m_mshr_entry_fail.end()) {
-      m_mshr_entry_fail.insert(std::pair<unsigned long long,
-          std::vector<std::vector<unsigned long long>>>(streamID, cs.m_mshr_entry_fail.at(streamID)));
+      m_mshr_entry_fail.insert(std::pair<u64,
+          std::vector<std::vector<u64>>>(streamID, cs.m_mshr_entry_fail.at(streamID)));
     } else {
       for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
         for (unsigned driver = 0; driver < NUM_MSHR_ENTRY_FAIL_DRIVER; ++driver) {          
@@ -3198,10 +3296,10 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
     }
   }  
   for (auto iter = cs.m_miss_q_full.begin(); iter != cs.m_miss_q_full.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (m_miss_q_full.find(streamID) == m_miss_q_full.end()) {
-      m_miss_q_full.insert(std::pair<unsigned long long,
-          std::vector<std::vector<unsigned long long>>>(streamID, cs.m_miss_q_full.at(streamID)));
+      m_miss_q_full.insert(std::pair<u64,
+          std::vector<std::vector<u64>>>(streamID, cs.m_miss_q_full.at(streamID)));
     } else {
       for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
         for (unsigned driver = 0; driver < NUM_MISS_QUEUE_FULL_DRIVER; ++driver) {          
@@ -3211,10 +3309,10 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
     }
   }
   for (auto iter = cs.m_mshr_merge_entry_fail.begin(); iter != cs.m_mshr_merge_entry_fail.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (m_mshr_merge_entry_fail.find(streamID) == m_mshr_merge_entry_fail.end()) {
-      m_mshr_merge_entry_fail.insert(std::pair<unsigned long long,
-          std::vector<std::vector<unsigned long long>>>(streamID, cs.m_mshr_merge_entry_fail.at(streamID)));
+      m_mshr_merge_entry_fail.insert(std::pair<u64,
+          std::vector<std::vector<u64>>>(streamID, cs.m_mshr_merge_entry_fail.at(streamID)));
     } else {
       for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
         for (unsigned driver = 0; driver < NUM_MSHR_MERGE_ENTRY_FAIL_DRIVER; ++driver) {          
@@ -3225,10 +3323,10 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
   }
 
   for (auto iter = cs.m_mshr_occupancy_stats.begin(); iter != cs.m_mshr_occupancy_stats.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (m_mshr_occupancy_stats.find(streamID) == m_mshr_occupancy_stats.end()) {
       m_mshr_occupancy_stats.insert(
-        std::pair<unsigned long long,
+        std::pair<u64,
         std::vector<std::vector<unsigned>>>(streamID, cs.m_mshr_occupancy_stats.at(streamID)));
     } else {
       const unsigned sms = 4; // gpgpu_n_cores_per_cluster
@@ -3240,8 +3338,7 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
           if (DTRACE(MSHR_STATS) || DTRACE(M_STATS)) {
             fprintf(Trace::out, "%s %s"
               "m_mshr_occupancy_stats[streamID:%llu][sm:%u][warp:%u](%u->%u) += cs(%u, %u, %llu)\n",
-              local_cache_type,
-              !strcmp(local_cache_type, "L2") ? l2_prefix.c_str() : "",
+              local_cache_type, get_cache_name(),
               streamID, sm, warp,
               orig_mshr_occupancy, m_mshr_occupancy_stats.at(streamID)[sm][warp],
               sm, warp, streamID
@@ -3252,143 +3349,25 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
     }
   } // for (auto iter = cs.m_mshr_occupancy_stats.begin(); iter != cs.m_mshr_occupancy_stats.end(); ++iter) {
 
-  for (auto iter = cs.m_overall_avg_l1d_rd_fill_to_evict_gap.begin(); 
-    iter != cs.m_overall_avg_l1d_rd_fill_to_evict_gap.end(); ++iter) {
-    unsigned long long streamID = iter->first;
-    if (m_overall_avg_l1d_rd_fill_to_evict_gap.find(streamID) == m_overall_avg_l1d_rd_fill_to_evict_gap.end()) {
-      m_overall_avg_l1d_rd_fill_to_evict_gap.insert(
-        std::pair<unsigned long long, unsigned long long>(
-          streamID, cs.m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID)));
-    } else {
-      const char* tgt_item = "m_overall_avg_l1d_rd_fill_to_evict_gap";
-      m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID) += cs(streamID, tgt_item);
-    }
-  }
-  for (auto iter = cs.m_l1d_rd_miss_served_cycles.begin(); 
-    iter != cs.m_l1d_rd_miss_served_cycles.end(); ++iter) {
-    unsigned long long streamID = iter->first;
-    if (m_l1d_rd_miss_served_cycles.find(streamID) == m_l1d_rd_miss_served_cycles.end()) {
-      m_l1d_rd_miss_served_cycles.insert(
-        std::pair<unsigned long long, unsigned long long>(
-          streamID, cs.m_l1d_rd_miss_served_cycles.at(streamID)));
-    } else {
-      const char* tgt_item = "m_l1d_rd_miss_served_cycles";
-      m_l1d_rd_miss_served_cycles.at(streamID) += cs(streamID, tgt_item);
-    }
-  }  
-  for (auto iter = cs.m_l1d_wr_miss_served_cycles.begin(); 
-    iter != cs.m_l1d_wr_miss_served_cycles.end(); ++iter) {
-    unsigned long long streamID = iter->first;
-    if (m_l1d_wr_miss_served_cycles.find(streamID) == m_l1d_wr_miss_served_cycles.end()) {
-      m_l1d_wr_miss_served_cycles.insert(
-        std::pair<unsigned long long, unsigned long long>(
-          streamID, cs.m_l1d_wr_miss_served_cycles.at(streamID)));
-    } else {
-      const char* tgt_item = "m_l1d_wr_miss_served_cycles";
-      m_l1d_wr_miss_served_cycles.at(streamID) += cs(streamID, tgt_item);
-    }
-  }
-
-  // for (auto iter = cs.m_l1d_avg_rd_byp_activates.begin(); 
-  //   iter != cs.m_l1d_avg_rd_byp_activates.end(); ++iter) {
-  //   unsigned long long streamID = iter->first;
-  //   if (m_l1d_avg_rd_byp_activates.find(streamID) == m_l1d_avg_rd_byp_activates.end()) {
-  //     m_l1d_avg_rd_byp_activates.insert(
-  //       std::pair<unsigned long long, unsigned>(
-  //         streamID, cs.m_l1d_avg_rd_byp_activates.at(streamID)));
-  //   } else {
-  //     const char* tgt_item = "m_l1d_avg_rd_byp_activates";
-  //     m_l1d_avg_rd_byp_activates.at(streamID) += static_cast<unsigned>(cs(streamID, tgt_item));
-  //   }
-  // }
-  // for (auto iter = cs.m_l1d_avg_rd_byp_deactivates.begin(); 
-  //   iter != cs.m_l1d_avg_rd_byp_deactivates.end(); ++iter) {
-  //   unsigned long long streamID = iter->first;
-  //   if (m_l1d_avg_rd_byp_deactivates.find(streamID) == m_l1d_avg_rd_byp_deactivates.end()) {
-  //     m_l1d_avg_rd_byp_deactivates.insert(
-  //       std::pair<unsigned long long, unsigned>(
-  //         streamID, cs.m_l1d_avg_rd_byp_deactivates.at(streamID)));
-  //   } else {
-  //     const char* tgt_item = "m_l1d_avg_rd_byp_deactivates";
-  //     m_l1d_avg_rd_byp_deactivates.at(streamID) += static_cast<unsigned>(cs(streamID, tgt_item));
-  //   }
-  // }   
-
-  for (auto iter = cs.m_l1d_misses.begin(); 
-    iter != cs.m_l1d_misses.end(); ++iter) {
-    unsigned long long streamID = iter->first;
-    if (m_l1d_misses.find(streamID) == m_l1d_misses.end()) {
-      m_l1d_misses.insert(
-        std::pair<unsigned long long, unsigned>(
-          streamID, cs.m_l1d_misses.at(streamID)));
-    } else {
-      const char* tgt_item = "m_l1d_misses";
-      m_l1d_misses.at(streamID) += static_cast<unsigned>(cs(streamID, tgt_item));
-    }
-  }  
-  for (auto iter = cs.m_l1d_rd_misses.begin(); 
-    iter != cs.m_l1d_rd_misses.end(); ++iter) {
-    unsigned long long streamID = iter->first;
-    if (m_l1d_rd_misses.find(streamID) == m_l1d_rd_misses.end()) {
-      m_l1d_rd_misses.insert(
-        std::pair<unsigned long long, unsigned>(
-          streamID, cs.m_l1d_rd_misses.at(streamID)));
-    } else {
-      const char* tgt_item = "m_l1d_rd_misses";
-      m_l1d_rd_misses.at(streamID) += static_cast<unsigned>(cs(streamID, tgt_item));
-    }
-  }  
-  for (auto iter = cs.m_l1d_wr_misses.begin(); 
-    iter != cs.m_l1d_wr_misses.end(); ++iter) {
-    unsigned long long streamID = iter->first;
-    if (m_l1d_wr_misses.find(streamID) == m_l1d_wr_misses.end()) {
-      m_l1d_wr_misses.insert(
-        std::pair<unsigned long long, unsigned>(
-          streamID, cs.m_l1d_wr_misses.at(streamID)));
-    } else {
-      const char* tgt_item = "m_l1d_wr_misses";
-      m_l1d_wr_misses.at(streamID) += static_cast<unsigned>(cs(streamID, tgt_item));
-    }
-  }    
-
-  for (auto iter = cs.m_l2_sub_miss_served_cycles.begin(); 
-    iter != cs.m_l2_sub_miss_served_cycles.end(); ++iter) {
-    unsigned long long streamID = iter->first;
-    if (m_l2_sub_miss_served_cycles.find(streamID) == m_l2_sub_miss_served_cycles.end()) {
-      m_l2_sub_miss_served_cycles.insert(
-        std::pair<unsigned long long, std::vector<unsigned long long>>(
-          streamID, cs.m_l2_sub_miss_served_cycles.at(streamID)));
-    } else {
-      for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); ++l2_sub) {
-        const char* tgt_item = "m_l2_sub_miss_served_cycles";
-        m_l2_sub_miss_served_cycles.at(streamID)[l2_sub] += cs(l2_sub, streamID, tgt_item);
-        // printf("m_l2_sub_miss_served_cycles[streamID:%llu][sub:%u] += %llu\n",
-        //   streamID, l2_sub, cs(l2_sub, streamID));
-      }      
-    }
-  }
-  for (auto iter = cs.m_l2_sub_misses.begin(); 
-    iter != cs.m_l2_sub_misses.end(); ++iter) {
-    unsigned long long streamID = iter->first;
-    if (m_l2_sub_misses.find(streamID) == m_l2_sub_misses.end()) {
-      m_l2_sub_misses.insert(
-        std::pair<unsigned long long, std::vector<unsigned>>(
-          streamID, cs.m_l2_sub_misses.at(streamID)));
-    } else {
-      for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); ++l2_sub) {
-        const char* tgt_item = "m_l2_sub_misses";
-        m_l2_sub_misses.at(streamID)[l2_sub] += static_cast<unsigned>(cs(l2_sub, streamID, tgt_item));
-        // printf("m_l2_sub_misses[streamID:%llu][sub:%u] += %u\n",
-        //   streamID, l2_sub, cs(l2_sub, streamID));        
-      }
-    }
-  }  
+  accu_single_stat("m_overall_avg_l1d_rd_fill_to_evict_gap", cs);
+  accu_single_stat("m_l1d_rd_miss_served_cycles", cs);
+  accu_single_stat("m_l1d_wr_miss_served_cycles", cs);
+  accu_single_stat("m_l1d_rd_byp_activates", cs);
+  accu_single_stat("m_l1d_rd_byp_deactivates", cs);
+  accu_single_stat("m_l1d_accesses", cs);
+  accu_single_stat("m_l1d_reads", cs);
+  accu_single_stat("m_l1d_writes", cs);  
+  accu_single_stat("m_l1d_misses", cs);
+  accu_single_stat("m_l1d_rd_misses", cs);
+  accu_single_stat("m_l1d_wr_misses", cs);
+  accu_single_stat("m_l2_sub_miss_served_cycles", cs);
+  accu_single_stat("m_l2_sub_misses", cs);
 
   for (auto iter = cs.m_accu_l2_dram_queue_size.begin(); iter != cs.m_accu_l2_dram_queue_size.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (m_accu_l2_dram_queue_size.find(streamID) == m_accu_l2_dram_queue_size.end()) {
       m_accu_l2_dram_queue_size.insert(
-        std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_accu_l2_dram_queue_size.at(streamID)));
+        std::pair<u64, std::vector<unsigned>>(streamID, cs.m_accu_l2_dram_queue_size.at(streamID)));
     } else {
       for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); ++l2_sub) {
         m_accu_l2_dram_queue_size.at(streamID)[l2_sub] += cs(l2_sub, streamID);
@@ -3396,10 +3375,10 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
     }
   }
   for (auto iter = cs.m_accu_l2_icnt_queue_size.begin(); iter != cs.m_accu_l2_icnt_queue_size.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (m_accu_l2_icnt_queue_size.find(streamID) == m_accu_l2_icnt_queue_size.end()) {
       m_accu_l2_icnt_queue_size.insert(
-        std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_accu_l2_icnt_queue_size.at(streamID)));
+        std::pair<u64, std::vector<unsigned>>(streamID, cs.m_accu_l2_icnt_queue_size.at(streamID)));
     } else {
       for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); ++l2_sub) {
         m_accu_l2_icnt_queue_size.at(streamID)[l2_sub] += cs(l2_sub, streamID);
@@ -3407,10 +3386,10 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
     }
   }
   for (auto iter = cs.m_l2_dram_q_accesses.begin(); iter != cs.m_l2_dram_q_accesses.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (m_l2_dram_q_accesses.find(streamID) == m_l2_dram_q_accesses.end()) {
       m_l2_dram_q_accesses.insert(
-        std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_l2_dram_q_accesses.at(streamID)));
+        std::pair<u64, std::vector<unsigned>>(streamID, cs.m_l2_dram_q_accesses.at(streamID)));
     } else {
       for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); ++l2_sub) {
         m_l2_dram_q_accesses.at(streamID)[l2_sub] += cs(l2_sub, streamID);
@@ -3418,10 +3397,10 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
     }
   }  
   for (auto iter = cs.m_l2_icnt_q_accesses.begin(); iter != cs.m_l2_icnt_q_accesses.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (m_l2_icnt_q_accesses.find(streamID) == m_l2_icnt_q_accesses.end()) {
       m_l2_icnt_q_accesses.insert(
-        std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_l2_icnt_q_accesses.at(streamID)));
+        std::pair<u64, std::vector<unsigned>>(streamID, cs.m_l2_icnt_q_accesses.at(streamID)));
     } else {
       for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); ++l2_sub) {
         m_l2_icnt_q_accesses.at(streamID)[l2_sub] += cs(l2_sub, streamID);
@@ -3429,10 +3408,10 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
     }
   }
   for (auto iter = cs.m_l2_mshr_slots_fills.begin(); iter != cs.m_l2_mshr_slots_fills.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (m_l2_mshr_slots_fills.find(streamID) == m_l2_mshr_slots_fills.end()) {
       m_l2_mshr_slots_fills.insert(
-        std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_l2_mshr_slots_fills.at(streamID)));
+        std::pair<u64, std::vector<unsigned>>(streamID, cs.m_l2_mshr_slots_fills.at(streamID)));
     } else {
       for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); ++l2_sub) {
         m_l2_mshr_slots_fills.at(streamID)[l2_sub] += cs(l2_sub, streamID);
@@ -3446,7 +3425,7 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
   return *this;
 }
 
-void cache_stats::print_stats(FILE *fout, unsigned long long streamID,
+void cache_stats::print_stats(FILE *fout, u64 streamID,
                               const char *cache_info) const {
   ///
   /// For a given CUDA stream, print out each non-zero cache statistic for every
@@ -3459,10 +3438,11 @@ void cache_stats::print_stats(FILE *fout, unsigned long long streamID,
   std::vector<unsigned> total_access;
   std::string m_cache_info = cache_info;
   for (auto iter = m_stats.begin(); iter != m_stats.end(); ++iter) {
-    unsigned long long streamid = iter->first;
+    u64 streamid = iter->first;
+    fprintf(fout, "streamID: %llu\n", streamid);
     // when streamID is specified, skip stats for all other streams, otherwise,
     // print stats from all streams
-    if ((streamID != ((unsigned long long) - 1)) && (streamid != streamID)) { 
+    if ((streamID != ((u64) - 1)) && (streamid != streamID)) { 
       continue;
     }
 
@@ -3492,14 +3472,14 @@ void cache_stats::print_stats(FILE *fout, unsigned long long streamID,
   }
 }
 
-void cache_stats::print_fail_stats(FILE *fout, unsigned long long streamID,
+void cache_stats::print_fail_stats(FILE *fout, u64 streamID,
                                    const char *cache_info) const {
   std::string m_cache_info = cache_info;
   for (auto iter = m_fail_stats.begin(); iter != m_fail_stats.end(); ++iter) {
-    unsigned long long streamid = iter->first;
+    u64 streamid = iter->first;
     // when streamID is specified, skip stats for all other streams, otherwise,
     // print stats from all streams
-    if ((streamID != ((unsigned long long) - 1)) && (streamid != streamID)) {
+    if ((streamID != ((u64) - 1)) && (streamid != streamID)) {
       continue;
     }
 
@@ -3607,13 +3587,13 @@ void cache_stats::print_fail_stats(FILE *fout, unsigned long long streamID,
   }
 }
 
-void cache_stats::print_mshr_stats(FILE *fout, unsigned long long streamID,
+void cache_stats::print_mshr_stats(FILE *fout, u64 streamID,
                                    const char *cache_info) const {
   for (auto iter = m_mshr_occupancy_stats.begin(); iter != m_mshr_occupancy_stats.end(); ++iter) {
-    unsigned long long streamid = iter->first;
+    u64 streamid = iter->first;
     // when streamID is specified, skip stats for all other streams, otherwise,
     // print stats from all streams
-    if ((streamID != ((unsigned long long) - 1)) && (streamid != streamID)) {
+    if ((streamID != ((u64) - 1)) && (streamid != streamID)) {
       continue;
     }
     const unsigned sms = 4; // gpgpu_n_cores_per_cluster
@@ -3631,10 +3611,10 @@ void cache_stats::print_mshr_stats(FILE *fout, unsigned long long streamID,
 }
 
 void cache_stats::print_l2_dram_queue_stats(
-  FILE *fout, unsigned l2_dram_q_capacity, unsigned long long streamID, const char *info) const {
+  FILE *fout, unsigned l2_dram_q_capacity, u64 streamID, const char *info) const {
   for (auto iter = m_accu_l2_dram_queue_size.begin(); 
     iter != m_accu_l2_dram_queue_size.end(); ++iter) {
-    if ((streamID != ((unsigned long long) - 1)) && (iter->first != streamID)) {
+    if ((streamID != ((u64) - 1)) && (iter->first != streamID)) {
       continue;
     }
     for (unsigned l2_sub = 0; l2_sub < iter->second.size(); ++l2_sub) {       
@@ -3651,10 +3631,10 @@ void cache_stats::print_l2_dram_queue_stats(
   }
 }
 void cache_stats::print_l2_icnt_queue_stats(
-  FILE *fout, unsigned l2_icnt_q_capacity, unsigned long long streamID, const char *info) const {
+  FILE *fout, unsigned l2_icnt_q_capacity, u64 streamID, const char *info) const {
   for (auto iter = m_accu_l2_icnt_queue_size.begin(); 
     iter != m_accu_l2_icnt_queue_size.end(); ++iter) {
-    if ((streamID != ((unsigned long long) - 1)) && (iter->first != streamID)) {
+    if ((streamID != ((u64) - 1)) && (iter->first != streamID)) {
       continue;
     }
     for (unsigned l2_sub = 0; l2_sub < iter->second.size(); ++l2_sub) {       
@@ -3669,40 +3649,151 @@ void cache_stats::print_l2_icnt_queue_stats(
   }
 }
 
-void cache_stats::print_avg_l1d_rd_fill_to_evict_gap(
-  FILE* fout, unsigned long long streamID) const {
+void cache_stats::print_l1d_accesses(FILE* fout, u64 streamID) const {
+  for (auto iter = m_l1d_accesses.begin();
+    iter != m_l1d_accesses.end(); ++iter)
+  {
+    if ((streamID != ((u64) - 1)) && (iter->first != streamID)) {
+      continue;
+    }
+    fprintf(fout, "\tL1D_ACCESSES = %u\n", 
+      m_l1d_accesses.at(streamID));
+  }
+}
+void cache_stats::print_l1d_wr_misses(FILE* fout, u64 streamID) const {
+  for (auto iter = m_l1d_wr_misses.begin();
+    iter != m_l1d_wr_misses.end(); ++iter)
+  {
+    if ((streamID != ((u64) - 1)) && (iter->first != streamID)) {
+      continue;
+    }
+    fprintf(fout, "\tL1D_WR_MISSES = %u\n", 
+      m_l1d_wr_misses.at(streamID));
+  }
+}
+void cache_stats::print_l1d_writes(FILE* fout, u64 streamID) const {
+  for (auto iter = m_l1d_writes.begin();
+    iter != m_l1d_writes.end(); ++iter)
+  {
+    if ((streamID != ((u64) - 1)) && (iter->first != streamID)) {
+      continue;
+    }
+    fprintf(fout, "\tL1D_WRITES = %u\n", 
+      m_l1d_writes.at(streamID));
+  }
+}
+void cache_stats::print_l1d_rd_misses(FILE* fout, u64 streamID, u64 cycles) const {
+  for (auto iter = m_l1d_rd_misses.begin();
+    iter != m_l1d_rd_misses.end(); ++iter)
+  {
+    if ((streamID != ((u64) - 1)) && (iter->first != streamID)) {
+      continue;
+    }
+    fprintf(fout, "\tL1D_RD_MISSES = %u\n", m_l1d_rd_misses.at(streamID));
+  }
+}
+void cache_stats::print_l1d_reads(FILE* fout, u64 streamID, u64 cycles) const {
+  if (m_l1d_rd_misses.find(streamID) != m_l1d_rd_misses.end()) {
+    if (DTRACE(DEBUG_STATS)) {
+      fprintf(Trace::out, "%llu %s m_l1d_rd_misses[streamID:%llu] = %u\n", 
+        cycles, __func__, streamID, m_l1d_rd_misses.at(streamID));
+    }
+    assert(m_l1d_reads.find(streamID) != m_l1d_reads.end());
+  }
+  for (auto iter = m_l1d_reads.begin();
+    iter != m_l1d_reads.end(); ++iter)
+  {
+    if ((streamID != ((u64) - 1)) && (iter->first != streamID)) {
+      continue;
+    }
+    fprintf(fout, "\tL1D_READS = %u\n", 
+      m_l1d_reads.at(streamID));
+  }
+}
+
+void cache_stats::print_l1d_avg_rd_byp_activates(FILE* fout, u64 streamID) const {
+  for (auto iter = m_l1d_rd_byp_activates.begin(); iter != m_l1d_rd_byp_activates.end(); ++iter)
+  {
+    if ((streamID != ((u64) - 1)) && (iter->first != streamID)) {
+      continue;
+    }
+    std::map<u64, u32> records = m_l1d_rd_byp_activates.at(streamID);
+    u32 total_byp_activates = 0;
+    for (auto& iter : records) {
+      total_byp_activates += iter.second;
+    }
+    float avg_byp_act = records.empty() ? 0.0f : total_byp_activates / (float)records.size();
+    fprintf(fout, "\tl1d_avg_rd_byp_act = %f (total_byp_activates:%u / records.size():%zu)\n", 
+      avg_byp_act, total_byp_activates, records.size());
+  }
+}
+void cache_stats::print_l1d_avg_rd_byp_deactivates(FILE* fout, u64 streamID) const {
+  for (auto iter = m_l1d_rd_byp_deactivates.begin(); iter != m_l1d_rd_byp_deactivates.end(); ++iter)
+  {
+    if ((streamID != ((u64) - 1)) && (iter->first != streamID)) {
+      continue;
+    }
+    std::map<u64, u32> records = m_l1d_rd_byp_deactivates.at(streamID);
+    u32 total_byp_deactivates = 0;
+    for (auto& iter : records) {
+      total_byp_deactivates += iter.second;
+    }
+    float avg_byp_deact = total_byp_deactivates / (float)records.size();
+    fprintf(fout, "\tl1d_avg_rd_byp_deact = %f\n", avg_byp_deact);
+  }
+}
+void cache_stats::print_l1d_avg_rd_byp_act_rate(FILE* fout, u64 streamID) const {
+  for (auto iter = m_l1d_rd_byp_activates.begin(); iter != m_l1d_rd_byp_activates.end(); ++iter)
+  {
+    if ((streamID != ((u64) - 1)) && (iter->first != streamID)) {
+      continue;
+    }
+    std::map<u64, u32> records = m_l1d_rd_byp_activates.at(streamID);
+    u32 total_byp_activates = 0;
+    for (auto& iter : records) {
+      total_byp_activates += iter.second;
+    }
+
+    u32 total_l1d_reads = 0;
+    for (auto iter = m_l1d_reads.begin(); iter != m_l1d_reads.end(); ++iter)
+    {
+      total_l1d_reads += iter->second;
+    }
+    
+    float avg_byp_act_rate = total_byp_activates / (float)total_l1d_reads;
+    fprintf(fout, "\tl1d_avg_rd_byp_act_rate = %f "
+      "(total_byp_activates:%u / total_l1d_reads:%u)\n", 
+      avg_byp_act_rate, total_byp_activates, total_l1d_reads);
+  }
+}
+
+void cache_stats::print_avg_l1d_rd_fill_to_evict_gap(FILE* fout, u64 streamID) const {
   for (auto iter = m_overall_avg_l1d_rd_fill_to_evict_gap.begin();
     iter != m_overall_avg_l1d_rd_fill_to_evict_gap.end(); ++iter)
   {
-    if ((streamID != ((unsigned long long) - 1)) && (iter->first != streamID)) {
+    if ((streamID != ((u64) - 1)) && (iter->first != streamID)) {
       continue;
     }
     fprintf(fout, "\tm_overall_avg_l1d_rd_fill_to_evict_gap = %llu\n", 
       m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID));
-    printf("\tm_overall_avg_l1d_rd_fill_to_evict_gap = %llu\n", 
-      m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID));
   }
 }
-void cache_stats::print_avg_l1d_rd_miss_served_cycles(
-  FILE* fout, unsigned long long streamID) const {
+void cache_stats::print_avg_l1d_rd_miss_served_cycles(FILE* fout, u64 streamID) const {
   for (auto iter = m_l1d_rd_miss_served_cycles.begin();
     iter != m_l1d_rd_miss_served_cycles.end(); ++iter)
   {
-    if ((streamID != ((unsigned long long) - 1)) && (iter->first != streamID)) {
+    if ((streamID != ((u64) - 1)) && (iter->first != streamID)) {
       continue;
     }
     fprintf(fout, "\tavg_l1d_rd_miss_served_cycles = %llu\n", 
       m_l1d_rd_miss_served_cycles.at(streamID));
-    printf("\tavg_l1d_rd_miss_served_cycles = %llu\n", 
-      m_l1d_rd_miss_served_cycles.at(streamID));
   }  
 }
-void cache_stats::print_avg_l1d_wr_miss_served_cycles(
-  FILE* fout, unsigned long long streamID) const {
+void cache_stats::print_avg_l1d_wr_miss_served_cycles(FILE* fout, u64 streamID) const {
   for (auto iter = m_l1d_wr_miss_served_cycles.begin();
     iter != m_l1d_wr_miss_served_cycles.end(); ++iter)
   {
-    if ((streamID != ((unsigned long long) - 1)) && (iter->first != streamID)) {
+    if ((streamID != ((u64) - 1)) && (iter->first != streamID)) {
       continue;
     }
     fprintf(fout, "\tavg_l1d_wr_miss_served_cycles = %llu\n", 
@@ -3710,15 +3801,14 @@ void cache_stats::print_avg_l1d_wr_miss_served_cycles(
   }  
 }
 
-void cache_stats::print_avg_l2_miss_served_cycles(
-  FILE* fout, unsigned long long streamID) const {
+void cache_stats::print_avg_l2_miss_served_cycles(FILE* fout, u64 streamID) const {
   for (auto iter = m_l2_sub_miss_served_cycles.begin();
     iter != m_l2_sub_miss_served_cycles.end(); ++iter)
   {
-    if ((streamID != ((unsigned long long) - 1)) && (iter->first != streamID)) {
+    if ((streamID != ((u64) - 1)) && (iter->first != streamID)) {
       continue;
     }
-    unsigned long long avg_l2_miss_served_cycles = 0;
+    u64 avg_l2_miss_served_cycles = 0;
     unsigned m_l2_misses = 0;
     for (unsigned l2_sub = 0; l2_sub < iter->second.size(); ++l2_sub) {
       float avg_l2_sub_miss_served_cycles = 
@@ -3736,10 +3826,10 @@ void cache_stats::print_avg_l2_miss_served_cycles(
 }
 
 void cache_stats::print_l2_mshr_slots_stats(
-  FILE *fout, unsigned l2_mshr_allocated_slots, unsigned long long streamID, const char *info) const {
+  FILE *fout, unsigned l2_mshr_allocated_slots, u64 streamID, const char *info) const {
   for (auto iter = m_l2_mshr_slots_fills.begin(); 
     iter != m_l2_mshr_slots_fills.end(); ++iter) {
-    if ((streamID != ((unsigned long long) - 1)) && (iter->first != streamID)) {
+    if ((streamID != ((u64) - 1)) && (iter->first != streamID)) {
       continue;
     }
     const unsigned allocatd_mshr_slots = 4; // Replace this with m_config.xx
@@ -3759,8 +3849,7 @@ void cache_stats::print_l2_miss_q_pops(FILE *fout, const char *info) const {
   fprintf(fout, "%s = %llu\n", info, m_l2_miss_q_pops);
 }
 
-void cache_sub_stats::print_port_stats(FILE *fout,
-                                       const char *cache_name) const {
+void cache_sub_stats::print_port_stats(FILE *fout, const char *cache_name) const {
   float data_port_util = 0.0f;
   if (port_available_cycles > 0) {
     data_port_util = (float)data_port_busy_cycles / port_available_cycles;
@@ -3773,7 +3862,7 @@ void cache_sub_stats::print_port_stats(FILE *fout,
   fprintf(fout, "%s_fill_port_util = %.3f\n", cache_name, fill_port_util);
 }
 
-unsigned long long cache_stats::get_stats(
+u64 cache_stats::get_stats(
     enum mem_access_type *access_type, unsigned num_access_type,
     enum cache_request_status *access_status,
     unsigned num_access_status) const {
@@ -3783,9 +3872,9 @@ unsigned long long cache_stats::get_stats(
   /// mem_access_types. "access_status" is an array of "num_access_status"
   /// cache_request_statuses.
   ///
-  unsigned long long total = 0;
+  u64 total = 0;
   for (auto iter = m_stats.begin(); iter != m_stats.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     for (unsigned type = 0; type < num_access_type; ++type) {
       for (unsigned status = 0; status < num_access_status; ++status) {
         if (!check_valid((int)access_type[type], (int)access_status[status]))
@@ -3797,7 +3886,7 @@ unsigned long long cache_stats::get_stats(
   return total;
 }
 
-void cache_stats::get_sub_stats(struct cache_sub_stats &css) const {
+void cache_stats::get_sub_stats(struct cache_sub_stats &css, const char* cache_name) const {
   ///
   /// Overwrites "css" with the appropriate statistics from this cache.
   ///
@@ -3805,40 +3894,37 @@ void cache_stats::get_sub_stats(struct cache_sub_stats &css) const {
   t_css.clear();
 
   for (auto iter = m_stats.begin(); iter != m_stats.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
       for (unsigned status = 0; status < NUM_CACHE_REQUEST_STATUS; ++status) {
-        if (status == BYPASS_ACTIVATED) {
-          // for debug
-          // if (m_l1d_avg_rd_byp_activates.find(streamID) == m_l1d_avg_rd_byp_activates.end()) {
-          //   assert(0);
-          // }
-          // t_css.avg_rd_byp_activates = 
-          //   (t_css.avg_rd_byp_activates + m_l1d_avg_rd_byp_activates.at(streamID)) >> 1;
-        } 
-        else if (status == BYPASS_DEACTIVATED) {
-          // t_css.avg_rd_byp_deactivates = 
-          //   (t_css.avg_rd_byp_deactivates + m_l1d_avg_rd_byp_deactivates.at(streamID)) >> 1;
-        }         
+        // if (status == BYPASS_ACTIVATED) {
+        //   t_css.avg_rd_byp_activates = 
+        //     (t_css.avg_rd_byp_activates + m_l1d_rd_byp_activates.at(streamID)) >> 1;
+        // } 
+        // else if (status == BYPASS_DEACTIVATED) {
+        //   t_css.avg_rd_byp_deactivates = 
+        //     (t_css.avg_rd_byp_deactivates + m_l1d_rd_byp_deactivates.at(streamID)) >> 1;
+        // }         
         if (status == HIT || status == MISS || status == SECTOR_MISS || status == HIT_RESERVED) {
           t_css.accesses += m_stats.at(streamID)[type][status];
           if (type == GLOBAL_ACC_R || type == CONST_ACC_R || type == INST_ACC_R) {
             t_css.reads += m_stats.at(streamID)[type][status];
-            // for debug
-            if (DTRACE(TRACE_RD_MISS_CNT)) {
-              fprintf(Trace::out, "t_css.reads:%llu += "
-                "m_stats.at(streamID)[type][status]:%llu\n", 
-                t_css.reads, m_stats.at(streamID)[type][status]);
-            }
-            // printf("t_css.reads += %llu -> = %llu\n", 
-            //   m_stats.at(streamID)[type][status], t_css.reads);            
           } else {
             t_css.writes += m_stats.at(streamID)[type][status];
           }
         }
         if (status == MISS) {
-          if (type == GLOBAL_ACC_R || type == CONST_ACC_R || type == INST_ACC_R) {
+          if (type == GLOBAL_ACC_R || type == CONST_ACC_R || type == INST_ACC_R) {            
             t_css.rd_misses += m_stats.at(streamID)[type][status];
+            if (DTRACE(DEBUG_L1D_RD_MISS_STATS)) {
+              if (!strcmp(cache_name, "l1d")) {
+                fprintf(Trace::out, "L1D t_css.rd_misses: %llu += "
+                  "m_stats.at(streamID:%llu)[type:%d][%s]:%llu\n", 
+                  t_css.rd_misses, streamID, type, 
+                  cache_request_status_str((enum cache_request_status)status), 
+                  m_stats.at(streamID)[type][status]);
+              }
+            }
           } else if (type == GLOBAL_ACC_W) {
             t_css.wr_misses += m_stats.at(streamID)[type][status];
           }
@@ -3883,7 +3969,7 @@ void cache_stats::get_sub_stats_pw(struct cache_sub_stats_pw &css) const {
   t_css.clear();
 
   for (auto iter = m_stats_pw.begin(); iter != m_stats_pw.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
       for (unsigned status = 0; status < NUM_CACHE_REQUEST_STATUS; ++status) {
         if (status == HIT || status == MISS ||
@@ -3978,7 +4064,7 @@ void cache_stats::sample_cache_port_utility(bool data_port_busy,
 
 void baseline_cache::dump_cache_access_info(
   const char* caller,
-  new_addr_type addr, mem_fetch *mf, unsigned long long time, 
+  new_addr_type addr, mem_fetch *mf, u64 time, 
   enum cache_request_status status,
   bool dump_inst_str) {
 
@@ -3989,14 +4075,14 @@ void baseline_cache::dump_cache_access_info(
   fprintf(Trace::out,
       "%llu %s%s%s %s %s addr: %#llx block_addr: %#llx "
       "byte_mask: 0x%016lx%016lx\n",
-      (unsigned long long)time,
+      (u64)time,
       caller,
       dump_inst_str ? m_gpu->gpgpu_ctx->func_sim->ptx_get_insn_str(mf->get_inst().pc).c_str() : "",
       m_is_l1d ? "L1D" : m_is_l2 ? "L2C" : "xx$",
       mf_request_type_str(mf->get_type()),
       cache_request_status_str(status), 
-      (unsigned long long)mf->get_addr(),
-      (unsigned long long)block_addr,
+      (u64)mf->get_addr(),
+      (u64)block_addr,
       byte_mask_hi_lo.first, byte_mask_hi_lo.second
     );
 }
@@ -4158,26 +4244,6 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
   // [GPGPU-SIM][TODO]
   // assert(mf->get_original_mf());
 
-  // if (m_config.m_bypass_low_loc_lines == 'T') 
-  // {
-  //   assert(m_is_l1d);
-  //   if (mf->get_l1d_bypass_noalloc()) {
-  //     assert(!mf->is_write());
-  //     assert(!mf->isatomic());
-  //     extra_mf_fields_lookup::iterator e = m_extra_mf_fields.find(mf);
-  //     if (e != m_extra_mf_fields.end()) {
-  //       if (DTRACE(VERIFY_L1D_BYPASS)) {
-  //         fprintf(Trace::out, "%llu L1D bypassed fill for mf uid:%u addr:%#llx\n",
-  //           time, mf->get_inst().get_uid(), mf->get_addr());
-  //       }
-  //     }
-  //     // case can pass (m_lfb.push_back should not be bypassed)
-  //     // m_extra_mf_fields.erase(e);
-  //     // mf->set_l1d_bypass_noalloc(false);
-  //     // return;
-  //   }
-  // }
-
   extra_mf_fields_lookup::iterator e = m_extra_mf_fields.find(mf);
   assert(e != m_extra_mf_fields.end());
   assert(e->second.m_valid);
@@ -4208,7 +4274,7 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
         if (DTRACE(TRACE_BYPASSED_L1D_PKT) || DTRACE(HIT_L1D_BYPASSED_ITEM)) {
           dumpCacheEvent(time, "baseline_cache::fill", 
             "HIT_L1D_BYPASSED_ITEM L1D bypassed m_tag_array->fill", mf);
-        }        
+        }
       }
     } else {
       if (DTRACE(CACHE_EVENT)) {
@@ -4260,16 +4326,10 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
         mf->set_l1d_rd_miss_served_time(time - mf->m_l1d_rd_miss_serve_begin_time);
         m_stats.avg_l1d_rd_miss_served_cycles(
           mf->get_streamID(), time - mf->m_l1d_rd_miss_serve_begin_time);
-        m_stats.inc_l1d_rd_misses(mf->get_streamID());
-        if (DTRACE(L1D_MISS_SERVED_CYCLES)) {
-          fprintf(Trace::out, "%llu l1d_rd_miss_served_cycles[addr:%#llx] = %llu\n", 
-            time, mf->get_addr(), 
-            time - mf->m_l1d_rd_miss_serve_begin_time);
-        }
+
       } else if (mf->is_write()) {
-        m_stats.inc_l1d_wr_miss_served_cycles(
+        m_stats.avg_l1d_wr_miss_served_cycles(
           mf->get_streamID(), time - mf->m_wr_miss_serve_begin_time);
-        m_stats.inc_l1d_wr_misses(mf->get_streamID());
       }
     }
   } else {  
@@ -4286,11 +4346,14 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
       if (!mf->is_write() && !mf->isatomic()) {
         m_stats.avg_l1d_rd_miss_served_cycles(
           mf->get_streamID(), time - mf->m_l1d_rd_miss_serve_begin_time);
-        m_stats.inc_l1d_rd_misses(mf->get_streamID());
+
+        if (DTRACE(DEBUG_STATS)) {
+          fprintf(Trace::out, "%llu inc_l1d_rd_misses[streamID:%llu] = %u\n",
+            time, mf->get_streamID(), m_stats.get_l1d_rd_misses(mf->get_streamID()));
+        }
       } else if (mf->is_write()) {
-        m_stats.inc_l1d_wr_miss_served_cycles(
+        m_stats.avg_l1d_wr_miss_served_cycles(
           mf->get_streamID(), time - mf->m_wr_miss_serve_begin_time);
-        m_stats.inc_l1d_wr_misses(mf->get_streamID());
       }
     }
 
@@ -4506,7 +4569,6 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
       if (read_only) {
         m_tag_array->access(block_addr, time, cache_index, mf);
       } else {
-        // 3/10 Seems alike above but performs better ?
         if (m_config.m_bypass_low_loc_lines == 'T') {
           assert(m_is_l1d);
           if (!m_tag_array->hit_l1d_bypassed_item(mf)) {
@@ -4521,8 +4583,6 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
         } else {
           m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
         }
-
-        // m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf); // default
       }
 
       // case can pass
@@ -5332,8 +5392,9 @@ enum cache_request_status data_cache::rd_hit_base(
   new_addr_type block_addr = m_config.block_addr(addr);
 
   if (m_config.m_bypass_low_loc_lines == 'T') {
-    // L1D bypassed pkt can never enter here
-    assert(!m_tag_array->hit_l1d_bypassed_item(mf));
+    if (m_is_l1d && m_tag_array->hit_l1d_bypassed_item(mf)) {
+      assert(0);
+    }
   }
 
   m_tag_array->access(block_addr, time, cache_index, mf); // default
@@ -5498,6 +5559,10 @@ enum cache_request_status data_cache::process_tag_probe(
           "data_cache::process_tag_probe", "m_wr_miss", mf);
       }
 
+      if (m_is_l1d) {
+        m_stats.inc_l1d_wr_misses(mf->get_streamID());
+      }      
+
       access_status = (this->*m_wr_miss)(addr, cache_index, mf, time, events, probe_status);
       if (access_status == cache_request_status::MISS) {
         mf->set_wr_miss_serve_begin_time(time);
@@ -5510,20 +5575,25 @@ enum cache_request_status data_cache::process_tag_probe(
     }
   } else {  // Read
     if (probe_status == HIT) {
-      // newly added assertion to ensure bypassed L1D req would never enter read hit path
-      // case can pass
       if (m_config.m_bypass_low_loc_lines == 'T') {
-        if (m_tag_array->hit_l1d_bypassed_item(mf)) {
-         assert(!m_is_l1d);
+        if (m_is_l1d && m_tag_array->hit_l1d_bypassed_item(mf)) {
+          // nothing
+        } else {
+          access_status = (this->*m_rd_hit)(addr, cache_index, mf, time, events, probe_status);  
         }
+      } else {
+        access_status = (this->*m_rd_hit)(addr, cache_index, mf, time, events, probe_status);  
       }
-
-      access_status = (this->*m_rd_hit)(addr, cache_index, mf, time, events, probe_status);
     } else if (probe_status != RESERVATION_FAIL) {
       if (DTRACE(CACHE_EVENT)) {
         dumpCacheEvent(time, 
           "data_cache::process_tag_probe", "m_rd_miss", mf);
-      }
+      }      
+
+      if (m_is_l1d) {
+        m_stats.inc_l1d_rd_misses(mf->get_streamID());
+      }      
+
       access_status = (this->*m_rd_miss)(addr, cache_index, mf, time, events, probe_status);
       if (access_status == cache_request_status::MISS) {
         mf->set_rd_miss_serve_begin_time(time);
@@ -5539,6 +5609,18 @@ enum cache_request_status data_cache::process_tag_probe(
   m_bandwidth_management.use_data_port(mf, access_status, events, wr);
 
   return access_status;
+}
+
+void data_cache::update_l1d_miss_stats(const cache_request_status& probe_status, mem_fetch *mf) {
+  if (probe_status == MISS || probe_status == SECTOR_MISS) {
+    if (mf && m_is_l1d) {
+      if (!mf->is_write() && !mf->isatomic()) {
+        m_stats.inc_l1d_rd_misses(mf->get_streamID());
+      } else if (mf->is_write()) {
+        m_stats.inc_l1d_wr_misses(mf->get_streamID());
+      }
+    }
+  }  
 }
 
 // Both the L1 and L2 currently use the same access function.
@@ -5565,11 +5647,31 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
   //   inter_warp_has_interference, inter_warp_interfere_record,
   //   true /* probe_mode */); // default logic
 
+  if (m_is_l1d && mf) {
+    if (!mf->is_write() && !mf->isatomic()) {
+      m_stats.inc_l1d_reads(mf->get_streamID());
+
+      if (DTRACE(DEBUG_STATS)) {
+        fprintf(Trace::out, "%llu inc_l1d_reads[streamID:%llu] = %u\n",
+          time, mf->get_streamID(), m_stats.get_l1d_reads(mf->get_streamID()));
+      }    
+    } else if (mf->is_write()) {
+      m_stats.inc_l1d_writes(mf->get_streamID());
+    } 
+    m_stats.inc_l1d_accesses(mf->get_streamID());    
+  }
+
   enum cache_request_status probe_status = cache_request_status::MISS;
   if (m_config.m_bypass_low_loc_lines == 'T') {
     if (m_tag_array->hit_l1d_bypassed_item(mf)) {
       assert(!mf->is_write());
       assert(!mf->isatomic());
+
+      probe_status = m_tag_array->probe(
+          "data_cache::access",
+          block_addr, cache_index, mf, mf->is_write(), time,
+          inter_warp_has_interference, inter_warp_interfere_record,
+          true /* probe_mode */);
 
       if (DTRACE(TRACE_BYPASSED_L1D_PKT) || DTRACE(HIT_L1D_BYPASSED_ITEM)) {
         dumpCacheEvent(time, "data_cache::access", 
@@ -5593,6 +5695,8 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
           block_addr, cache_index, mf, mf->is_write(), time,
           inter_warp_has_interference, inter_warp_interfere_record,
           true /* probe_mode */);
+      
+      // update_l1d_miss_stats(probe_status, mf); // 3/17 Commented for debug
 
       if (DTRACE(TAG_PROBE)) {
         fprintf(Trace::out, "%llu %s m_bypass_low_loc_lines == 'T' "
@@ -5610,6 +5714,8 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
       block_addr, cache_index, mf, mf->is_write(), time,
       inter_warp_has_interference, inter_warp_interfere_record,
       true /* probe_mode */); // default logic
+
+    // update_l1d_miss_stats(probe_status, mf); // 3/17 Commented for debug
 
     if (DTRACE(TAG_PROBE)) {
       fprintf(Trace::out, "%llu %s m_bypass_low_loc_lines == 'F' "
@@ -5680,7 +5786,8 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
             mf->get_inst().get_uid(), mf->get_addr());
         }
       }
-      assert(probe_status == cache_request_status::MISS);
+      // 3/17 Commented after enabling tag probe when L1D BYP
+      // assert(probe_status == cache_request_status::MISS);
     }
   }
 
@@ -5699,16 +5806,15 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
     }
   }
 
-  if (mf) {
-    [[maybe_unused]] new_addr_type loc_key = m_config.block_addr(mf->get_addr());
-    if (mf->get_l1d_rd_byp_change() == 2) {
-      m_stats.update_l1d_avg_rd_byp_activates(
-        m_tag_array->m_l1d_rd_byp_activated_times[loc_key], mf->get_streamID());
-    } else if (mf->get_l1d_rd_byp_change() == 1) {
-      m_stats.update_l1d_avg_rd_byp_deactivates(
-        m_tag_array->m_l1d_rd_byp_deactivated_times[loc_key], mf->get_streamID());
-    }
-  }
+  new_addr_type loc_key = m_config.block_addr(mf->get_addr());
+  bool en_inc_byp_act = 
+    m_config.m_bypass_low_loc_lines == 'T' && mf->get_l1d_rd_byp_change() == 2;
+  bool en_inc_byp_deact = 
+    m_config.m_bypass_low_loc_lines == 'T' && mf->get_l1d_rd_byp_change() == 1;    
+  m_stats.update_l1d_rd_byp_act(
+    en_inc_byp_act, loc_key, m_tag_array->m_l1d_rd_byp_activated_times[loc_key], mf->get_streamID());
+  m_stats.update_l1d_rd_byp_deact(
+    en_inc_byp_deact, loc_key, m_tag_array->m_l1d_rd_byp_deactivated_times[loc_key], mf->get_streamID());
 
   m_stats.inc_stats(mf->get_access_type(),
                     m_stats.select_stats_status(probe_status, access_status),

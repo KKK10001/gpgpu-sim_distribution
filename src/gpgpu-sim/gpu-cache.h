@@ -2002,6 +2002,7 @@ class mshr_table {
 /// Simple struct to maintain cache accesses, misses, pending hits, and
 /// reservation fails.
 ///
+// Accumulated stats of all kernels
 struct cache_sub_stats {
   unsigned long long accesses;
   unsigned long long reads;
@@ -2159,96 +2160,110 @@ struct cache_sub_stats_pw {
 /// Maintains a record of every 'mem_access_type' and its resulting
 /// 'cache_request_status' : [mem_access_type][cache_request_status]
 ///
+typedef unsigned long long u64;
+typedef unsigned u32;
+
+// per kernel independent
 class cache_stats {
  public:
   cache_stats();
   void clear();
   // Clear AerialVision cache stats after each window
   void clear_pw();
-  unsigned get_mshr_merge_dist_cnt(unsigned long long streamID, unsigned sm_id, unsigned warp_id);
+  u32 get_mshr_merge_dist_cnt(u64 streamID, u32 sm_id, u32 warp_id);
 
-  void overall_average_l1d_rd_fill_to_evict_gap(unsigned long long streamID, unsigned long long served_cycles);
-  void avg_l1d_rd_miss_served_cycles(unsigned long long streamID, unsigned long long served_cycles);
-  void inc_l1d_wr_miss_served_cycles(unsigned long long streamID, unsigned long long served_cycles);
+  void overall_average_l1d_rd_fill_to_evict_gap(u64 streamID, u64 served_cycles);  
+  void avg_l1d_rd_miss_served_cycles(u64 streamID, u64 served_cycles);
+  void avg_l1d_wr_miss_served_cycles(u64 streamID, u64 served_cycles);
   
-  void inc_l1d_rd_misses(unsigned long long streamID);
-  void inc_l1d_wr_misses(unsigned long long streamID);
+  void inc_l1d_accesses(u64 streamID);
+  void inc_l1d_reads(u64 streamID);
+  void inc_l1d_rd_misses(u64 streamID);
+  void inc_l1d_writes(u64 streamID);
+  void inc_l1d_wr_misses(u64 streamID);
 
   // Increment cache stats
-  void inc_mshr_stats(unsigned long long streamID, unsigned sm_id, unsigned warp_id);
-  void inc_accu_l2_dram_queue_size(unsigned long long streamID, unsigned l2_sub, unsigned size);
-  void inc_accu_l2_icnt_queue_size(unsigned long long streamID, unsigned l2_sub, unsigned size);  
-  void inc_l2_dram_q_accesses(unsigned long long streamID, unsigned l2_sub);
-  void inc_l2_icnt_q_accesses(unsigned long long streamID, unsigned l2_sub);
-  void inc_l2_mshr_slots_fills(unsigned long long streamID, unsigned l2_sub);
+  void inc_mshr_stats(u64 streamID, u32 sm_id, u32 warp_id);
+  void inc_accu_l2_dram_queue_size(u64 streamID, u32 l2_sub, u32 size);
+  void inc_accu_l2_icnt_queue_size(u64 streamID, u32 l2_sub, u32 size);  
+  void inc_l2_dram_q_accesses(u64 streamID, u32 l2_sub);
+  void inc_l2_icnt_q_accesses(u64 streamID, u32 l2_sub);
+  void inc_l2_mshr_slots_fills(u64 streamID, u32 l2_sub);
   void inc_l2_sub_miss_served_cycles(
-    unsigned long long streamID, unsigned l2_sub,
-    unsigned long long served_cycles);
-  void inc_l2_sub_misses(unsigned long long streamID, unsigned l2_sub);
+    u64 streamID, u32 l2_sub,
+    u64 served_cycles);
+  void inc_l2_sub_misses(u64 streamID, u32 l2_sub);
 
   void inc_l2_miss_q_pops();
-  void gather_lines_stats(unsigned long long streamID, unsigned unfolded_index);
-  void inc_stats(int access_type, int access_outcome, unsigned long long streamID);  
-  void update_evict_stats(unsigned long long streamID, unsigned long long victim_avg_evict_interval);
+  void gather_lines_stats(u64 streamID, u32 unfolded_index);
+  void inc_stats(int access_type, int access_outcome, u64 streamID);  
+  void update_evict_stats(u64 streamID, u64 victim_avg_evict_interval);
   // Increment AerialVision cache stats
-  void inc_stats_pw(int access_type, int access_outcome, unsigned long long streamID);
+  void inc_stats_pw(int access_type, int access_outcome, u64 streamID);
   void inc_fail_stats(int access_type, int fail_outcome,
-                      unsigned long long streamID, int fail_driver = -1);
+                      u64 streamID, int fail_driver = -1);
   enum cache_request_status select_stats_status(
       enum cache_request_status probe, enum cache_request_status access) const;
-  unsigned long long &operator()(int access_type, int access_outcome,
+  u64 &operator()(int access_type, int access_outcome,
                                  bool fail_outcome,
-                                 unsigned long long streamID);
-  unsigned long long operator()(int access_type, int access_outcome,
+                                 u64 streamID);
+  u64 operator()(int access_type, int access_outcome,
                                 bool fail_outcome,
-                                unsigned long long streamID) const;
+                                u64 streamID) const;
   // for m_mshr_occupancy_stats
-  unsigned long long operator()(unsigned sm, unsigned warp,
-                                unsigned long long streamID) const;
+  u64 operator()(u32 sm, u32 warp, u64 streamID) const;
 
   // for m_accu_l2_dram_queue_size, m_accu_l2_icnt_queue_size, m_l2_dram_q_accesses
-  unsigned operator()(unsigned l2_sub, unsigned long long streamID) const;
+  u32 operator()(u32 l2_sub, u64 streamID) const;
 
-  unsigned long long operator() ( // l1d
-    unsigned long long streamID, const char* tgt_name) const;
+  // l1d
+  u64 operator() (u64 streamID, const char* tgt_name) const;
+  u32 getU32(u64 streamID, const char* tgt_name) const;
 
-  unsigned long long operator()(
-    unsigned l2_sub, unsigned long long streamID, const char* tgt_name) const;
+  u64 operator()(u32 l2_sub, u64 streamID, const char* tgt_name) const;
 
-  unsigned long long operator()(int access_type, int access_outcome,
+  u64 operator()(int access_type, int access_outcome,
                                 bool is_fail_outcome,
                                 int fail_driver,
-                                unsigned long long streamID) const;
+                                u64 streamID) const;
 
   cache_stats operator+(const cache_stats &cs);
   cache_stats &operator+=(const cache_stats &cs);
-  void print_stats(FILE *fout, unsigned long long streamID,
+  void print_stats(FILE *fout, u64 streamID,
                    const char *cache_info = "Cache_stats") const;
-  void print_fail_stats(FILE *fout, unsigned long long streamID,
+  void print_fail_stats(FILE *fout, u64 streamID,
                         const char *cache_info = "Cache_fail_stats") const;
-  void print_mshr_stats(FILE *fout, unsigned long long streamID,
+  void print_mshr_stats(FILE *fout, u64 streamID,
                         const char *cache_info = "mshr_stats") const;
   void print_l2_dram_queue_stats(
-    FILE *fout, unsigned l2_dram_q_capacity, unsigned long long streamID, const char *info = "") const;
+    FILE *fout, u32 l2_dram_q_capacity, u64 streamID, const char *info = "") const;
   void print_l2_icnt_queue_stats(
-    FILE *fout, unsigned l2_icnt_q_capacity, unsigned long long streamID, const char *info = "") const;
+    FILE *fout, u32 l2_icnt_q_capacity, u64 streamID, const char *info = "") const;
 
-  void print_avg_core_cache_miss_served_cycles(FILE* fout, unsigned long long streamID) const;
-  void print_avg_l1d_rd_fill_to_evict_gap(FILE* fout, unsigned long long streamID) const;
-  void print_avg_l1d_rd_miss_served_cycles(FILE* fout, unsigned long long streamID) const;  
-  void print_avg_l1d_wr_miss_served_cycles(FILE* fout, unsigned long long streamID) const;
-  void print_avg_l2_miss_served_cycles(FILE* fout, unsigned long long streamID) const;
+  void print_l1d_accesses(FILE* fout, u64 streamID) const;
+  void print_l1d_wr_misses(FILE* fout, u64 streamID) const;
+  void print_l1d_writes(FILE* fout, u64 streamID) const;
+  void print_l1d_rd_misses(FILE* fout, u64 streamID, u64 cycle = (u64) - 1) const;
+  void print_l1d_reads(FILE* fout, u64 streamID, u64 cycle = (u64) - 1) const;  
+  void print_l1d_avg_rd_byp_activates(FILE* fout, u64 streamID) const;
+  void print_l1d_avg_rd_byp_deactivates(FILE* fout, u64 streamID) const;
+  void print_l1d_avg_rd_byp_act_rate(FILE* fout, u64 streamID) const;
+  void print_avg_core_cache_miss_served_cycles(FILE* fout, u64 streamID) const;
+  void print_avg_l1d_rd_fill_to_evict_gap(FILE* fout, u64 streamID) const;
+  void print_avg_l1d_rd_miss_served_cycles(FILE* fout, u64 streamID) const;  
+  void print_avg_l1d_wr_miss_served_cycles(FILE* fout, u64 streamID) const;
+  void print_avg_l2_miss_served_cycles(FILE* fout, u64 streamID) const;
   void print_l2_mshr_slots_stats(
-    FILE *fout, unsigned l2_mshr_allocated_slots, 
-    unsigned long long streamID, const char *info) const;
+    FILE *fout, u32 l2_mshr_allocated_slots, 
+    u64 streamID, const char *info) const;
 
   void print_l2_miss_q_pops(FILE *fout, const char *info = "") const;
 
-  unsigned long long get_stats(enum mem_access_type *access_type,
-                               unsigned num_access_type,
+  u64 get_stats(enum mem_access_type *access_type,
+                               u32 num_access_type,
                                enum cache_request_status *access_status,
-                               unsigned num_access_status) const;
-  void get_sub_stats(struct cache_sub_stats &css) const;
+                               u32 num_access_status) const;
+  void get_sub_stats(struct cache_sub_stats &css, const char* cache_name = "") const;
 
   // Get per-window cache stats for AerialVision
   void get_sub_stats_pw(struct cache_sub_stats_pw &css) const;
@@ -2257,70 +2272,82 @@ class cache_stats {
 
   void set_cache_name(const char* cache_name) { m_cache_name = cache_name; }
   const char* get_cache_name() const { return m_cache_name; }  
-  void set_sub_partition(const unsigned sub_partition) { m_sub_partition = sub_partition; }
-  void set_sub_partitions(const unsigned sub_partitions) { m_sub_partitions = sub_partitions; }
-  void set_l2_dram_queue_capacity(const unsigned capacity) { m_l2_dram_queue_capacity = capacity; }
-  void set_l2_icnt_queue_capacity(const unsigned capacity) { m_l2_icnt_queue_capacity = capacity; }
-  const unsigned get_l2_dram_queue_capacity() const { return m_l2_dram_queue_capacity; }
-  const unsigned get_l2_icnt_queue_capacity() const { return m_l2_icnt_queue_capacity; }
-  const unsigned get_sub_partition() const { return m_sub_partition; }  
-  const unsigned get_sub_partitions() const { return m_sub_partitions; }
-  void update_l1d_avg_rd_byp_activates(unsigned new_val, unsigned long long streamID);
-  void update_l1d_avg_rd_byp_deactivates(unsigned new_val, unsigned long long streamID);
+  void set_sub_partition(const u32 sub_partition) { m_sub_partition = sub_partition; }
+  void set_sub_partitions(const u32 sub_partitions) { m_sub_partitions = sub_partitions; }
+  void set_l2_dram_queue_capacity(const u32 capacity) { m_l2_dram_queue_capacity = capacity; }
+  void set_l2_icnt_queue_capacity(const u32 capacity) { m_l2_icnt_queue_capacity = capacity; }
+  const u32 get_l2_dram_queue_capacity() const { return m_l2_dram_queue_capacity; }
+  const u32 get_l2_icnt_queue_capacity() const { return m_l2_icnt_queue_capacity; }
+  const u32 get_sub_partition() const { return m_sub_partition; }  
+  const u32 get_sub_partitions() const { return m_sub_partitions; }
+
+  void update_l1d_rd_byp_act(bool en, u64 block_addr, u32 activates, u64 streamID);
+  void update_l1d_rd_byp_deact(bool en, u64 block_addr, u32 deactivates, u64 streamID);
+
+  u64 get_overall_avg_l1d_rd_fill_to_evict_gap(u64 streamID) const { return m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID); }
+  u64 get_l1d_rd_miss_served_cycles(u64 streamID) const { return m_l1d_rd_miss_served_cycles.at(streamID); }
+  u64 get_l1d_wr_miss_served_cycles(u64 streamID) const { return m_l1d_wr_miss_served_cycles.at(streamID); }
+  u32 get_l1d_accesses(u64 streamID) const { return m_l1d_accesses.at(streamID); }
+  u32 get_l1d_reads(u64 streamID) const { return m_l1d_reads.at(streamID); }
+  u32 get_l1d_writes(u64 streamID) const { return m_l1d_writes.at(streamID); }
+  u32 get_l1d_misses(u64 streamID) const { return m_l1d_misses.at(streamID); }
+  u32 get_l1d_rd_misses(u64 streamID) const { return m_l1d_rd_misses.at(streamID); }
+  u32 get_l1d_wr_misses(u64 streamID) const { return m_l1d_wr_misses.at(streamID); }
 
  private:
   const char* m_cache_name;
-  unsigned m_sub_partition;
-  unsigned m_sub_partitions;
-  unsigned m_l2_dram_queue_capacity;
-  unsigned m_l2_icnt_queue_capacity;
+  u32 m_sub_partition;
+  u32 m_sub_partitions;
+  u32 m_l2_dram_queue_capacity;
+  u32 m_l2_icnt_queue_capacity;
   bool check_valid(int type, int status) const;
-  bool check_valid(unsigned sm, unsigned warp) const;
+  bool check_valid(u32 sm, u32 warp) const;
   bool check_fail_valid(int type, int fail) const;
 
+  void accu_single_stat(const char* tgt_item, const cache_stats &cs);
+
   // CUDA streamID -> cache stats[NUM_MEM_ACCESS_TYPE]
-  std::map<unsigned long long, std::vector<std::vector<unsigned long long>>> m_stats;
-  std::map<unsigned long long, unsigned /* avg_evict_interval */> m_evict_stats;
-  std::map<unsigned long long /* streamID */, unsigned> m_l1d_avg_rd_byp_activates;
-  std::map<unsigned long long /* streamID */, unsigned> m_l1d_avg_rd_byp_deactivates;
-  std::map<unsigned long long /* streamID */, unsigned long long> m_overall_avg_l1d_rd_fill_to_evict_gap;
-  std::map<unsigned long long /* streamID */, unsigned long long> m_l1d_rd_miss_served_cycles;
-  std::map<unsigned long long /* streamID */, unsigned long long> m_l1d_wr_miss_served_cycles;
-  std::map<unsigned long long /* streamID */, unsigned> m_l1d_accesses;
-  std::map<unsigned long long /* streamID */, unsigned> m_l1d_reads;
-  std::map<unsigned long long /* streamID */, unsigned> m_l1d_writes;  
-  std::map<unsigned long long /* streamID */, unsigned> m_l1d_misses;
-  std::map<unsigned long long /* streamID */, unsigned> m_l1d_rd_misses;
-  std::map<unsigned long long /* streamID */, unsigned> m_l1d_wr_misses;
-  std::map<unsigned long long /* streamID */, std::vector<unsigned long long>> m_l2_sub_miss_served_cycles;
-  std::map<unsigned long long /* streamID */, std::vector<unsigned>> m_l2_sub_misses;
+  std::map<u64, std::vector<std::vector<u64>>> m_stats;
+  std::map<u64, u32 /* avg_evict_interval */> m_evict_stats;
+  std::map<u64 /* streamID */, u64> m_overall_avg_l1d_rd_fill_to_evict_gap;
+  std::map<u64 /* streamID */, u64> m_l1d_rd_miss_served_cycles; // done accu
+  std::map<u64 /* streamID */, u64> m_l1d_wr_miss_served_cycles; // done accu
+
+  std::map<u64 /* streamID */, std::map<u64, u32>> m_l1d_rd_byp_activates; // done accu
+  std::map<u64 /* streamID */, std::map<u64, u32>> m_l1d_rd_byp_deactivates; // done accu
+  std::map<u64 /* streamID */, u32> m_l1d_accesses;  // done accu
+  std::map<u64 /* streamID */, u32> m_l1d_misses;    // done accu
+  std::map<u64 /* streamID */, u32> m_l1d_reads;     // done accu
+  std::map<u64 /* streamID */, u32> m_l1d_writes;    // done accu 
+  std::map<u64 /* streamID */, u32> m_l1d_rd_misses; // done accu
+  std::map<u64 /* streamID */, u32> m_l1d_wr_misses; // done accu
+  std::map<u64 /* streamID */, std::vector<u64>> m_l2_sub_miss_served_cycles;
+  std::map<u64 /* streamID */, std::vector<u32>> m_l2_sub_misses;
 
   // AerialVision cache stats (per-window)
-  std::map<unsigned long long, std::vector<std::vector<unsigned long long>>> m_stats_pw;
-  std::map<unsigned long long, std::vector<std::vector<unsigned long long>>> m_fail_stats;
-  std::map<unsigned long long, std::vector<std::vector<unsigned long long>>> m_line_alloc_fail;
-  std::map<unsigned long long, std::vector<std::vector<unsigned long long>>> m_mshr_entry_fail;
-  std::map<unsigned long long, std::vector<std::vector<unsigned long long>>> m_miss_q_full;
-  std::map<unsigned long long, std::vector<std::vector<unsigned long long>>> m_mshr_merge_entry_fail;
-  std::map<unsigned long long, std::vector<unsigned long long>> m_fail_stats_total;
+  std::map<u64, std::vector<std::vector<u64>>> m_stats_pw;
+  std::map<u64, std::vector<std::vector<u64>>> m_fail_stats;
+  std::map<u64, std::vector<std::vector<u64>>> m_line_alloc_fail;
+  std::map<u64, std::vector<std::vector<u64>>> m_mshr_entry_fail;
+  std::map<u64, std::vector<std::vector<u64>>> m_miss_q_full;
+  std::map<u64, std::vector<std::vector<u64>>> m_mshr_merge_entry_fail;
+  std::map<u64, std::vector<u64>> m_fail_stats_total;
 
-  std::map<unsigned long long /* streamID */, std::vector<unsigned /* unfolded_index */>> m_lines_evictons;
-  std::map<unsigned long long /* streamID */, std::vector<unsigned /* unfolded_index */>> m_lines_accesses;
+  std::map<u64 /* streamID */, std::vector<u32 /* unfolded_index */>> m_lines_evictons;
+  std::map<u64 /* streamID */, std::vector<u32 /* unfolded_index */>> m_lines_accesses;
 
-  std::map<
-    unsigned long long /* streamID */, 
-    std::vector< /* SMs */
-      std::vector<unsigned> /* WARPs per SM */ >> m_mshr_occupancy_stats;
-  std::map<unsigned long long /* streamID */, std::vector<unsigned /* L2 Sub */>> m_accu_l2_dram_queue_size;
-  std::map<unsigned long long /* streamID */, std::vector<unsigned /* L2 Sub */>> m_accu_l2_icnt_queue_size;
-  std::map<unsigned long long /* streamID */, std::vector<unsigned /* L2 Sub */>> m_l2_dram_q_accesses;
-  std::map<unsigned long long /* streamID */, std::vector<unsigned /* L2 Sub */>> m_l2_icnt_q_accesses;
-  std::map<unsigned long long /* streamID */, std::vector<unsigned /* L2 Sub */>> m_l2_mshr_slots_fills;
-  unsigned long long m_l2_miss_q_pops;
+  std::map<u64 /* streamID */, 
+    std::vector< /* SMs */std::vector<u32 /* WARPs per SM */>>> m_mshr_occupancy_stats;
+  std::map<u64 /* streamID */, std::vector<u32 /* L2 Sub */>> m_accu_l2_dram_queue_size;
+  std::map<u64 /* streamID */, std::vector<u32 /* L2 Sub */>> m_accu_l2_icnt_queue_size;
+  std::map<u64 /* streamID */, std::vector<u32 /* L2 Sub */>> m_l2_dram_q_accesses;
+  std::map<u64 /* streamID */, std::vector<u32 /* L2 Sub */>> m_l2_icnt_q_accesses;
+  std::map<u64 /* streamID */, std::vector<u32 /* L2 Sub */>> m_l2_mshr_slots_fills;
+  u64 m_l2_miss_q_pops;
 
-  unsigned long long m_cache_port_available_cycles;
-  unsigned long long m_cache_data_port_busy_cycles;
-  unsigned long long m_cache_fill_port_busy_cycles;  
+  u64 m_cache_port_available_cycles;
+  u64 m_cache_data_port_busy_cycles;
+  u64 m_cache_fill_port_busy_cycles;  
 };
 
 class cache_t {
@@ -2492,8 +2519,8 @@ class baseline_cache : public cache_t {
     return m_stats.get_stats(access_type, num_access_type, access_status,
                              num_access_status);
   }
-  void get_sub_stats(struct cache_sub_stats &css) const {
-    m_stats.get_sub_stats(css);
+  void get_sub_stats(struct cache_sub_stats &css, const char* cache_name = "") const {
+    m_stats.get_sub_stats(css, cache_name);
   }
   // Clear per-window stats for AerialVision support
   void clear_pw() { m_stats.clear_pw(); }
@@ -2725,6 +2752,8 @@ class data_cache : public baseline_cache {
         break;  // Need to set a write miss function
     }
   }
+
+  void update_l1d_miss_stats(const cache_request_status& probe_status, mem_fetch *mf);
 
   virtual enum cache_request_status access(new_addr_type addr, mem_fetch *mf,
                                            unsigned long long time,

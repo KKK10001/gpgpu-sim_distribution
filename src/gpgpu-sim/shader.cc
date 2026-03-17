@@ -2375,7 +2375,7 @@ void ldst_unit::get_cache_stats(cache_stats &cs, unsigned sm) {
 
 void ldst_unit::get_L1D_sub_stats(struct cache_sub_stats &css) const {
   if (m_L1D) {
-    m_L1D->get_sub_stats(css);
+    m_L1D->get_sub_stats(css, "l1d");    
   } 
 }
 void ldst_unit::get_L1C_sub_stats(struct cache_sub_stats &css) const {
@@ -4062,15 +4062,13 @@ void gpgpu_sim::shader_print_cache_stats(FILE *fout) const {
 
     fprintf(fout, "\tL1D_avg_evict_interval = %llu\n", total_css.avg_evict_interval);
     fprintf(fout, "\n");    
-    fprintf(fout, "\tL1D_accesses      = %llu\n", total_css.accesses);
-    fprintf(fout, "\tL1D_misses        = %llu\n", total_css.misses);
-    fprintf(fout, "\tL1D_sector_misses = %llu\n", total_css.sector_misses);
+    fprintf(fout, "\ttotal_l1d_accesses      = %llu\n", total_css.accesses);
+    fprintf(fout, "\ttotal_l1d_misses        = %llu\n", total_css.misses);
+    fprintf(fout, "\ttotal_l1d_sector_misses = %llu\n", total_css.sector_misses);
     fprintf(fout, "\n");
-    fprintf(fout, "\tL1D_rd_misses     = %llu\n", total_css.rd_misses);
-    fprintf(fout, "\tL1D_reads         = %llu\n", total_css.reads);
+    fprintf(fout, "\ttotal_l1d_rd_misses = %llu\n", total_css.rd_misses);
+    fprintf(fout, "\ttotal_l1d_reads     = %llu\n", total_css.reads);
     fprintf(fout, "\n");    
-    fprintf(fout, "\tL1D_avg_rd_byp_activates   = %llu\n", total_css.avg_rd_byp_activates);
-    fprintf(fout, "\tL1D_avg_rd_byp_deactivates = %llu\n", total_css.avg_rd_byp_deactivates);    
     fprintf(fout, "\n");
     fprintf(fout, "\tL1D_MPKI = %f\n", l1d_mpki);
     if (total_css.accesses > 0) {
