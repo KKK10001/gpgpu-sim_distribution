@@ -2375,17 +2375,20 @@ void ldst_unit::get_cache_stats(cache_stats &cs, unsigned sm) {
 
 void ldst_unit::get_L1D_sub_stats(struct cache_sub_stats &css) const {
   if (m_L1D) {
-    m_L1D->get_sub_stats(css, "l1d");    
-  } 
+    m_L1D->get_sub_stats(
+      css, "L1D", m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, m_gpu->m_kernel_id);
+  }
 }
 void ldst_unit::get_L1C_sub_stats(struct cache_sub_stats &css) const {
   if (m_L1C) {
-    m_L1C->get_sub_stats(css);
+    m_L1C->get_sub_stats(
+      css, "L1C", m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, m_gpu->m_kernel_id);
   } 
 }
 void ldst_unit::get_L1T_sub_stats(struct cache_sub_stats &css) const {
   if (m_L1T) {
-    m_L1T->get_sub_stats(css);
+    m_L1T->get_sub_stats(
+      css, "L1T", m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, m_gpu->m_kernel_id);
   } 
 }
 
@@ -4058,8 +4061,6 @@ void gpgpu_sim::shader_print_cache_stats(FILE *fout) const {
     unsigned long long tot_insns = gpu_tot_sim_insn + gpu_sim_insn;
     float l1d_mpki = 1000 * (total_css.misses / (float)tot_insns);
 
-    // avg_rd_byp_activates
-
     fprintf(fout, "\tL1D_avg_evict_interval = %llu\n", total_css.avg_evict_interval);
     fprintf(fout, "\n");    
     fprintf(fout, "\ttotal_l1d_accesses      = %llu\n", total_css.accesses);
@@ -4068,6 +4069,7 @@ void gpgpu_sim::shader_print_cache_stats(FILE *fout) const {
     fprintf(fout, "\n");
     fprintf(fout, "\ttotal_l1d_rd_misses = %llu\n", total_css.rd_misses);
     fprintf(fout, "\ttotal_l1d_reads     = %llu\n", total_css.reads);
+    fprintf(fout, "\ttotal_l1d_rd_bypassed = %u\n", total_css.n_bypassed);
     fprintf(fout, "\n");    
     fprintf(fout, "\n");
     fprintf(fout, "\tL1D_MPKI = %f\n", l1d_mpki);
@@ -4104,7 +4106,7 @@ void gpgpu_sim::shader_print_cache_stats(FILE *fout) const {
     fprintf(fout, "\tL1D_reservation_fails = %llu\n",
             total_css.res_fails);
     total_css.print_port_stats(fout, "\tL1D_cache");
-  }
+  } // if (!m_shader_config->m_L1D_config.disabled()) {
 
   // L1C
   if (!m_shader_config->m_L1C_config.disabled()) {
@@ -5067,7 +5069,8 @@ void shader_core_ctx::get_cache_stats(cache_stats &cs, unsigned sm) {
 
 void shader_core_ctx::get_L1I_sub_stats(struct cache_sub_stats &css) const {
   if (m_L1I) {
-    m_L1I->get_sub_stats(css);
+    m_L1I->get_sub_stats(
+      css, "L1I", m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, m_gpu->m_kernel_id);
   } 
 }
 void shader_core_ctx::get_L1D_sub_stats(struct cache_sub_stats &css) const {

@@ -425,7 +425,8 @@ tag_array::tag_array(gpgpu_sim *gpu, cache_config &config, int core_id, int type
   m_l1d_evictions_time.clear();
   m_l1d_trashing_degree.clear();
   m_l1d_has_trashed.clear();
-  m_l1d_trashed_lines.clear();
+  m_l1d_fill_to_evict_lines.clear();
+  m_l1d_trashed_lines.clear();  
   m_l1d_mpki = 0.0f;
   m_low_loc_threshold = m_config.m_low_locality_threshold;
   // m_trash_conf_cnt_bound = 3;
@@ -860,10 +861,18 @@ enum cache_request_status tag_array::probe(
   const shader_core_config *shader_cfg = m_gpu->getShaderCoreConfig();
   struct cache_sub_stats total_css;
   struct cache_sub_stats css;
-  for (unsigned i = 0; i < shader_cfg->n_simt_clusters; i++) {         
+  for (unsigned i = 0; i < shader_cfg->n_simt_clusters; i++) {    
     m_gpu->m_cluster[i]->get_L1D_sub_stats(css);
     total_css += css;
-  }      
+
+    if (DTRACE(GATHER_L1D_STATS_AFTER_PROBE)) {
+      fprintf(Trace::out, "%llu GATHER_L1D_STATS_AFTER_PROBE "
+        "kernel:%u total_css.rd_misses:%llu css.rd_misses:%llu\n", 
+        time, m_gpu->m_kernel_id, total_css.rd_misses, css.rd_misses
+      );
+    }    
+  }
+
   unsigned long long tot_insns = m_gpu->gpu_tot_sim_insn + m_gpu->gpu_sim_insn;
   [[maybe_unused]] float last_l1d_mpki = m_l1d_mpki;
   [[maybe_unused]] m_l1d_mpki = 1000 * (total_css.misses / (float)tot_insns);
@@ -1303,7 +1312,22 @@ enum cache_request_status tag_array::probe(
   }
   
   if (m_is_l1d && mf && !mf->is_write() && !mf->isatomic()) {
+    if (DTRACE(RECORDED_L1D_BYP_ITEMS)) {
+      fprintf(Trace::out, "%llu SM:%u m_l1d_rd_fill_to_evict_gap.size = %zu\n", 
+        time, mf->get_sid(), m_l1d_rd_fill_to_evict_gap.size());
+    }
     const auto loc_key = m_config.block_addr(mf->get_addr());
+
+    std::pair<u64, u32> f2e_ln_key = std::make_pair(mf->get_streamID(), m_gpu->m_kernel_id);
+    auto it_f2e_line = m_l1d_fill_to_evict_lines.find(f2e_ln_key);
+    if (it_f2e_line == m_l1d_fill_to_evict_lines.end()) {
+      std::set<new_addr_type> addr_set;
+      addr_set.insert(loc_key);
+      m_l1d_fill_to_evict_lines[f2e_ln_key] = addr_set;
+    } else {
+      m_l1d_fill_to_evict_lines[f2e_ln_key].insert(loc_key);
+    }
+
     auto it = m_l1d_rd_fill_to_evict_gap.find(loc_key);
     if (it == m_l1d_rd_fill_to_evict_gap.end()) { // The 1st time evict after being filled
       set_l1d_evict_time(loc_key, time);
@@ -1328,7 +1352,8 @@ enum cache_request_status tag_array::probe(
           m_l1d_rd_byp_activated_times[loc_key]++;
           assert(hit_l1d_bypassed_item(mf));
           if (DTRACE(ACTIVATE_L1D_BYPASS)) {
-            fprintf(Trace::out, "%llu ACTIVATE_L1D_BYPASS for block_addr:%#llx\n", time, loc_key);
+            fprintf(Trace::out, "%llu ACTIVATE_L1D_BYPASS for kernel:%u block_addr:%#llx\n", 
+              time, m_gpu->m_kernel_id, loc_key);
           }
         }
       } else { // 2. Dec confidence
@@ -1342,8 +1367,7 @@ enum cache_request_status tag_array::probe(
           mf->set_l1d_rd_byp_deactivated(); // m_l1d_rd_byp_change = 1 = 2'b01
           m_l1d_rd_byp_deactivated_times[loc_key]++;
           assert(!hit_l1d_bypassed_item(mf));          
-          // m_l1d_rd_fill_to_evict_gap.erase(loc_key);
-          // m_avg_l1d_rd_fill_to_evict_gap.erase(loc_key); // 3/17 16:57 
+          m_l1d_rd_fill_to_evict_gap.erase(loc_key);
           if (DTRACE(DEACTIVATE_L1D_BYPASS)) {
             fprintf(Trace::out, "%llu DEACTIVATE_L1D_BYPASS for block_addr:%#llx\n", time, loc_key);
           }
@@ -1353,7 +1377,7 @@ enum cache_request_status tag_array::probe(
 
     m_l1d_lines_evictions[loc_key]++;
     m_l1d_trashed_lines.insert(loc_key);
-    m_gpu->get_shader_stats()->m_n_l1d_trashed_lines[mf->get_sid()] = m_l1d_trashed_lines.size();
+    m_gpu->get_shader_stats()->m_n_l1d_trashed_lines[mf->get_sid()] = m_l1d_trashed_lines.size();    
 
     m_l1d_max_evicts[mf->get_sid()] = std::max(m_l1d_max_evicts[mf->get_sid()], m_l1d_lines_evictions[loc_key]);
     m_gpu->get_shader_stats()->m_l1d_max_evicts[mf->get_sid()] = m_l1d_max_evicts[mf->get_sid()];
@@ -1929,6 +1953,7 @@ void cache_stats::clear() {
   m_l1d_rd_misses.clear();
   m_l1d_wr_misses.clear();
 
+  m_n_l1d_fill_to_evict_lines.clear();
   m_l1d_rd_byp_activates.clear();
   m_l1d_rd_byp_deactivates.clear();
 
@@ -2069,20 +2094,25 @@ void cache_stats::avg_l1d_wr_miss_served_cycles(u64 streamID, u64 served_cycles)
   }
 }
 
-void cache_stats::inc_l1d_accesses(unsigned long long streamID) {
-  m_l1d_accesses[streamID]++;
+void cache_stats::inc_l1d_accesses(u64 streamID, u32 kernel) {
+  m_l1d_accesses[streamID][kernel]++;
 }
-void cache_stats::inc_l1d_reads(unsigned long long streamID) {
-  m_l1d_reads[streamID]++;
+void cache_stats::inc_l1d_reads(u64 streamID, u32 kernel) {
+  m_l1d_reads[streamID][kernel]++;
 }
-void cache_stats::inc_l1d_rd_misses(u64 streamID) {
-  m_l1d_rd_misses[streamID]++;
+void cache_stats::inc_l1d_rd_misses(u64 streamID, u32 kernel) {
+  m_l1d_rd_misses[streamID][kernel]++;
 }
-void cache_stats::inc_l1d_writes(unsigned long long streamID) {
-  m_l1d_writes[streamID]++;
+void cache_stats::inc_l1d_writes(u64 streamID, u32 kernel) {
+  m_l1d_writes[streamID][kernel]++;
 }
-void cache_stats::inc_l1d_wr_misses(unsigned long long streamID) {
-  m_l1d_wr_misses[streamID]++;
+void cache_stats::inc_l1d_wr_misses(u64 streamID, u32 kernel) {
+  m_l1d_wr_misses[streamID][kernel]++;
+}
+
+void cache_stats::update_n_l1d_fill_to_evict(u64 streamID, u32 kernel, u32 n_lines) {
+  const std::pair<u64 /* streamID */, u32 /* kernel */> key = std::make_pair(streamID, kernel);
+  m_n_l1d_fill_to_evict_lines[key] = n_lines;
 }
 
 void cache_stats::inc_l2_sub_miss_served_cycles(
@@ -2117,11 +2147,6 @@ void cache_stats::gather_lines_stats(unsigned long long streamID, unsigned unfol
 
 void cache_stats::update_l1d_rd_byp_act(
   bool en, u64 block_addr, u32 activates, u64 streamID) {
-
-  // if (m_l1d_rd_byp_activates.find(streamID) == m_l1d_rd_byp_activates.end()) {
-  //   std::map<u64, u32> new_record;
-  //   m_l1d_rd_byp_activates[streamID] = new_record;
-  // }
   if (en) {
     if (m_l1d_rd_byp_activates.find(streamID) == m_l1d_rd_byp_activates.end()) {
       std::map<u64, u32> new_record;
@@ -2129,21 +2154,12 @@ void cache_stats::update_l1d_rd_byp_act(
       m_l1d_rd_byp_activates[streamID] = new_record;
     } else {
       std::map<u64, u32>& record = m_l1d_rd_byp_activates.at(streamID);
-      auto it = record.find(block_addr);
-      if (it != record.end()) {
-        record[block_addr] += activates;
-      } else {
-        record[block_addr] = activates;
-      }
+      record[block_addr] = activates;
     }
   }
 }
 void cache_stats::update_l1d_rd_byp_deact(
   bool en, u64 block_addr, u32 deactivates, u64 streamID) {
-  // if (m_l1d_rd_byp_deactivates.find(streamID) == m_l1d_rd_byp_deactivates.end()) {
-  //   std::map<u64, u32> new_assemble;
-  //   m_l1d_rd_byp_deactivates[streamID] = new_assemble;
-  // }
   if (en) {
     if (m_l1d_rd_byp_deactivates.find(streamID) == m_l1d_rd_byp_deactivates.end()) {
       std::map<u64, u32> new_record;
@@ -2151,11 +2167,10 @@ void cache_stats::update_l1d_rd_byp_deact(
       m_l1d_rd_byp_deactivates[streamID] = new_record;
     } else {
       std::map<u64, u32>& record = m_l1d_rd_byp_deactivates.at(streamID);
-      auto it = record.find(block_addr);
-      if (it != record.end()) {
-        record[block_addr] += deactivates;
-      } else {
+      if (record.find(block_addr) == record.end()) {
         record[block_addr] = deactivates;
+      } else {
+        record[block_addr] += deactivates;
       }
     }
   }
@@ -2430,7 +2445,7 @@ unsigned long long cache_stats::operator()(
   } 
 }
 
-u32 cache_stats::getU32(u64 streamID, const char* tgt_name) const {
+u32 cache_stats::getU32(u64 streamID, u32 kernel, const char* tgt_name) const {
   // m_l1d_accesses
   // m_l1d_reads
   // m_l1d_writes
@@ -2438,53 +2453,87 @@ u32 cache_stats::getU32(u64 streamID, const char* tgt_name) const {
   // m_l1d_rd_misses
   // m_l1d_wr_misses
   if (!strcmp(tgt_name, "m_l1d_accesses")) {
-    auto it = m_l1d_accesses.find(streamID);
-    if (it == m_l1d_accesses.end()) {
+    auto it_stream = m_l1d_accesses.find(streamID);
+    if (it_stream == m_l1d_accesses.end()) {
       return 0;
     } else {
-      return it->second;
+      auto it_kernel = it_stream->second.find(kernel);
+      if (it_kernel == it_stream->second.end()) {
+        return 0;
+      } else {
+        return it_kernel->second;
+      }
     }
   }
   else if (!strcmp(tgt_name, "m_l1d_reads")) {
-    auto it = m_l1d_reads.find(streamID);
-    if (it == m_l1d_reads.end()) {
+    auto it_stream = m_l1d_reads.find(streamID);
+    if (it_stream == m_l1d_reads.end()) {
       return 0;
     } else {
-      return it->second;
+      auto it_kernel = it_stream->second.find(kernel);
+      if (it_kernel == it_stream->second.end()) {
+        return 0;
+      } else {
+        return it_kernel->second;
+      }
     }
   }  
   else if (!strcmp(tgt_name, "m_l1d_writes")) {
-    auto it = m_l1d_writes.find(streamID);
-    if (it == m_l1d_writes.end()) {
+    auto it_stream = m_l1d_writes.find(streamID);
+    if (it_stream == m_l1d_writes.end()) {
       return 0;
     } else {
-      return it->second;
+      auto it_kernel = it_stream->second.find(kernel);
+      if (it_kernel == it_stream->second.end()) {
+        return 0;
+      } else {
+        return it_kernel->second;
+      }
     }
   }    
   else if (!strcmp(tgt_name, "m_l1d_misses")) {
-    auto it = m_l1d_misses.find(streamID);
-    if (it == m_l1d_misses.end()) {
+    auto it_stream = m_l1d_misses.find(streamID);
+    if (it_stream == m_l1d_misses.end()) {
       return 0;
     } else {
-      return it->second;
+      auto it_kernel = it_stream->second.find(kernel);
+      if (it_kernel == it_stream->second.end()) {
+        return 0;
+      } else {
+        return it_kernel->second;
+      }
     }
   }   
   else if (!strcmp(tgt_name, "m_l1d_rd_misses")) {
-    auto it = m_l1d_rd_misses.find(streamID);
-    if (it == m_l1d_rd_misses.end()) {
+    auto it_stream = m_l1d_rd_misses.find(streamID);
+    if (it_stream == m_l1d_rd_misses.end()) {
       return 0;
     } else {
-      return it->second;
+      auto it_kernel = it_stream->second.find(kernel);
+      if (it_kernel == it_stream->second.end()) {
+        return 0;
+      } else {
+        return it_kernel->second;
+      }
     }
   }
   else if (!strcmp(tgt_name, "m_l1d_wr_misses")) {
-    auto it = m_l1d_wr_misses.find(streamID);
-    if (it == m_l1d_wr_misses.end()) {
+    auto it_stream = m_l1d_wr_misses.find(streamID);
+    if (it_stream == m_l1d_wr_misses.end()) {
       return 0;
     } else {
-      return it->second;
+      auto it_kernel = it_stream->second.find(kernel);
+      if (it_kernel == it_stream->second.end()) {
+        return 0;
+      } else {
+        return it_kernel->second;
+      }
     }
-  }  
+  }
+   else {
+    assert(0 && "Unknown cache stat name");
+    return 0;
+  }
 }
 
 u64 cache_stats::operator()(u64 streamID, const char* tgt_name) const {
@@ -2605,25 +2654,26 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
   for (auto iter = m_l1d_misses.begin(); 
     iter != m_l1d_misses.end(); ++iter) {
     u64 streamID = iter->first;
-    ret.m_l1d_misses.insert(
-      std::pair<u64, u32>(streamID, m_l1d_misses.at(streamID)));
+    ret.m_l1d_misses[streamID] = m_l1d_misses.at(streamID);
   }
-  for (auto iter = m_l1d_reads.begin(); 
-    iter != m_l1d_reads.end(); ++iter) {
+  for (auto iter = m_l1d_reads.begin(); iter != m_l1d_reads.end(); ++iter) {
     u64 streamID = iter->first;
-    ret.m_l1d_reads.insert(std::pair<u64, u32>(streamID, m_l1d_reads.at(streamID)));
+    ret.m_l1d_reads[streamID] = m_l1d_reads.at(streamID);
   }    
-  for (auto iter = m_l1d_rd_misses.begin(); 
-    iter != m_l1d_rd_misses.end(); ++iter) {
+  for (auto iter = m_l1d_rd_misses.begin(); iter != m_l1d_rd_misses.end(); ++iter) {
     u64 streamID = iter->first;
-    ret.m_l1d_rd_misses.insert(std::pair<u64, u32>(streamID, m_l1d_rd_misses.at(streamID)));
-  }  
-  for (auto iter = m_l1d_wr_misses.begin(); 
-    iter != m_l1d_wr_misses.end(); ++iter) {
+    ret.m_l1d_rd_misses[streamID] = m_l1d_rd_misses.at(streamID);
+  }
+  for (auto iter = m_l1d_wr_misses.begin(); iter != m_l1d_wr_misses.end(); ++iter) {
     u64 streamID = iter->first;
-    ret.m_l1d_wr_misses.insert(
-      std::pair<u64, u32>(streamID, m_l1d_wr_misses.at(streamID)));
-  }  
+    ret.m_l1d_wr_misses[streamID] = m_l1d_wr_misses.at(streamID);
+  }
+  for (auto iter = m_n_l1d_fill_to_evict_lines.begin();
+    iter != m_n_l1d_fill_to_evict_lines.end(); ++iter) {
+    const std::pair<u64 /* streamID */, u32 /* kernel */> key = iter->first;
+    ret.m_n_l1d_fill_to_evict_lines[key] = m_n_l1d_fill_to_evict_lines.at(key);
+  }
+
   for (auto iter = m_l2_sub_miss_served_cycles.begin(); 
     iter != m_l2_sub_miss_served_cycles.end(); ++iter) {
     u64 streamID = iter->first;
@@ -2780,61 +2830,91 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
     unsigned long long streamID = iter->first;
     if (ret.m_l1d_wr_miss_served_cycles.find(streamID) == 
       ret.m_l1d_wr_miss_served_cycles.end()) {
-      ret.m_l1d_wr_miss_served_cycles.insert(
-        std::pair<unsigned long long, unsigned long long>(
-          streamID, cs.m_l1d_wr_miss_served_cycles.at(streamID)));
-    } else {
-        ret.m_l1d_wr_miss_served_cycles.at(streamID) += cs.m_l1d_wr_miss_served_cycles.at(streamID);      
+      ret.m_l1d_wr_miss_served_cycles[streamID] = cs.m_l1d_wr_miss_served_cycles.at(streamID);
+    } else {      
+      ret.m_l1d_wr_miss_served_cycles[streamID] += cs.m_l1d_wr_miss_served_cycles.at(streamID);      
     }
   }    
-  for (auto iter = cs.m_l1d_misses.begin(); 
-    iter != cs.m_l1d_misses.end(); ++iter) {  
-    unsigned long long streamID = iter->first;
-    if (ret.m_l1d_misses.find(streamID) == 
-      ret.m_l1d_misses.end()) {
-      ret.m_l1d_misses.insert(
-        std::pair<unsigned long long, unsigned>(streamID, cs.m_l1d_misses.at(streamID)));
+  for (auto iter = cs.m_l1d_misses.begin(); iter != cs.m_l1d_misses.end(); ++iter) {
+    u64 streamID = iter->first;
+    if (ret.m_l1d_misses.find(streamID) == ret.m_l1d_misses.end()) {
+      ret.m_l1d_misses[streamID] = cs.m_l1d_misses.at(streamID);
     } else {
-        ret.m_l1d_misses.at(streamID) += cs.m_l1d_misses.at(streamID);      
+      std::map<u32 /* kernel */, u32> in_coming = cs.m_l1d_misses.at(streamID);
+      std::map<u32 /* kernel */, u32>& recorded = ret.m_l1d_misses[streamID];
+      for (auto& in_item : in_coming) {
+        u32 kernel = in_item.first;
+        if (recorded.find(kernel) == recorded.end()) {
+          recorded[kernel] = in_item.second;
+        } else {
+          recorded[kernel] += in_item.second;
+        }
+      }
     }
   }
-  for (auto iter = cs.m_l1d_reads.begin(); 
-    iter != cs.m_l1d_reads.end(); ++iter) {  
-    unsigned long long streamID = iter->first;
-    if (ret.m_l1d_reads.find(streamID) == 
-      ret.m_l1d_reads.end()) {
-      ret.m_l1d_reads.insert(
-        std::pair<unsigned long long, unsigned>(streamID, cs.m_l1d_reads.at(streamID)));
+  for (auto iter = cs.m_l1d_reads.begin(); iter != cs.m_l1d_reads.end(); ++iter) {
+    u64 streamID = iter->first;
+    if (ret.m_l1d_reads.find(streamID) == ret.m_l1d_reads.end()) {
+      ret.m_l1d_reads[streamID] = cs.m_l1d_reads.at(streamID);
     } else {
-        ret.m_l1d_reads.at(streamID) += cs.m_l1d_reads.at(streamID);      
+      std::map<u32 /* kernel */, u32> in_coming = cs.m_l1d_reads.at(streamID);
+      std::map<u32 /* kernel */, u32>& recorded = ret.m_l1d_reads[streamID];
+      for (auto& in_item : in_coming) {
+        u32 kernel = in_item.first;
+        if (recorded.find(kernel) == recorded.end()) {
+          recorded[kernel] = in_item.second;
+        } else {
+          recorded[kernel] += in_item.second;
+        }
+      }
     }
   }    
-  for (auto iter = cs.m_l1d_rd_misses.begin(); 
-    iter != cs.m_l1d_rd_misses.end(); ++iter) {  
-    unsigned long long streamID = iter->first;
-    if (ret.m_l1d_rd_misses.find(streamID) == 
-      ret.m_l1d_rd_misses.end()) {
-      ret.m_l1d_rd_misses.insert(
-        std::pair<unsigned long long, unsigned>(streamID, cs.m_l1d_rd_misses.at(streamID)));
+  for (auto iter = cs.m_l1d_rd_misses.begin(); iter != cs.m_l1d_rd_misses.end(); ++iter) {  
+    u64 streamID = iter->first;
+    if (ret.m_l1d_rd_misses.find(streamID) == ret.m_l1d_rd_misses.end()) {
+      ret.m_l1d_rd_misses[streamID] = cs.m_l1d_rd_misses.at(streamID);
     } else {
-        ret.m_l1d_rd_misses.at(streamID) += cs.m_l1d_rd_misses.at(streamID);      
+      std::map<u32 /* kernel */, u32> in_coming = cs.m_l1d_rd_misses.at(streamID);
+      std::map<u32 /* kernel */, u32>& recorded = ret.m_l1d_rd_misses[streamID];
+      for (auto& in_item : in_coming) {
+        u32 kernel = in_item.first;
+        if (recorded.find(kernel) == recorded.end()) {
+          recorded[kernel] = in_item.second;
+        } else {
+          recorded[kernel] += in_item.second;
+        }
+      }
     }
   }  
-  for (auto iter = cs.m_l1d_wr_misses.begin(); 
-    iter != cs.m_l1d_wr_misses.end(); ++iter) {  
-    unsigned long long streamID = iter->first;
-    if (ret.m_l1d_wr_misses.find(streamID) == 
-      ret.m_l1d_wr_misses.end()) {
-      ret.m_l1d_wr_misses.insert(
-        std::pair<unsigned long long, unsigned>(streamID, cs.m_l1d_wr_misses.at(streamID)));
+  for (auto iter = cs.m_l1d_wr_misses.begin(); iter != cs.m_l1d_wr_misses.end(); ++iter) {  
+    u64 streamID = iter->first;
+    if (ret.m_l1d_wr_misses.find(streamID) == ret.m_l1d_wr_misses.end()) {
+      ret.m_l1d_wr_misses[streamID] = cs.m_l1d_wr_misses.at(streamID);
     } else {
-        ret.m_l1d_wr_misses.at(streamID) += cs.m_l1d_wr_misses.at(streamID);      
+      std::map<u32 /* kernel */, u32> in_coming = cs.m_l1d_wr_misses.at(streamID);
+      std::map<u32 /* kernel */, u32>& recorded = ret.m_l1d_wr_misses[streamID];
+      for (auto& in_item : in_coming) {
+        u32 kernel = in_item.first;
+        if (recorded.find(kernel) == recorded.end()) {
+          recorded[kernel] = in_item.second;
+        } else {
+          recorded[kernel] += in_item.second;
+        }
+      }
+    }
+  }
+  for (auto iter = cs.m_n_l1d_fill_to_evict_lines.begin(); iter != cs.m_n_l1d_fill_to_evict_lines.end(); ++iter) {  
+    const std::pair<u64, u32> key = iter->first;
+    if (ret.m_n_l1d_fill_to_evict_lines.find(key) == ret.m_n_l1d_fill_to_evict_lines.end()) {
+      ret.m_n_l1d_fill_to_evict_lines[key] = cs.m_n_l1d_fill_to_evict_lines.at(key);
+    } else {
+      ret.m_n_l1d_fill_to_evict_lines[key] += cs.m_n_l1d_fill_to_evict_lines.at(key);
     }
   }
 
   for (auto iter = cs.m_l2_sub_miss_served_cycles.begin(); 
     iter != cs.m_l2_sub_miss_served_cycles.end(); ++iter) {  
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (ret.m_l2_sub_miss_served_cycles.find(streamID) == 
       ret.m_l2_sub_miss_served_cycles.end()) {
       ret.m_l2_sub_miss_served_cycles.insert(
@@ -2997,6 +3077,7 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
 // m_l1d_misses
 // m_l1d_rd_misses
 // m_l1d_wr_misses
+// m_n_l1d_fill_to_evict_lines
 // m_l2_sub_miss_served_cycles
 // m_l2_sub_misses
 void cache_stats::accu_single_stat(const char* tgt_item, const cache_stats &cs) {
@@ -3037,8 +3118,7 @@ void cache_stats::accu_single_stat(const char* tgt_item, const cache_stats &cs) 
       iter != cs.m_l1d_rd_byp_activates.end(); ++iter) {
       u64 streamID = iter->first;
       if (m_l1d_rd_byp_activates.find(streamID) == m_l1d_rd_byp_activates.end()) {
-        m_l1d_rd_byp_activates.insert(
-          std::pair<u64, std::map<u64, u32>>(streamID, cs.m_l1d_rd_byp_activates.at(streamID)));
+        m_l1d_rd_byp_activates[streamID] = cs.m_l1d_rd_byp_activates.at(streamID);
       } else {
         std::map<u64, u32>& recorded = m_l1d_rd_byp_activates.at(streamID);
         std::map<u64, u32> in_coming = cs.m_l1d_rd_byp_activates.at(streamID);
@@ -3053,8 +3133,7 @@ void cache_stats::accu_single_stat(const char* tgt_item, const cache_stats &cs) 
       iter != cs.m_l1d_rd_byp_deactivates.end(); ++iter) {
       u64 streamID = iter->first;
       if (m_l1d_rd_byp_deactivates.find(streamID) == m_l1d_rd_byp_deactivates.end()) {
-        m_l1d_rd_byp_deactivates.insert(
-          std::pair<u64, std::map<u64, u32>>(streamID, cs.m_l1d_rd_byp_deactivates.at(streamID)));
+        m_l1d_rd_byp_deactivates[streamID] = cs.m_l1d_rd_byp_deactivates.at(streamID);
       } else {
         std::map<u64, u32>& recorded = m_l1d_rd_byp_deactivates.at(streamID);
         std::map<u64, u32> in_coming = cs.m_l1d_rd_byp_deactivates.at(streamID);
@@ -3068,60 +3147,115 @@ void cache_stats::accu_single_stat(const char* tgt_item, const cache_stats &cs) 
     for (auto iter = cs.m_l1d_accesses.begin(); iter != cs.m_l1d_accesses.end(); ++iter) {
       u64 streamID = iter->first;
       if (m_l1d_accesses.find(streamID) == m_l1d_accesses.end()) {
-        m_l1d_accesses.insert(
-          std::pair<u64, u32>(streamID, cs.m_l1d_accesses.at(streamID)));
+        m_l1d_accesses[streamID] = cs.m_l1d_accesses.at(streamID);
       } else {
-        m_l1d_accesses.at(streamID) += cs.getU32(streamID, tgt_item);
+        std::map<u32 /* kernel */, u32>& recorded = m_l1d_accesses.at(streamID);
+        std::map<u32 /* kernel */, u32> in_coming = cs.m_l1d_accesses.at(streamID);
+        for (auto& iter : in_coming) {
+          u32 kernel = iter.first;
+          if (recorded.find(kernel) == recorded.end()) {
+            recorded[kernel] = iter.second;
+          } else {
+            recorded[kernel] += iter.second;
+          }
+        }
       }
     }
   } else if (!strcmp(tgt_item, "m_l1d_misses")) {
     for (auto iter = cs.m_l1d_misses.begin(); iter != cs.m_l1d_misses.end(); ++iter) {
       u64 streamID = iter->first;
       if (m_l1d_misses.find(streamID) == m_l1d_misses.end()) {
-        m_l1d_misses.insert(
-          std::pair<u64, u32>(streamID, cs.m_l1d_misses.at(streamID)));
+        m_l1d_misses[streamID] = cs.m_l1d_misses.at(streamID);
       } else {
-        m_l1d_misses.at(streamID) += cs.getU32(streamID, tgt_item);
+        std::map<u32 /* kernel */, u32>& recorded = m_l1d_misses.at(streamID);
+        std::map<u32 /* kernel */, u32> in_coming = cs.m_l1d_misses.at(streamID);
+        for (auto& iter : in_coming) {
+          u32 kernel = iter.first;
+          if (recorded.find(kernel) == recorded.end()) {
+            recorded[kernel] = iter.second;
+          } else {
+            recorded[kernel] += iter.second;
+          }
+        }
       }
     }
   } else if (!strcmp(tgt_item, "m_l1d_reads")) {
     for (auto iter = cs.m_l1d_reads.begin(); iter != cs.m_l1d_reads.end(); ++iter) {
       u64 streamID = iter->first;
       if (m_l1d_reads.find(streamID) == m_l1d_reads.end()) {
-        m_l1d_reads.insert(
-          std::pair<u64, u32>(streamID, cs.m_l1d_reads.at(streamID)));
+        m_l1d_reads[streamID] = cs.m_l1d_reads.at(streamID);
       } else {
-        m_l1d_reads.at(streamID) += cs.getU32(streamID, tgt_item);
+        std::map<u32 /* kernel */, u32>& recorded = m_l1d_reads.at(streamID);
+        std::map<u32 /* kernel */, u32> in_coming = cs.m_l1d_reads.at(streamID);
+        for (auto& iter : in_coming) {
+          const u32 kernel = iter.first;
+          [[maybe_unused]] u32 old_value = recorded[kernel];
+          recorded[kernel] += iter.second;
+          if (DTRACE(GATHER_FINAL_L1D_STATS)) {
+            fprintf(Trace::out, "m_l1d_reads[streamID:%llu][kernel:%u] "
+              "+= %u (old_val:%u->%u)\n", 
+              streamID, kernel, iter.second, old_value, recorded[kernel]);
+          }
+        }
       }
     }
   } else if (!strcmp(tgt_item, "m_l1d_writes")) {
     for (auto iter = cs.m_l1d_writes.begin(); iter != cs.m_l1d_writes.end(); ++iter) {
       u64 streamID = iter->first;
       if (m_l1d_writes.find(streamID) == m_l1d_writes.end()) {
-        m_l1d_writes.insert(
-          std::pair<u64, u32>(streamID, cs.m_l1d_writes.at(streamID)));
+        m_l1d_writes[streamID] = cs.m_l1d_writes.at(streamID);
       } else {
-        m_l1d_writes.at(streamID) += cs.getU32(streamID, tgt_item);
+        std::map<u32 /* kernel */, u32>& recorded = m_l1d_writes.at(streamID);
+        std::map<u32 /* kernel */, u32> in_coming = cs.m_l1d_writes.at(streamID);
+        for (auto& iter : in_coming) {
+          const u32 kernel = iter.first;
+          recorded[kernel] += iter.second;
+        }
       }
     }
   } else if (!strcmp(tgt_item, "m_l1d_rd_misses")) {
     for (auto iter = cs.m_l1d_rd_misses.begin(); iter != cs.m_l1d_rd_misses.end(); ++iter) {
       u64 streamID = iter->first;
       if (m_l1d_rd_misses.find(streamID) == m_l1d_rd_misses.end()) {
-        m_l1d_rd_misses.insert(
-          std::pair<u64, u32>(streamID, cs.m_l1d_rd_misses.at(streamID)));
+        m_l1d_rd_misses[streamID] = cs.m_l1d_rd_misses.at(streamID);
       } else {
-        m_l1d_rd_misses.at(streamID) += cs.getU32(streamID, tgt_item);
+        std::map<u32 /* kernel */, u32>& recorded = m_l1d_rd_misses.at(streamID);
+        std::map<u32 /* kernel */, u32> in_coming = cs.m_l1d_rd_misses.at(streamID);
+        for (auto& iter : in_coming) {
+          u32 kernel = iter.first;
+          if (recorded.find(kernel) == recorded.end()) {
+            recorded[kernel] = iter.second;
+          } else {
+            recorded[kernel] += iter.second;
+          }
+        }
       }
     }
   } else if (!strcmp(tgt_item, "m_l1d_wr_misses")) {
     for (auto iter = cs.m_l1d_wr_misses.begin(); iter != cs.m_l1d_wr_misses.end(); ++iter) {
       u64 streamID = iter->first;
       if (m_l1d_wr_misses.find(streamID) == m_l1d_wr_misses.end()) {
-        m_l1d_wr_misses.insert(
-          std::pair<u64, u32>(streamID, cs.m_l1d_wr_misses.at(streamID)));
+        m_l1d_wr_misses[streamID] = cs.m_l1d_wr_misses.at(streamID);
       } else {
-        m_l1d_wr_misses.at(streamID) += cs.getU32(streamID, tgt_item);
+        std::map<u32 /* kernel */, u32>& recorded = m_l1d_wr_misses.at(streamID);
+        std::map<u32 /* kernel */, u32> in_coming = cs.m_l1d_wr_misses.at(streamID);
+        for (auto& iter : in_coming) {
+          u32 kernel = iter.first;
+          if (recorded.find(kernel) == recorded.end()) {
+            recorded[kernel] = iter.second;
+          } else {
+            recorded[kernel] += iter.second;
+          }
+        }
+      }
+    }
+  } else if (!strcmp(tgt_item, "m_n_l1d_fill_to_evict_lines")) {
+    for (auto iter = cs.m_n_l1d_fill_to_evict_lines.begin(); iter != cs.m_n_l1d_fill_to_evict_lines.end(); ++iter) {
+      const std::pair<u64, u32> key = iter->first;
+      if (m_n_l1d_fill_to_evict_lines.find(key) == m_n_l1d_fill_to_evict_lines.end()) {
+        m_n_l1d_fill_to_evict_lines[key] = cs.m_n_l1d_fill_to_evict_lines.at(key);
+      } else {
+        m_n_l1d_fill_to_evict_lines[key] += cs.m_n_l1d_fill_to_evict_lines.at(key);
       }
     }
   } else if (!strcmp(tgt_item, "m_l2_sub_miss_served_cycles")) {
@@ -3360,6 +3494,7 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
   accu_single_stat("m_l1d_misses", cs);
   accu_single_stat("m_l1d_rd_misses", cs);
   accu_single_stat("m_l1d_wr_misses", cs);
+  accu_single_stat("m_n_l1d_fill_to_evict_lines", cs);
   accu_single_stat("m_l2_sub_miss_served_cycles", cs);
   accu_single_stat("m_l2_sub_misses", cs);
 
@@ -3649,69 +3784,83 @@ void cache_stats::print_l2_icnt_queue_stats(
   }
 }
 
-void cache_stats::print_l1d_accesses(FILE* fout, u64 streamID) const {
-  for (auto iter = m_l1d_accesses.begin();
-    iter != m_l1d_accesses.end(); ++iter)
-  {
-    if ((streamID != ((u64) - 1)) && (iter->first != streamID)) {
-      continue;
+void cache_stats::print_l1d_accesses(FILE* fout, u64 streamID, u32 kernel) const {
+  auto it_stream = m_l1d_accesses.find(streamID);
+  if (it_stream != m_l1d_accesses.end()) {
+    std::map<u32 /* kernel */, u32> records = it_stream->second;
+    auto it_kernel = records.find(kernel);
+    if (it_kernel != records.end()) {
+      fprintf(fout, "\tstreamID:%llu kernel:%u L1D_ACCESSES = %u\n", 
+        streamID, kernel, records[kernel]);
     }
-    fprintf(fout, "\tL1D_ACCESSES = %u\n", 
-      m_l1d_accesses.at(streamID));
   }
 }
-void cache_stats::print_l1d_wr_misses(FILE* fout, u64 streamID) const {
-  for (auto iter = m_l1d_wr_misses.begin();
-    iter != m_l1d_wr_misses.end(); ++iter)
-  {
-    if ((streamID != ((u64) - 1)) && (iter->first != streamID)) {
-      continue;
+void cache_stats::print_l1d_wr_misses(FILE* fout, u64 streamID, u32 kernel) const {
+  auto it_stream = m_l1d_wr_misses.find(streamID);
+  if (it_stream != m_l1d_wr_misses.end()) {
+    std::map<u32 /* kernel */, u32> records = it_stream->second;
+    auto it_kernel = records.find(kernel);
+    if (it_kernel != records.end()) {
+      fprintf(fout, "\tstreamID:%llu kernel:%u L1D_WR_MISSES = %u\n", 
+        streamID, kernel, records[kernel]);
     }
-    fprintf(fout, "\tL1D_WR_MISSES = %u\n", 
-      m_l1d_wr_misses.at(streamID));
   }
 }
-void cache_stats::print_l1d_writes(FILE* fout, u64 streamID) const {
-  for (auto iter = m_l1d_writes.begin();
-    iter != m_l1d_writes.end(); ++iter)
-  {
-    if ((streamID != ((u64) - 1)) && (iter->first != streamID)) {
-      continue;
+void cache_stats::print_l1d_writes(FILE* fout, u64 streamID, u32 kernel) const {
+  auto it_stream = m_l1d_writes.find(streamID);
+  if (it_stream != m_l1d_writes.end()) {
+    std::map<u32 /* kernel */, u32> records = it_stream->second;
+    auto it_kernel = records.find(kernel);
+    if (it_kernel != records.end()) {
+      fprintf(fout, "\tstreamID:%llu kernel:%u L1D_WRITES = %u\n", 
+        streamID, kernel, records[kernel]);
     }
-    fprintf(fout, "\tL1D_WRITES = %u\n", 
-      m_l1d_writes.at(streamID));
-  }
-}
-void cache_stats::print_l1d_rd_misses(FILE* fout, u64 streamID, u64 cycles) const {
-  for (auto iter = m_l1d_rd_misses.begin();
-    iter != m_l1d_rd_misses.end(); ++iter)
-  {
-    if ((streamID != ((u64) - 1)) && (iter->first != streamID)) {
-      continue;
-    }
-    fprintf(fout, "\tL1D_RD_MISSES = %u\n", m_l1d_rd_misses.at(streamID));
-  }
-}
-void cache_stats::print_l1d_reads(FILE* fout, u64 streamID, u64 cycles) const {
-  if (m_l1d_rd_misses.find(streamID) != m_l1d_rd_misses.end()) {
-    if (DTRACE(DEBUG_STATS)) {
-      fprintf(Trace::out, "%llu %s m_l1d_rd_misses[streamID:%llu] = %u\n", 
-        cycles, __func__, streamID, m_l1d_rd_misses.at(streamID));
-    }
-    assert(m_l1d_reads.find(streamID) != m_l1d_reads.end());
-  }
-  for (auto iter = m_l1d_reads.begin();
-    iter != m_l1d_reads.end(); ++iter)
-  {
-    if ((streamID != ((u64) - 1)) && (iter->first != streamID)) {
-      continue;
-    }
-    fprintf(fout, "\tL1D_READS = %u\n", 
-      m_l1d_reads.at(streamID));
   }
 }
 
-void cache_stats::print_l1d_avg_rd_byp_activates(FILE* fout, u64 streamID) const {
+void cache_stats::print_l1d_n_fill_to_evict_lines(FILE* fout, u64 streamID, u32 kernel) const {
+  const std::pair<u64, u32> key = std::make_pair(streamID, kernel);
+  auto it = m_n_l1d_fill_to_evict_lines.find(key);
+  if (it != m_n_l1d_fill_to_evict_lines.end()) {
+    fprintf(fout, "\tstreamID:%llu kernel:%u L1D_N_FILL_TO_EVICT_LINES = %u\n", 
+      streamID, kernel, it->second);
+  }
+}
+
+u32 cache_stats::print_l1d_rd_misses(FILE* fout, u64 streamID, u32 kernel, u64 cycles) const {
+  auto it_stream = m_l1d_rd_misses.find(streamID);
+  if (it_stream != m_l1d_rd_misses.end()) {
+    std::map<u32 /* kernel */, u32> records = it_stream->second;
+    auto it_kernel = records.find(kernel);
+    if (it_kernel != records.end()) {
+      fprintf(fout, "\tstreamID:%llu kernel:%u L1D_RD_MISSES = %u\n", 
+        streamID, kernel, records[kernel]);
+      return records[kernel];
+    }
+  }
+}
+u32 cache_stats::print_l1d_reads(FILE* fout, u64 streamID, u32 kernel, u64 cycles) const {
+  auto it_stream = m_l1d_reads.find(streamID);
+  if (it_stream != m_l1d_reads.end()) {
+    std::map<u32 /* kernel */, u32> records = it_stream->second;
+    auto it_kernel = records.find(kernel);
+    if (it_kernel != records.end()) {
+      fprintf(fout, "\tstreamID:%llu kernel:%u L1D_READS = %u\n", 
+        streamID, kernel, records[kernel]);
+      return records[kernel];
+    }
+  }
+}
+void cache_stats::print_l1d_rd_miss_rate(
+  FILE* fout, u64 streamID, u32 kernel, u32 misses, u32 reads, u64 cycles) const {
+  if (reads) {
+    float rd_miss_rate = misses / (float)reads;
+    fprintf(fout, "\tstreamID:%llu kernel:%u L1D_RD_MISS_RATE = %f (misses:%u / reads:%u)\n", 
+      streamID, kernel, rd_miss_rate, misses, reads);
+  }
+}
+
+void cache_stats::print_l1d_avg_rd_byp_activates(FILE* fout, u64 streamID, u32 kernel) const {
   for (auto iter = m_l1d_rd_byp_activates.begin(); iter != m_l1d_rd_byp_activates.end(); ++iter)
   {
     if ((streamID != ((u64) - 1)) && (iter->first != streamID)) {
@@ -3723,11 +3872,12 @@ void cache_stats::print_l1d_avg_rd_byp_activates(FILE* fout, u64 streamID) const
       total_byp_activates += iter.second;
     }
     float avg_byp_act = records.empty() ? 0.0f : total_byp_activates / (float)records.size();
-    fprintf(fout, "\tl1d_avg_rd_byp_act = %f (total_byp_activates:%u / records.size():%zu)\n", 
-      avg_byp_act, total_byp_activates, records.size());
+    fprintf(fout, "\tstreamID:%llu kernel:%u "
+      "l1d_avg_rd_byp_act = %f (total_byp_activates:%u / records.size():%zu)\n", 
+      streamID, kernel, avg_byp_act, total_byp_activates, records.size());
   }
 }
-void cache_stats::print_l1d_avg_rd_byp_deactivates(FILE* fout, u64 streamID) const {
+void cache_stats::print_l1d_avg_rd_byp_deactivates(FILE* fout, u64 streamID, u32 kernel) const {
   for (auto iter = m_l1d_rd_byp_deactivates.begin(); iter != m_l1d_rd_byp_deactivates.end(); ++iter)
   {
     if ((streamID != ((u64) - 1)) && (iter->first != streamID)) {
@@ -3739,10 +3889,12 @@ void cache_stats::print_l1d_avg_rd_byp_deactivates(FILE* fout, u64 streamID) con
       total_byp_deactivates += iter.second;
     }
     float avg_byp_deact = total_byp_deactivates / (float)records.size();
-    fprintf(fout, "\tl1d_avg_rd_byp_deact = %f\n", avg_byp_deact);
+    fprintf(fout, "\tstreamID:%llu kernel:%u "
+      "l1d_avg_rd_byp_deact = %f (total_byp_deactivates:%u / records.size():%zu)\n", 
+      streamID, kernel, avg_byp_deact, total_byp_deactivates, records.size());
   }
 }
-void cache_stats::print_l1d_avg_rd_byp_act_rate(FILE* fout, u64 streamID) const {
+void cache_stats::print_l1d_avg_rd_byp_act_rate(FILE* fout, u64 streamID, u32 kernelID) const {
   for (auto iter = m_l1d_rd_byp_activates.begin(); iter != m_l1d_rd_byp_activates.end(); ++iter)
   {
     if ((streamID != ((u64) - 1)) && (iter->first != streamID)) {
@@ -3754,16 +3906,16 @@ void cache_stats::print_l1d_avg_rd_byp_act_rate(FILE* fout, u64 streamID) const 
       total_byp_activates += iter.second;
     }
 
+    std::map<u32 /* kernel */, u32> l1d_read_records = m_l1d_reads.at(streamID);
     u32 total_l1d_reads = 0;
-    for (auto iter = m_l1d_reads.begin(); iter != m_l1d_reads.end(); ++iter)
-    {
-      total_l1d_reads += iter->second;
+    for (auto& l1d_read : l1d_read_records) {
+      total_l1d_reads += l1d_read.second;
     }
     
     float avg_byp_act_rate = total_byp_activates / (float)total_l1d_reads;
-    fprintf(fout, "\tl1d_avg_rd_byp_act_rate = %f "
+    fprintf(fout, "\tkernel:%u l1d_avg_rd_byp_act_rate = %f "
       "(total_byp_activates:%u / total_l1d_reads:%u)\n", 
-      avg_byp_act_rate, total_byp_activates, total_l1d_reads);
+      kernelID, avg_byp_act_rate, total_byp_activates, total_l1d_reads);
   }
 }
 
@@ -3886,7 +4038,8 @@ u64 cache_stats::get_stats(
   return total;
 }
 
-void cache_stats::get_sub_stats(struct cache_sub_stats &css, const char* cache_name) const {
+void cache_stats::get_sub_stats(
+  struct cache_sub_stats &css, const char* cache_name, unsigned long long time, unsigned kernel) const {
   ///
   /// Overwrites "css" with the appropriate statistics from this cache.
   ///
@@ -3904,7 +4057,9 @@ void cache_stats::get_sub_stats(struct cache_sub_stats &css, const char* cache_n
         // else if (status == BYPASS_DEACTIVATED) {
         //   t_css.avg_rd_byp_deactivates = 
         //     (t_css.avg_rd_byp_deactivates + m_l1d_rd_byp_deactivates.at(streamID)) >> 1;
-        // }         
+        // }
+        t_css.n_bypassed += m_stats.at(streamID)[type][status];        
+
         if (status == HIT || status == MISS || status == SECTOR_MISS || status == HIT_RESERVED) {
           t_css.accesses += m_stats.at(streamID)[type][status];
           if (type == GLOBAL_ACC_R || type == CONST_ACC_R || type == INST_ACC_R) {
@@ -3915,14 +4070,20 @@ void cache_stats::get_sub_stats(struct cache_sub_stats &css, const char* cache_n
         }
         if (status == MISS) {
           if (type == GLOBAL_ACC_R || type == CONST_ACC_R || type == INST_ACC_R) {            
+            // 3/18 Commented to check if "rd_misses = 0" in perf_rpt.o (Yes)
+            // L1D_rd_miss_rate = 0.4505 = (rd_misses:0 + sector_rd_misses:2153) / reads:4779
+            // t_css.clear() is called before embedded loop 
+            // "+=" accumulates [type][status] for this round only
+            [[maybe_unused]] u64 prev_rd_misses = t_css.rd_misses;
             t_css.rd_misses += m_stats.at(streamID)[type][status];
-            if (DTRACE(DEBUG_L1D_RD_MISS_STATS)) {
-              if (!strcmp(cache_name, "l1d")) {
-                fprintf(Trace::out, "L1D t_css.rd_misses: %llu += "
-                  "m_stats.at(streamID:%llu)[type:%d][%s]:%llu\n", 
-                  t_css.rd_misses, streamID, type, 
-                  cache_request_status_str((enum cache_request_status)status), 
-                  m_stats.at(streamID)[type][status]);
+            if (DTRACE(DEBUG_STATS)) {
+              if (m_stats.at(streamID)[type][status]) {
+                fprintf(Trace::out, "%llu kernel:%u %s t_css.rd_misses:%llu += "
+                  "m_stats.at(streamID:%llu)[type:%u][status:%s]:%llu (prev_rd_misses:%llu->%llu)\n", 
+                  time, kernel, cache_name, t_css.rd_misses, 
+                  streamID, type, cache_request_status_str(cache_request_status(status)), 
+                  m_stats.at(streamID)[type][status], 
+                  prev_rd_misses, t_css.rd_misses);                
               }
             }
           } else if (type == GLOBAL_ACC_W) {
@@ -4346,11 +4507,6 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
       if (!mf->is_write() && !mf->isatomic()) {
         m_stats.avg_l1d_rd_miss_served_cycles(
           mf->get_streamID(), time - mf->m_l1d_rd_miss_serve_begin_time);
-
-        if (DTRACE(DEBUG_STATS)) {
-          fprintf(Trace::out, "%llu inc_l1d_rd_misses[streamID:%llu] = %u\n",
-            time, mf->get_streamID(), m_stats.get_l1d_rd_misses(mf->get_streamID()));
-        }
       } else if (mf->is_write()) {
         m_stats.avg_l1d_wr_miss_served_cycles(
           mf->get_streamID(), time - mf->m_wr_miss_serve_begin_time);
@@ -5560,7 +5716,7 @@ enum cache_request_status data_cache::process_tag_probe(
       }
 
       if (m_is_l1d) {
-        m_stats.inc_l1d_wr_misses(mf->get_streamID());
+        m_stats.inc_l1d_wr_misses(mf->get_streamID(), mf->get_sid());
       }      
 
       access_status = (this->*m_wr_miss)(addr, cache_index, mf, time, events, probe_status);
@@ -5591,7 +5747,14 @@ enum cache_request_status data_cache::process_tag_probe(
       }      
 
       if (m_is_l1d) {
-        m_stats.inc_l1d_rd_misses(mf->get_streamID());
+        m_stats.inc_l1d_rd_misses(mf->get_streamID(), m_gpu->m_kernel_id);
+        if (DTRACE(INC_L1D_RD_MISSES)) {
+          // m_kernel_id changes 
+          fprintf(Trace::out, "%llu kernel:%u sm:%u inc_l1d_rd_misses[streamID:%llu][kernel:%u] = %u\n",
+            time, m_gpu->m_kernel_id, mf->get_sid(),
+            mf->get_streamID(), m_gpu->m_kernel_id,
+            m_stats.get_l1d_rd_misses(mf->get_streamID(), m_gpu->m_kernel_id));            
+        }
       }      
 
       access_status = (this->*m_rd_miss)(addr, cache_index, mf, time, events, probe_status);
@@ -5615,9 +5778,9 @@ void data_cache::update_l1d_miss_stats(const cache_request_status& probe_status,
   if (probe_status == MISS || probe_status == SECTOR_MISS) {
     if (mf && m_is_l1d) {
       if (!mf->is_write() && !mf->isatomic()) {
-        m_stats.inc_l1d_rd_misses(mf->get_streamID());
+        m_stats.inc_l1d_rd_misses(mf->get_streamID(), mf->get_sid());
       } else if (mf->is_write()) {
-        m_stats.inc_l1d_wr_misses(mf->get_streamID());
+        m_stats.inc_l1d_wr_misses(mf->get_streamID(), mf->get_sid());
       }
     }
   }  
@@ -5649,16 +5812,17 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
 
   if (m_is_l1d && mf) {
     if (!mf->is_write() && !mf->isatomic()) {
-      m_stats.inc_l1d_reads(mf->get_streamID());
+      m_stats.inc_l1d_reads(mf->get_streamID(), m_gpu->m_kernel_id);
 
-      if (DTRACE(DEBUG_STATS)) {
-        fprintf(Trace::out, "%llu inc_l1d_reads[streamID:%llu] = %u\n",
-          time, mf->get_streamID(), m_stats.get_l1d_reads(mf->get_streamID()));
+      if (DTRACE(INC_L1D_READS)) {
+        fprintf(Trace::out, "%llu inc_l1d_reads[streamID:%llu][kernel:%u] = %u\n",
+          time, mf->get_streamID(), m_gpu->m_kernel_id,
+          m_stats.get_l1d_reads(mf->get_streamID(), m_gpu->m_kernel_id));
       }    
     } else if (mf->is_write()) {
-      m_stats.inc_l1d_writes(mf->get_streamID());
+      m_stats.inc_l1d_writes(mf->get_streamID(), m_gpu->m_kernel_id);
     } 
-    m_stats.inc_l1d_accesses(mf->get_streamID());    
+    m_stats.inc_l1d_accesses(mf->get_streamID(), m_gpu->m_kernel_id);
   }
 
   enum cache_request_status probe_status = cache_request_status::MISS;
@@ -5806,11 +5970,14 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
     }
   }
 
+  const std::pair<u64, u32> f2e_ln_key = std::make_pair(mf->get_streamID(), m_gpu->m_kernel_id);
+  m_stats.update_n_l1d_fill_to_evict(
+    mf->get_streamID(), m_gpu->m_kernel_id, 
+    m_tag_array->m_l1d_fill_to_evict_lines[f2e_ln_key].size());
+  
   new_addr_type loc_key = m_config.block_addr(mf->get_addr());
-  bool en_inc_byp_act = 
-    m_config.m_bypass_low_loc_lines == 'T' && mf->get_l1d_rd_byp_change() == 2;
-  bool en_inc_byp_deact = 
-    m_config.m_bypass_low_loc_lines == 'T' && mf->get_l1d_rd_byp_change() == 1;    
+  bool en_inc_byp_act   = m_config.m_bypass_low_loc_lines == 'T' && mf->get_l1d_rd_byp_change() == 2;
+  bool en_inc_byp_deact = m_config.m_bypass_low_loc_lines == 'T' && mf->get_l1d_rd_byp_change() == 1;    
   m_stats.update_l1d_rd_byp_act(
     en_inc_byp_act, loc_key, m_tag_array->m_l1d_rd_byp_activated_times[loc_key], mf->get_streamID());
   m_stats.update_l1d_rd_byp_deact(

@@ -635,6 +635,7 @@ class gpgpu_sim : public gpgpu_t {
   void launch(kernel_info_t *kinfo);
   bool can_start_kernel();
   unsigned finished_kernel();
+  unsigned running_kernel();
   void set_kernel_done(kernel_info_t *kernel);
   void stop_all_running_kernels();
 
@@ -808,12 +809,11 @@ class gpgpu_sim : public gpgpu_t {
   virtual void createSIMTCluster() = 0;
 
  public:
+  unsigned m_kernel_id;
   unsigned long long gpu_sim_insn;
   unsigned long long gpu_tot_sim_insn;
   unsigned long long gpu_sim_insn_last_update;
   unsigned gpu_sim_insn_last_update_sid;
-  // std::unordered_map<op_type, unsigned long long> gpu_sim_tot_uarch_op_lat;
-  // std::unordered_map<op_type, unsigned long long> gpu_sim_tot_uarch_op_insts;
 
   occupancy_stats gpu_occupancy;
   occupancy_stats gpu_tot_occupancy;

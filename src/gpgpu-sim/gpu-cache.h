@@ -1637,6 +1637,8 @@ struct REQ_PKT
   }
 };
 
+typedef unsigned long long u64;
+typedef unsigned u32;
 class tag_array {
   friend class baseline_cache;
   friend class data_cache;
@@ -1678,7 +1680,6 @@ class tag_array {
   void set_l1d_rd_fill_to_evict_gap(new_addr_type block_addr, unsigned long long gap) {
     m_l1d_rd_fill_to_evict_gap[block_addr] = gap;
   }
-
   unsigned long long get_l1d_evict_time(new_addr_type block_addr) {
     return m_l1d_evict_time[block_addr];
   }
@@ -1903,28 +1904,27 @@ class tag_array {
   line_table pending_lines;
   line_table lines_locality;
   std::vector<std::set<new_addr_type>> m_l1d_unique_lines;
-  std::vector<std::vector<std::pair<new_addr_type, unsigned long long>>> m_reref_gap;  
-  std::vector<unsigned long long> m_avg_reref_gap;
+  std::vector<std::vector<std::pair<new_addr_type, u64>>> m_reref_gap;  
+  std::vector<u64> m_avg_reref_gap;
   std::vector<unsigned> m_l1d_max_evicts;
   std::vector<unsigned> m_l1d_avg_evicts;
-  // std::map<
-  //   std::pair<unsigned /* uid */, new_addr_type>, unsigned /* evictions */> 
-  //   m_l1d_lines_evictions; 
-  std::map<new_addr_type /* block_addr */, unsigned long long /* cycles */> m_l1d_rd_fill_time;
-  std::map<new_addr_type /* block_addr */, unsigned long long /* cycles */> m_l1d_evict_time;
-  std::map<new_addr_type /* block_addr */, unsigned long long /* cycles */> m_l1d_rd_fill_to_evict_gap;
-  std::map<new_addr_type /* block_addr */, unsigned> m_l1d_rd_byp_activated_times;
-  std::map<new_addr_type /* block_addr */, unsigned> m_l1d_rd_byp_deactivated_times;
+  std::map<new_addr_type /* block_addr */, u64 /* cycles */> m_l1d_rd_fill_time;
+  std::map<new_addr_type /* block_addr */, u64 /* cycles */> m_l1d_evict_time;
+  std::map<new_addr_type /* block_addr */, u64 /* cycles */> m_l1d_rd_fill_to_evict_gap;  
+  std::map<new_addr_type /* block_addr */, u64 /* cycles */> m_l1d_last_fill_time;
+  std::map<new_addr_type /* block_addr */, u32> m_l1d_rd_byp_activated_times;
+  std::map<new_addr_type /* block_addr */, u32> m_l1d_rd_byp_deactivated_times;
   std::map<new_addr_type /* block_addr */, bool> m_1st_time_l1d_rd_fill_to_evict;
   std::map<new_addr_type /* block_addr */, int> m_l1d_rd_bypass_confidence;
   std::map<new_addr_type /* block_addr */, bool> m_l1d_rd_bypass_activated;
-  std::map<new_addr_type /* block_addr */, unsigned long long /* cycles */> m_avg_l1d_rd_fill_to_evict_gap;
-  std::map<new_addr_type /* block_addr */, unsigned /* evictions */> m_l1d_lines_evictions;      
-  std::map<new_addr_type /* block_addr */, unsigned long long /* cycles */> m_l1d_evict_gap;
-  std::map<new_addr_type /* block_addr */, unsigned long long /* cycles */> m_l1d_last_evict_time;
-  std::map<new_addr_type /* block_addr */, unsigned long long /* cycles */> m_l1d_evictions_time;
+  std::map<new_addr_type /* block_addr */, u64 /* cycles */> m_avg_l1d_rd_fill_to_evict_gap;
+  std::map<new_addr_type /* block_addr */, u32 /* evictions */> m_l1d_lines_evictions;      
+  std::map<new_addr_type /* block_addr */, u64 /* cycles */> m_l1d_evict_gap;
+  std::map<new_addr_type /* block_addr */, u64 /* cycles */> m_l1d_last_evict_time;
+  std::map<new_addr_type /* block_addr */, u64 /* cycles */> m_l1d_evictions_time;
   std::map<new_addr_type /* block_addr */, float /* trashing degree*/> m_l1d_trashing_degree;
   std::map<new_addr_type /* block_addr */, bool> m_l1d_has_trashed;
+  std::map<std::pair<u64 /* streamID */, u32 /* kernel */>, std::set<new_addr_type>> m_l1d_fill_to_evict_lines;
   std::set<new_addr_type> m_l1d_trashed_lines;
   float m_l1d_mpki;
   unsigned m_low_loc_threshold;
@@ -2003,6 +2003,8 @@ class mshr_table {
 /// reservation fails.
 ///
 // Accumulated stats of all kernels
+typedef unsigned long long u64;
+typedef unsigned u32;
 struct cache_sub_stats {
   unsigned long long accesses;
   unsigned long long reads;
@@ -2026,6 +2028,8 @@ struct cache_sub_stats {
   unsigned long long data_port_busy_cycles;
   unsigned long long fill_port_busy_cycles;
 
+  u32 n_bypassed; 
+
   cache_sub_stats() { clear(); }
   void clear() {
     accesses = 0;
@@ -2045,6 +2049,7 @@ struct cache_sub_stats {
     port_available_cycles  = 0;
     data_port_busy_cycles  = 0;
     fill_port_busy_cycles  = 0;
+    n_bypassed = 0;
   }
   cache_sub_stats &operator+=(const cache_sub_stats &css) {
     ///
@@ -2067,6 +2072,7 @@ struct cache_sub_stats {
     port_available_cycles += css.port_available_cycles;
     data_port_busy_cycles += css.data_port_busy_cycles;
     fill_port_busy_cycles += css.fill_port_busy_cycles;
+    n_bypassed += css.n_bypassed;
     return *this;
   }
 
@@ -2093,6 +2099,7 @@ struct cache_sub_stats {
         data_port_busy_cycles + cs.data_port_busy_cycles;
     ret.fill_port_busy_cycles =
         fill_port_busy_cycles + cs.fill_port_busy_cycles;
+    ret.n_bypassed = n_bypassed + cs.n_bypassed;
     return ret;
   }
 
@@ -2176,13 +2183,13 @@ class cache_stats {
   void avg_l1d_rd_miss_served_cycles(u64 streamID, u64 served_cycles);
   void avg_l1d_wr_miss_served_cycles(u64 streamID, u64 served_cycles);
   
-  void inc_l1d_accesses(u64 streamID);
-  void inc_l1d_reads(u64 streamID);
-  void inc_l1d_rd_misses(u64 streamID);
-  void inc_l1d_writes(u64 streamID);
-  void inc_l1d_wr_misses(u64 streamID);
-
-  // Increment cache stats
+  void inc_l1d_accesses(u64 streamID, u32 kernel);
+  void inc_l1d_reads(u64 streamID, u32 kernel);
+  void inc_l1d_rd_misses(u64 streamID, u32 kernel);
+  void inc_l1d_writes(u64 streamID, u32 kernel);
+  void inc_l1d_wr_misses(u64 streamID, u32 kernel);
+  void update_n_l1d_fill_to_evict(u64 streamID, u32 kernel, u32 n_lines);
+  
   void inc_mshr_stats(u64 streamID, u32 sm_id, u32 warp_id);
   void inc_accu_l2_dram_queue_size(u64 streamID, u32 l2_sub, u32 size);
   void inc_accu_l2_icnt_queue_size(u64 streamID, u32 l2_sub, u32 size);  
@@ -2218,7 +2225,7 @@ class cache_stats {
 
   // l1d
   u64 operator() (u64 streamID, const char* tgt_name) const;
-  u32 getU32(u64 streamID, const char* tgt_name) const;
+  u32 getU32(u64 streamID, u32 kernel, const char* tgt_name) const;
 
   u64 operator()(u32 l2_sub, u64 streamID, const char* tgt_name) const;
 
@@ -2240,15 +2247,19 @@ class cache_stats {
   void print_l2_icnt_queue_stats(
     FILE *fout, u32 l2_icnt_q_capacity, u64 streamID, const char *info = "") const;
 
-  void print_l1d_accesses(FILE* fout, u64 streamID) const;
-  void print_l1d_wr_misses(FILE* fout, u64 streamID) const;
-  void print_l1d_writes(FILE* fout, u64 streamID) const;
-  void print_l1d_rd_misses(FILE* fout, u64 streamID, u64 cycle = (u64) - 1) const;
-  void print_l1d_reads(FILE* fout, u64 streamID, u64 cycle = (u64) - 1) const;  
-  void print_l1d_avg_rd_byp_activates(FILE* fout, u64 streamID) const;
-  void print_l1d_avg_rd_byp_deactivates(FILE* fout, u64 streamID) const;
-  void print_l1d_avg_rd_byp_act_rate(FILE* fout, u64 streamID) const;
-  void print_avg_core_cache_miss_served_cycles(FILE* fout, u64 streamID) const;
+  void print_l1d_accesses(FILE* fout, u64 streamID, u32 kernel) const;
+  void print_l1d_wr_misses(FILE* fout, u64 streamID, u32 kernel) const;
+  void print_l1d_writes(FILE* fout, u64 streamID, u32 kernel) const;
+  u32 print_l1d_rd_misses(FILE* fout, u64 streamID, u32 kernel, u64 cycle = (u64) - 1) const;
+  u32 print_l1d_reads(FILE* fout, u64 streamID, u32 kernel, u64 cycle = (u64) - 1) const;
+  void print_l1d_rd_miss_rate(
+    FILE* fout, u64 streamID, u32 kernel, u32 misses, u32 reads, u64 cycles = (u64) - 1) const;
+
+  void print_l1d_n_fill_to_evict_lines(FILE* fout, u64 streamID, u32 kernel) const;
+  void print_l1d_avg_rd_byp_activates(FILE* fout, u64 streamID, u32 kernel) const;
+  void print_l1d_avg_rd_byp_deactivates(FILE* fout, u64 streamID, u32 kernel) const;
+  void print_l1d_avg_rd_byp_act_rate(FILE* fout, u64 streamID, u32 kernel) const;
+  void print_avg_core_cache_miss_served_cycles(FILE* fout, u64 streamID, u32 kernel) const;
   void print_avg_l1d_rd_fill_to_evict_gap(FILE* fout, u64 streamID) const;
   void print_avg_l1d_rd_miss_served_cycles(FILE* fout, u64 streamID) const;  
   void print_avg_l1d_wr_miss_served_cycles(FILE* fout, u64 streamID) const;
@@ -2263,7 +2274,10 @@ class cache_stats {
                                u32 num_access_type,
                                enum cache_request_status *access_status,
                                u32 num_access_status) const;
-  void get_sub_stats(struct cache_sub_stats &css, const char* cache_name = "") const;
+  void get_sub_stats(
+    struct cache_sub_stats &css, const char* cache_name, 
+    unsigned long long time,
+    unsigned kernel = ((unsigned) - 1)) const;
 
   // Get per-window cache stats for AerialVision
   void get_sub_stats_pw(struct cache_sub_stats_pw &css) const;
@@ -2287,12 +2301,77 @@ class cache_stats {
   u64 get_overall_avg_l1d_rd_fill_to_evict_gap(u64 streamID) const { return m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID); }
   u64 get_l1d_rd_miss_served_cycles(u64 streamID) const { return m_l1d_rd_miss_served_cycles.at(streamID); }
   u64 get_l1d_wr_miss_served_cycles(u64 streamID) const { return m_l1d_wr_miss_served_cycles.at(streamID); }
-  u32 get_l1d_accesses(u64 streamID) const { return m_l1d_accesses.at(streamID); }
-  u32 get_l1d_reads(u64 streamID) const { return m_l1d_reads.at(streamID); }
-  u32 get_l1d_writes(u64 streamID) const { return m_l1d_writes.at(streamID); }
-  u32 get_l1d_misses(u64 streamID) const { return m_l1d_misses.at(streamID); }
-  u32 get_l1d_rd_misses(u64 streamID) const { return m_l1d_rd_misses.at(streamID); }
-  u32 get_l1d_wr_misses(u64 streamID) const { return m_l1d_wr_misses.at(streamID); }
+
+  u32 get_l1d_accesses(u64 streamID, u32 kernel) const {
+    auto stream_it = m_l1d_accesses.find(streamID);
+    if (stream_it == m_l1d_accesses.end()) {
+      return 0;
+    } else {
+      std::map<u32 /* kernel */, u32> record = stream_it->second;
+      auto kernel_it = record.find(kernel);
+      if (kernel_it == record.end()) {
+        return 0;
+      } else {
+        return record[kernel];
+      }
+    }
+  }
+  u32 get_l1d_reads(u64 streamID, u32 kernel) const {
+    auto stream_it = m_l1d_reads.find(streamID);
+    if (stream_it == m_l1d_reads.end()) {
+      return 0;
+    } else {
+      std::map<u32 /* kernel */, u32> record = stream_it->second;
+      auto kernel_it = record.find(kernel);
+      if (kernel_it == record.end()) {
+        return 0;
+      } else {
+        return record[kernel];
+      }
+    }
+  }
+  u32 get_l1d_writes(u64 streamID, u32 kernel) const {
+    auto stream_it = m_l1d_writes.find(streamID);
+    if (stream_it == m_l1d_writes.end()) {
+      return 0;
+    } else {
+      std::map<u32 /* kernel */, u32> record = stream_it->second;
+      auto kernel_it = record.find(kernel);
+      if (kernel_it == record.end()) {
+        return 0;
+      } else {
+        return record[kernel];
+      }
+    }
+  }
+  u32 get_l1d_rd_misses(u64 streamID, u32 kernel) const {
+    auto stream_it = m_l1d_rd_misses.find(streamID);
+    if (stream_it == m_l1d_rd_misses.end()) {
+      return 0;
+    } else {
+      std::map<u32 /* kernel */, u32> record = stream_it->second;
+      auto kernel_it = record.find(kernel);
+      if (kernel_it == record.end()) {
+        return 0;
+      } else {
+        return record[kernel];
+      }
+    }    
+  }
+  u32 get_l1d_wr_misses(u64 streamID, u32 kernel) const {
+    auto stream_it = m_l1d_wr_misses.find(streamID);
+    if (stream_it == m_l1d_wr_misses.end()) {
+      return 0;
+    } else {
+      std::map<u32 /* kernel */, u32> record = stream_it->second;
+      auto kernel_it = record.find(kernel);
+      if (kernel_it == record.end()) {
+        return 0;
+      } else {
+        return record[kernel];
+      }
+    }     
+  }
 
  private:
   const char* m_cache_name;
@@ -2313,14 +2392,16 @@ class cache_stats {
   std::map<u64 /* streamID */, u64> m_l1d_rd_miss_served_cycles; // done accu
   std::map<u64 /* streamID */, u64> m_l1d_wr_miss_served_cycles; // done accu
 
+  std::map<std::pair<u64 /* streamID */, u32 /* kernel */>, u32> m_n_l1d_fill_to_evict_lines;
   std::map<u64 /* streamID */, std::map<u64, u32>> m_l1d_rd_byp_activates; // done accu
   std::map<u64 /* streamID */, std::map<u64, u32>> m_l1d_rd_byp_deactivates; // done accu
-  std::map<u64 /* streamID */, u32> m_l1d_accesses;  // done accu
-  std::map<u64 /* streamID */, u32> m_l1d_misses;    // done accu
-  std::map<u64 /* streamID */, u32> m_l1d_reads;     // done accu
-  std::map<u64 /* streamID */, u32> m_l1d_writes;    // done accu 
-  std::map<u64 /* streamID */, u32> m_l1d_rd_misses; // done accu
-  std::map<u64 /* streamID */, u32> m_l1d_wr_misses; // done accu
+  // SM is not differentiated in following stats
+  std::map<u64 /* streamID */, std::map<u32 /* kernel */, u32>> m_l1d_accesses;  // done accu
+  std::map<u64 /* streamID */, std::map<u32 /* kernel */, u32>> m_l1d_misses;    // done accu
+  std::map<u64 /* streamID */, std::map<u32 /* kernel */, u32>> m_l1d_reads;     // done accu
+  std::map<u64 /* streamID */, std::map<u32 /* kernel */, u32>> m_l1d_writes;    // done accu 
+  std::map<u64 /* streamID */, std::map<u32 /* kernel */, u32>> m_l1d_rd_misses; // done accu
+  std::map<u64 /* streamID */, std::map<u32 /* kernel */, u32>> m_l1d_wr_misses; // done accu
   std::map<u64 /* streamID */, std::vector<u64>> m_l2_sub_miss_served_cycles;
   std::map<u64 /* streamID */, std::vector<u32>> m_l2_sub_misses;
 
@@ -2519,8 +2600,10 @@ class baseline_cache : public cache_t {
     return m_stats.get_stats(access_type, num_access_type, access_status,
                              num_access_status);
   }
-  void get_sub_stats(struct cache_sub_stats &css, const char* cache_name = "") const {
-    m_stats.get_sub_stats(css, cache_name);
+  void get_sub_stats(
+    struct cache_sub_stats &css, const char* cache_name, 
+    unsigned long long time, unsigned kernel) const {
+    m_stats.get_sub_stats(css, cache_name, time, kernel);
   }
   // Clear per-window stats for AerialVision support
   void clear_pw() { m_stats.clear_pw(); }
@@ -2996,8 +3079,10 @@ class tex_cache : public cache_t {
                              num_access_status);
   }
 
-  void get_sub_stats(struct cache_sub_stats &css) const {
-    m_stats.get_sub_stats(css);
+  void get_sub_stats(
+    struct cache_sub_stats &css, const char* cache_name, 
+    unsigned long long time, unsigned kernel) const {
+    m_stats.get_sub_stats(css, cache_name, time, kernel);
   }
 
  private:

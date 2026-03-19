@@ -228,14 +228,6 @@ extern std::map<void *, size_t> pinned_memory_size;
 
 class kernel_info_t {
  public:
-  //   kernel_info_t()
-  //   {
-  //      m_valid=false;
-  //      m_kernel_entry=NULL;
-  //      m_uid=0;
-  //      m_num_cores_running=0;
-  //      m_param_mem=NULL;
-  //   }
   kernel_info_t(dim3 gridDim, dim3 blockDim, class function_info *entry,
                 unsigned long long streamID);
   kernel_info_t(

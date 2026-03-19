@@ -898,6 +898,7 @@ void increment_x_then_y_then_z(dim3 &i, const dim3 &bound) {
 
 void gpgpu_sim::launch(kernel_info_t *kinfo) {
   unsigned kernelID = kinfo->get_uid();
+  m_kernel_id = kinfo->get_uid();
   unsigned long long streamID = kinfo->get_streamID();
 
   kernel_time_t kernel_time = {gpu_tot_sim_cycle + gpu_sim_cycle, 0};
@@ -1017,11 +1018,26 @@ kernel_info_t *gpgpu_sim::select_kernel() {
   return NULL;
 }
 
+unsigned gpgpu_sim::running_kernel() {
+  if (m_finished_kernel.empty()) {
+    return 0;
+  }
+  return m_finished_kernel.front();
+}
+
 unsigned gpgpu_sim::finished_kernel() {
   if (m_finished_kernel.empty()) {
     last_streamID = -1;
     return 0;
   }
+  if (DTRACE(PROBE_KERNEL)) {
+    for (auto& kernel : m_finished_kernel)
+    {
+      fprintf(Trace::out, "%llu running kernel is the %uth kernel. total %lu kernels\n", 
+        gpu_sim_cycle + gpu_tot_sim_cycle, m_finished_kernel.front(), m_finished_kernel.size());
+    }
+  }
+
   unsigned result = m_finished_kernel.front();
   m_finished_kernel.pop_front();
   return result;
@@ -1035,6 +1051,12 @@ void gpgpu_sim::set_kernel_done(kernel_info_t *kernel) {
   gpu_kernel_time.at(streamID).at(uid).end_cycle =
       gpu_tot_sim_cycle + gpu_sim_cycle;
   m_finished_kernel.push_back(uid);
+
+  if (DTRACE(PROBE_KERNEL)) {
+    fprintf(Trace::out, "%llu set_kernel_done for the %ith (uid) kernel\n", 
+      gpu_sim_cycle + gpu_tot_sim_cycle, uid);
+  }
+
   std::vector<kernel_info_t *>::iterator k;
   for (k = m_running_kernels.begin(); k != m_running_kernels.end(); k++) {
     if (*k == kernel) {
@@ -1743,9 +1765,6 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
       l1d_max_evictions   += m_shader_stats->m_l1d_max_evicts[sid];
       l1d_avg_evictions = (l1d_avg_evictions + m_shader_stats->m_l1d_avg_evicts[sid]) >> 1;
       n_l1d_trashed_lines += m_shader_stats->m_n_l1d_trashed_lines[sid];
-
-      // m_shader_stats->m_l1d_lines_recency[sid]
-
       printf("l1d_victims[sid:%u] = %u\n", sid, m_shader_stats->m_l1d_victims[sid]);
       printf("l1d_max_evictions[sid:%u] = %u\n", sid, m_shader_stats->m_l1d_max_evicts[sid]);
       printf("l1d_avg_evictions[sid:%u] = %u\n", sid, m_shader_stats->m_l1d_avg_evicts[sid]);
@@ -2170,14 +2189,19 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
   core_cache_stats.print_stats(stdout, streamID, "Total_core_cache_stats_breakdown");
 
   u64 cycles = gpu_tot_sim_cycle + gpu_sim_cycle;
-  core_cache_stats.print_l1d_accesses(stdout, streamID);
-  core_cache_stats.print_l1d_rd_misses(stdout, streamID, cycles);
-  core_cache_stats.print_l1d_reads(stdout, streamID, cycles);
-  core_cache_stats.print_l1d_wr_misses(stdout, streamID);
-  core_cache_stats.print_l1d_writes(stdout, streamID);  
-  core_cache_stats.print_l1d_avg_rd_byp_activates(stdout, streamID);
-  core_cache_stats.print_l1d_avg_rd_byp_deactivates(stdout, streamID);
-  core_cache_stats.print_l1d_avg_rd_byp_act_rate(stdout, streamID);
+  core_cache_stats.print_l1d_accesses(stdout, streamID, kernelID);
+  u32 l1d_rd_misses = core_cache_stats.print_l1d_rd_misses(stdout, streamID, kernelID, cycles);
+  u32 l1d_reads     = core_cache_stats.print_l1d_reads(stdout, streamID, kernelID, cycles);
+  core_cache_stats.print_l1d_rd_miss_rate(
+    stdout, streamID, kernelID, l1d_rd_misses, l1d_reads, cycles);
+
+  core_cache_stats.print_l1d_wr_misses(stdout, streamID, kernelID);
+  core_cache_stats.print_l1d_writes(stdout, streamID, kernelID);
+
+  core_cache_stats.print_l1d_n_fill_to_evict_lines(stdout, streamID, kernelID);
+  core_cache_stats.print_l1d_avg_rd_byp_activates(stdout, streamID, kernelID);
+  core_cache_stats.print_l1d_avg_rd_byp_deactivates(stdout, streamID, kernelID);
+  core_cache_stats.print_l1d_avg_rd_byp_act_rate(stdout, streamID, kernelID);
 
   printf("Gather average l1d_rd_fill_to_evict_gap:\n");
   core_cache_stats.print_avg_l1d_rd_fill_to_evict_gap(stdout, streamID);

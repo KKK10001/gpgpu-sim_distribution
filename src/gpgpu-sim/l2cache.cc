@@ -1333,7 +1333,7 @@ void memory_sub_partition::accumulate_L2cache_stats(
 void memory_sub_partition::get_L2cache_sub_stats(
     struct cache_sub_stats &css) const {
   if (!m_config->m_L2_config.disabled()) {
-    m_L2cache->get_sub_stats(css);
+    m_L2cache->get_sub_stats(css, "L2", get_unified_cycle(), m_gpu->m_kernel_id);
   }
 }
 
