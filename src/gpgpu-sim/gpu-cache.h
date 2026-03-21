@@ -1639,6 +1639,26 @@ struct REQ_PKT
 
 typedef unsigned long long u64;
 typedef unsigned u32;
+
+struct BYPASS_KEY
+{
+  u64 stream_id;
+  u32 kernel;
+  u64 block_addr;
+  BYPASS_KEY() : 
+    stream_id((u64) - 1), kernel((u32) - 1), block_addr((u64) - 1) {}
+  BYPASS_KEY(
+    u64 stream_id_, u32 kernel_, u64 block_addr_) :
+    stream_id(stream_id_), kernel(kernel_), block_addr(block_addr_) {}
+
+  bool operator<(const BYPASS_KEY& other) const {
+    if (stream_id != other.stream_id) return stream_id < other.stream_id;
+    if (kernel != other.kernel) return kernel < other.kernel;
+    if (block_addr != other.block_addr) return block_addr < other.block_addr;
+    return false;
+  }    
+};
+
 class tag_array {
   friend class baseline_cache;
   friend class data_cache;
@@ -1660,70 +1680,51 @@ class tag_array {
   std::vector<std::set<new_addr_type>> get_l1d_unique_lines() {
     return m_l1d_unique_lines;
   }
-  void print_l1d_rd_bypass_conf_cnt() {
-    unsigned i = 0;
-    for (auto& iter : m_l1d_rd_bypass_confidence) {
-      fprintf(Trace::out, "%u: m_l1d_rd_bypass_confidence[block_addr:%#llx] = %d\n",
-        i, iter.first, iter.second);
-    }    
+
+  void set_l1d_rd_fill_time(BYPASS_KEY key, u64 time) {
+    m_l1d_rd_fill_time[key] = time;
+  }
+  void set_l1d_evict_time(BYPASS_KEY key, u64 time) {
+    m_l1d_evict_time[key] = time;
+  }
+  void set_l1d_rd_fill_to_evict_gap(BYPASS_KEY key, u64 gap) {
+    m_l1d_rd_fill_to_evict_gap[key] = gap;
+  }
+  u64 get_l1d_evict_time(BYPASS_KEY key) {
+    return m_l1d_evict_time[key];
   }
 
-  void set_1st_time_l1d_rd_fill_to_evict(new_addr_type block_addr, bool is_1st_time) {
-    m_1st_time_l1d_rd_fill_to_evict[block_addr] = is_1st_time;
-  }
-  void set_l1d_rd_fill_time(new_addr_type block_addr, unsigned long long time) {
-    m_l1d_rd_fill_time[block_addr] = time;
-  }
-  void set_l1d_evict_time(new_addr_type block_addr, unsigned long long time) {
-    m_l1d_evict_time[block_addr] = time;
-  }
-  void set_l1d_rd_fill_to_evict_gap(new_addr_type block_addr, unsigned long long gap) {
-    m_l1d_rd_fill_to_evict_gap[block_addr] = gap;
-  }
-  unsigned long long get_l1d_evict_time(new_addr_type block_addr) {
-    return m_l1d_evict_time[block_addr];
-  }
-
-  void average_l1d_rd_fill_to_evict_gap(new_addr_type block_addr) {
-    assert(m_l1d_rd_fill_to_evict_gap.find(block_addr) != m_l1d_rd_fill_to_evict_gap.end());
-    unsigned long long this_gap = m_l1d_rd_fill_to_evict_gap[block_addr];
-    if (m_avg_l1d_rd_fill_to_evict_gap.find(block_addr) == m_avg_l1d_rd_fill_to_evict_gap.end()) {
-      m_avg_l1d_rd_fill_to_evict_gap[block_addr] = this_gap;
+  void average_l1d_rd_fill_to_evict_gap(BYPASS_KEY key) {
+    assert(m_l1d_rd_fill_to_evict_gap.find(key) != m_l1d_rd_fill_to_evict_gap.end());
+    u64 this_gap = m_l1d_rd_fill_to_evict_gap[key];
+    if (m_avg_l1d_rd_fill_to_evict_gap.find(key) == m_avg_l1d_rd_fill_to_evict_gap.end()) {
+      m_avg_l1d_rd_fill_to_evict_gap[key] = this_gap;
     } else {
-      m_avg_l1d_rd_fill_to_evict_gap[block_addr] = 
-        (m_avg_l1d_rd_fill_to_evict_gap[block_addr] + this_gap) >> 1;
+      m_avg_l1d_rd_fill_to_evict_gap[key] = 
+        (m_avg_l1d_rd_fill_to_evict_gap[key] + this_gap) >> 1;
     }
   }
 
-  unsigned long long get_l1d_rd_fill_time(new_addr_type block_addr) {
-    return m_l1d_rd_fill_time[block_addr];
+  u64 get_l1d_rd_fill_time(BYPASS_KEY key) {
+    return m_l1d_rd_fill_time[key];
   }
-  bool is_1st_time_l1d_rd_fill_to_evict(new_addr_type block_addr) {
-    return m_1st_time_l1d_rd_fill_to_evict[block_addr];
-  }
-  unsigned long long get_l1d_rd_fill_to_evict_gap(new_addr_type block_addr) {
-    return m_l1d_rd_fill_to_evict_gap[block_addr];
+  u64 get_l1d_rd_fill_to_evict_gap(BYPASS_KEY key) {
+    return m_l1d_rd_fill_to_evict_gap[key];
   }  
-  unsigned long long get_avg_l1d_rd_fill_to_evict_gap(new_addr_type block_addr) {
-    return m_avg_l1d_rd_fill_to_evict_gap[block_addr];
-  }  
-
-  const std::set<new_addr_type>& get_trashed_pkts() const {
-    return m_trashed_reqs;
+  u64 get_avg_l1d_rd_fill_to_evict_gap(BYPASS_KEY key) {
+    return m_avg_l1d_rd_fill_to_evict_gap[key];
   }
 
-  bool hit_l1d_bypassed_item(mem_fetch* mf) {
-    auto it = m_trashed_reqs.find(m_config.block_addr(mf->get_addr()));
-    if (it != m_trashed_reqs.end() && !mf->is_write() && !mf->isatomic()) {
-      return true;
+  bool hit_l1d_bypassed_item(BYPASS_KEY key, mem_fetch* mf) {
+    if (m_trashed_reqs.find(key) != m_trashed_reqs.end()) {
+      std::set<new_addr_type> addr_sets = m_trashed_reqs[key];
+      const u64 block_addr = m_config.block_addr(mf->get_addr());
+      if (addr_sets.find(block_addr) != addr_sets.end() && !mf->is_write() && !mf->isatomic()) {
+        return true;
+      }
+      return false;
     }
     return false;
-  }
-  void clear_l1d_bypassed_item(mem_fetch* mf) {
-    auto it = m_trashed_reqs.find(m_config.block_addr(mf->get_addr()));
-    if (it != m_trashed_reqs.end() && !mf->is_write() && !mf->isatomic()) {
-      m_trashed_reqs.erase(it);
-    }
   }
 
   static bool cmpForSmallerTimestamp(
@@ -1897,8 +1898,7 @@ class tag_array {
 
   bool is_used;  // a flag if the whole cache has ever been accessed before
 
-  // std::set<REQ_PKT> m_trashed_reqs;
-  std::set<new_addr_type> m_trashed_reqs;
+  std::map<BYPASS_KEY, std::set<new_addr_type>> m_trashed_reqs;
 
   typedef tr1_hash_map<new_addr_type, unsigned> line_table;
   line_table pending_lines;
@@ -1908,27 +1908,25 @@ class tag_array {
   std::vector<u64> m_avg_reref_gap;
   std::vector<unsigned> m_l1d_max_evicts;
   std::vector<unsigned> m_l1d_avg_evicts;
-  std::map<new_addr_type /* block_addr */, u64 /* cycles */> m_l1d_rd_fill_time;
-  std::map<new_addr_type /* block_addr */, u64 /* cycles */> m_l1d_evict_time;
-  std::map<new_addr_type /* block_addr */, u64 /* cycles */> m_l1d_rd_fill_to_evict_gap;  
-  std::map<new_addr_type /* block_addr */, u64 /* cycles */> m_l1d_last_fill_time;
-  std::map<new_addr_type /* block_addr */, u32> m_l1d_rd_byp_activated_times;
-  std::map<new_addr_type /* block_addr */, u32> m_l1d_rd_byp_deactivated_times;
-  std::map<new_addr_type /* block_addr */, bool> m_1st_time_l1d_rd_fill_to_evict;
-  std::map<new_addr_type /* block_addr */, int> m_l1d_rd_bypass_confidence;
-  std::map<new_addr_type /* block_addr */, bool> m_l1d_rd_bypass_activated;
-  std::map<new_addr_type /* block_addr */, u64 /* cycles */> m_avg_l1d_rd_fill_to_evict_gap;
+  // std::map<BYPASS_KEY, u64 /* cycles */> m_l1d_served_time;
+  std::map<BYPASS_KEY, u64 /* cycles */> m_l1d_rd_fill_time;
+  std::map<BYPASS_KEY, u64 /* cycles */> m_l1d_evict_time;
+  std::map<BYPASS_KEY, u64 /* cycles */> m_l1d_rd_fill_to_evict_gap;
+  std::map<BYPASS_KEY, bool /* occupied */> m_l1d_occupied; // bypassed refill but always occupied position, and other lines cannot be inserted 
+  std::map<BYPASS_KEY, u32> m_l1d_rd_byp_activated_times;
+  std::map<BYPASS_KEY, u32> m_l1d_rd_byp_deactivated_times;
+  std::map<BYPASS_KEY, int> m_l1d_rd_bypass_confidence;
+  std::map<BYPASS_KEY, bool> m_l1d_rd_bypass_activated;
+  std::map<BYPASS_KEY, u64 /* cycles */> m_avg_l1d_rd_fill_to_evict_gap;
   std::map<new_addr_type /* block_addr */, u32 /* evictions */> m_l1d_lines_evictions;      
-  std::map<new_addr_type /* block_addr */, u64 /* cycles */> m_l1d_evict_gap;
-  std::map<new_addr_type /* block_addr */, u64 /* cycles */> m_l1d_last_evict_time;
-  std::map<new_addr_type /* block_addr */, u64 /* cycles */> m_l1d_evictions_time;
-  std::map<new_addr_type /* block_addr */, float /* trashing degree*/> m_l1d_trashing_degree;
-  std::map<new_addr_type /* block_addr */, bool> m_l1d_has_trashed;
   std::map<std::pair<u64 /* streamID */, u32 /* kernel */>, std::set<new_addr_type>> m_l1d_fill_to_evict_lines;
   std::set<new_addr_type> m_l1d_trashed_lines;
   float m_l1d_mpki;
   unsigned m_low_loc_threshold;
   int m_trash_conf_cnt_bound;
+
+  void inc_conf_cnt(int& conf, const int upper_bound, const int step);
+  void dec_conf_cnt(int& conf, const int lower_bound, const int step);  
 };
 
 class mshr_table {
@@ -2703,6 +2701,8 @@ class baseline_cache : public cache_t {
 
   // Line Fill Buffer (LFB) to buffer response from downstream when MSHR is disabled
   std::list<mem_fetch *> m_lfb;
+  
+  std::list<cache_block_t* > m_victim_cache; // Assume perfect
 
   /// Checks whether this request can be handled on this cycle. num_miss equals
   /// max # of misses to be handled on this cycle

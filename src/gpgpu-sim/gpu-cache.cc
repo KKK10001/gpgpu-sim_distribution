@@ -415,16 +415,11 @@ tag_array::tag_array(gpgpu_sim *gpu, cache_config &config, int core_id, int type
   m_l1d_rd_byp_deactivated_times.clear();
   m_l1d_evict_time.clear();
   m_l1d_rd_fill_to_evict_gap.clear();
-  m_1st_time_l1d_rd_fill_to_evict.clear();
+  m_l1d_occupied.clear();
   m_l1d_rd_bypass_confidence.clear();
   m_l1d_rd_bypass_activated.clear();
   m_avg_l1d_rd_fill_to_evict_gap.clear();
   m_l1d_lines_evictions.clear();
-  m_l1d_evict_gap.clear();
-  m_l1d_last_evict_time.clear();
-  m_l1d_evictions_time.clear();
-  m_l1d_trashing_degree.clear();
-  m_l1d_has_trashed.clear();
   m_l1d_fill_to_evict_lines.clear();
   m_l1d_trashed_lines.clear();  
   m_l1d_mpki = 0.0f;
@@ -836,9 +831,18 @@ void tag_array::mshr_awared_modification_for_srrip(
   }
 }
 
+void tag_array::inc_conf_cnt(int& conf, const int upper_bound, const int step) {
+  conf += step;
+  conf = (conf >= upper_bound) ? upper_bound : conf;
+}
+void tag_array::dec_conf_cnt(int& conf, const int lower_bound, const int step) {
+  conf -= step;
+  conf = (conf < lower_bound) ? lower_bound : conf;
+}
+
 enum cache_request_status tag_array::probe(
   const std::string& caller,
-  new_addr_type addr, unsigned &idx,
+  new_addr_type addr /* block_addr from m_tag_array->probe*/, unsigned &idx,
   mem_access_sector_mask_t mask,
   bool is_write, 
   unsigned long long time,
@@ -968,7 +972,7 @@ enum cache_request_status tag_array::probe(
   }
 
   // Just for checking if (tag === block_addr) (It seems not) // 1-14
-  [[maybe_unused]] new_addr_type block_addr = m_config.block_addr(addr); 
+  // [[maybe_unused]] new_addr_type block_addr = m_config.block_addr(addr); 
 
   // for debug
   if (m_config.get_sif() != 'L') {
@@ -1281,6 +1285,7 @@ enum cache_request_status tag_array::probe(
   victim->inc_total_evictions();
   if (m_is_l1d) {
     m_gpu->get_shader_stats()->m_l1d_victims[mf->get_sid()]++;
+    // m_victim_cache.push_back(victim);
   }
 
   if (m_config.m_warp_interfere_aware == 'F') {
@@ -1310,13 +1315,24 @@ enum cache_request_status tag_array::probe(
             addr, m_config.get_cache_name());
     abort();
   }
+
+  if (m_is_l2 && mf) {
+    if (mf->get_l1d_rd_byp_change() == 2) {
+      if (DTRACE(L2_GOT_L1D_BYPASSED_ITEM)) {
+        fprintf(Trace::out, "%llu L2_GOT_L1D_BYPASSED_ITEM for "
+          "key(streamID:%u, kernel:%u, block_addr:%#llx)\n", 
+          time, mf->get_streamID(), m_gpu->m_kernel_id, m_config.block_addr(addr));
+      }
+    }
+  }
   
   if (m_is_l1d && mf && !mf->is_write() && !mf->isatomic()) {
-    if (DTRACE(RECORDED_L1D_BYP_ITEMS)) {
-      fprintf(Trace::out, "%llu SM:%u m_l1d_rd_fill_to_evict_gap.size = %zu\n", 
-        time, mf->get_sid(), m_l1d_rd_fill_to_evict_gap.size());
-    }
-    const auto loc_key = m_config.block_addr(mf->get_addr());
+    // if (DTRACE(RECORDED_L1D_BYP_ITEMS)) {
+    //   fprintf(Trace::out, "%llu SM:%u m_l1d_rd_fill_to_evict_gap.size = %zu\n", 
+    //     time, mf->get_sid(), m_l1d_rd_fill_to_evict_gap.size());
+    // }
+    assert(addr == m_config.block_addr(addr));
+    const auto loc_key = addr;
 
     std::pair<u64, u32> f2e_ln_key = std::make_pair(mf->get_streamID(), m_gpu->m_kernel_id);
     auto it_f2e_line = m_l1d_fill_to_evict_lines.find(f2e_ln_key);
@@ -1328,48 +1344,95 @@ enum cache_request_status tag_array::probe(
       m_l1d_fill_to_evict_lines[f2e_ln_key].insert(loc_key);
     }
 
-    auto it = m_l1d_rd_fill_to_evict_gap.find(loc_key);
-    if (it == m_l1d_rd_fill_to_evict_gap.end()) { // The 1st time evict after being filled
-      set_l1d_evict_time(loc_key, time);
-      set_l1d_rd_fill_to_evict_gap(loc_key, time - get_l1d_rd_fill_time(loc_key));
-      average_l1d_rd_fill_to_evict_gap(loc_key);      
-      m_l1d_rd_bypass_confidence[loc_key] = 0; // Initialize confidence
+    bool byp_key_hit  = false;
+    bool new_byp_cand = false;
+    BYPASS_KEY byp_key(mf->get_streamID(), m_gpu->m_kernel_id, loc_key);
+    if (m_l1d_occupied.find(byp_key) != m_l1d_occupied.end() && m_l1d_occupied[byp_key]) {
+      if (DTRACE(REFILL_LFB_BYP_FILL_TAG)) {
+        fprintf(Trace::out, "%llu L1D bypassed item was refilled, "
+          "and now probed again for key(streamID:%llu, kernel:%u, block_addr:%#llx)\n", 
+          time, mf->get_streamID(), m_gpu->m_kernel_id, loc_key);
+      }
+    } else if (!m_l1d_occupied.empty()) {
+      u32 ind = 0;
+      for (auto& iter : m_l1d_occupied)
+      {        
+        BYPASS_KEY occupied_key = iter.first;
+        fprintf(Trace::out, "%llu m_l1d_occupied[%u] (size:%zu) is "
+          "key(streamID:%u, kernel:%u, block_addr:%#llx) occupied:%u "
+          "missed on in-coming key(streamID:%llu, kernel:%u, block_addr:%#llx)\n", 
+          time, ind, m_l1d_occupied.size(), 
+          occupied_key.stream_id, occupied_key.kernel, occupied_key.block_addr, iter.second,
+          mf->get_streamID(), m_gpu->m_kernel_id, loc_key);
+        ind++;
+      }      
+    }
+
+    auto it_e2f_ln_key = m_l1d_rd_fill_to_evict_gap.find(byp_key);
+    if (it_e2f_ln_key != m_l1d_rd_fill_to_evict_gap.end()) {
+      byp_key_hit = true;
     } else {
-      set_l1d_evict_time(loc_key, time);
-      set_l1d_rd_fill_to_evict_gap(loc_key, time - get_l1d_rd_fill_time(loc_key));
-      average_l1d_rd_fill_to_evict_gap(loc_key);      
-      assert(m_l1d_rd_bypass_confidence.find(loc_key) != m_l1d_rd_bypass_confidence.end());
+      for (auto& record : m_l1d_rd_fill_to_evict_gap) {
+        if (record.first.stream_id == mf->get_streamID() && 
+          record.first.kernel == m_gpu->m_kernel_id) {
+          new_byp_cand = true;
+        }
+      }
+    }
+
+    set_l1d_rd_fill_to_evict_gap(byp_key, time - get_l1d_rd_fill_time(byp_key));
+
+    if (new_byp_cand) { // The 1st time evict after being filled
+      set_l1d_evict_time(byp_key, time);
+      average_l1d_rd_fill_to_evict_gap(byp_key);      
+      m_l1d_rd_bypass_confidence[byp_key] = 0; // Initialize confidence
+    } else if (byp_key_hit) {
+      set_l1d_evict_time(byp_key, time);
+      average_l1d_rd_fill_to_evict_gap(byp_key);
+      // assert(m_l1d_rd_bypass_confidence.find(byp_key) != m_l1d_rd_bypass_confidence.end());
       // Update confidence 
       // 1. Inc confidence && possible insert into trash set
-      if (get_l1d_rd_fill_to_evict_gap(loc_key) < get_avg_l1d_rd_fill_to_evict_gap(loc_key)) {
-        m_l1d_rd_bypass_confidence[loc_key]++;
-        m_l1d_rd_bypass_confidence[loc_key] = 
-          (m_l1d_rd_bypass_confidence[loc_key] >= m_trash_conf_cnt_bound) ? 
-          m_trash_conf_cnt_bound : m_l1d_rd_bypass_confidence[loc_key];
-        if (m_l1d_rd_bypass_confidence[loc_key] == m_trash_conf_cnt_bound) {
-          m_trashed_reqs.insert(loc_key); // Activated bypass
-          mf->set_l1d_rd_byp_activated(); // m_l1d_rd_byp_change = 2 = 2'b10
-          m_l1d_rd_byp_activated_times[loc_key]++;
-          assert(hit_l1d_bypassed_item(mf));
-          if (DTRACE(ACTIVATE_L1D_BYPASS)) {
-            fprintf(Trace::out, "%llu ACTIVATE_L1D_BYPASS for kernel:%u block_addr:%#llx\n", 
-              time, m_gpu->m_kernel_id, loc_key);
+      if (get_l1d_rd_fill_to_evict_gap(byp_key) < get_avg_l1d_rd_fill_to_evict_gap(byp_key)) {
+        inc_conf_cnt(m_l1d_rd_bypass_confidence[byp_key], m_trash_conf_cnt_bound, 1);
+        if (m_l1d_rd_bypass_confidence[byp_key] == m_trash_conf_cnt_bound) {
+
+          // const int max_byp_items = 15;
+          const int max_byp_items = 10; // 122.365 (+1.579%)
+          // const int max_byp_items = 8; // 122.365 (+1.579%)
+          // const int max_byp_items = 5; // 120.242 (-0.183%)
+          if (m_trashed_reqs.size() <= max_byp_items) {
+            if (m_trashed_reqs.find(byp_key) != m_trashed_reqs.end()) {
+              m_trashed_reqs[byp_key].insert(loc_key);
+            } else {
+              std::set<new_addr_type> loc_key_set;
+              loc_key_set.insert(loc_key);
+              m_trashed_reqs[byp_key] = loc_key_set;
+            }
+            mf->set_l1d_rd_byp_activated(); // m_l1d_rd_byp_change = 2 = 2'b10
+            m_l1d_rd_byp_activated_times[byp_key]++;
+            assert(hit_l1d_bypassed_item(byp_key, mf));
+            if (DTRACE(ACTIVATE_L1D_BYPASS)) {
+              fprintf(Trace::out, "%llu ACTIVATE_L1D_BYPASS for kernel:%u block_addr:%#llx\n", 
+                time, m_gpu->m_kernel_id, loc_key);
+            }
           }
         }
       } else { // 2. Dec confidence
-        const int dec_step = 1;
-        // const int dec_step = 2;
-        m_l1d_rd_bypass_confidence[loc_key] -= dec_step;
-        m_l1d_rd_bypass_confidence[loc_key] = (m_l1d_rd_bypass_confidence[loc_key] < 0) ? 
-          0 : m_l1d_rd_bypass_confidence[loc_key];
-        if (!m_l1d_rd_bypass_confidence[loc_key]) {
-          m_trashed_reqs.erase(loc_key); // Deactivated bypass
-          mf->set_l1d_rd_byp_deactivated(); // m_l1d_rd_byp_change = 1 = 2'b01
-          m_l1d_rd_byp_deactivated_times[loc_key]++;
-          assert(!hit_l1d_bypassed_item(mf));          
-          m_l1d_rd_fill_to_evict_gap.erase(loc_key);
-          if (DTRACE(DEACTIVATE_L1D_BYPASS)) {
-            fprintf(Trace::out, "%llu DEACTIVATE_L1D_BYPASS for block_addr:%#llx\n", time, loc_key);
+        // const bool allow_dec = false;
+        const bool allow_dec = true;
+        if (allow_dec) {
+          const int dec_step = 1;
+          // const int dec_step = 2;
+          dec_conf_cnt(m_l1d_rd_bypass_confidence[byp_key], 0, dec_step);
+          if (!m_l1d_rd_bypass_confidence[byp_key]) {
+            m_trashed_reqs.erase(byp_key); // Deactivated bypass
+            mf->set_l1d_rd_byp_deactivated(); // m_l1d_rd_byp_change = 1 = 2'b01
+            m_l1d_rd_byp_deactivated_times[byp_key]++;
+            assert(!hit_l1d_bypassed_item(byp_key, mf));          
+            // m_l1d_rd_fill_to_evict_gap.erase(byp_key);
+            if (DTRACE(DEACTIVATE_L1D_BYPASS)) {
+              fprintf(Trace::out, "%llu DEACTIVATE_L1D_BYPASS for block_addr:%#llx\n", time, loc_key);
+            }
           }
         }
       }
@@ -1422,6 +1485,8 @@ enum cache_request_status tag_array::probe(
       }  
     }
   }
+
+  // m_victim_cache.push_back();
 
   return MISS;
 }
@@ -4408,8 +4473,10 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
   extra_mf_fields_lookup::iterator e = m_extra_mf_fields.find(mf);
   assert(e != m_extra_mf_fields.end());
   assert(e->second.m_valid);
-  mf->set_data_size(e->second.m_data_size);
-  mf->set_addr(e->second.m_addr);  
+  // 3/21 Commented because following assignment indicates redundant logic
+  // https://github.com/gpgpu-sim/gpgpu-sim_distribution/issues/337
+  // mf->set_data_size(e->second.m_data_size);
+  // mf->set_addr(e->second.m_addr);
 
   if (m_config.m_alloc_policy == ON_MISS) {
     if (DTRACE(CACHE_MISS)) {      
@@ -4418,7 +4485,8 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
 
     if (m_config.m_bypass_low_loc_lines == 'T') {
       assert(m_is_l1d);
-      if (!m_tag_array->hit_l1d_bypassed_item(mf)) {
+      BYPASS_KEY byp_key(mf->get_streamID(), m_gpu->m_kernel_id, e->second.m_block_addr);
+      if (!m_tag_array->hit_l1d_bypassed_item(byp_key, mf)) {
         if (DTRACE(CACHE_EVENT)) {
           dumpCacheEvent(time, "::fill", "ap:ON_MISS m_tag_array->fill", mf);
         }
@@ -4459,9 +4527,12 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
     has_atomic = mf->isatomic();
     m_lfb.push_back(mf); // !!! L1D bypass should only be applied to replacement
     
-    if (m_config.m_bypass_low_loc_lines == 'T' && m_tag_array->hit_l1d_bypassed_item(mf)) {
+    BYPASS_KEY byp_key(mf->get_streamID(), m_gpu->m_kernel_id, e->second.m_block_addr);
+    if (m_config.m_bypass_low_loc_lines == 'T' && m_tag_array->hit_l1d_bypassed_item(byp_key, mf)) {
       assert(m_is_l1d);
-      if (DTRACE(TRACE_BYPASSED_L1D_PKT) || DTRACE(HIT_L1D_BYPASSED_ITEM)) {
+      m_tag_array->m_l1d_occupied[byp_key] = true;
+      if (DTRACE(TRACE_BYPASSED_L1D_PKT) || DTRACE(HIT_L1D_BYPASSED_ITEM) ||
+          DTRACE(REFILL_LFB_BYP_FILL_TAG)) {
         dumpCacheEvent(time, "baseline_cache::fill", 
           "HIT_L1D_BYPASSED_ITEM Bypassed L1D pkt should still m_lfb.push_back", mf);
       }
@@ -4474,26 +4545,18 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
       m_stats.inc_l2_sub_misses(mf->get_streamID(), mf->get_sub_partition());
     } else if (m_is_l1d) {
       if (!mf->is_write() && !mf->isatomic()) {
-        m_tag_array->set_l1d_rd_fill_time(m_config.block_addr(mf->get_addr()), time);
-
-        if (DTRACE(L1D_FILL_TIME)) {
-          fprintf(Trace::out, "%llu "
-            "m_tag_array->m_l1d_rd_fill_time[block_addr:%#llx] = %llu "
-            "for mf <req_uid:%u uid:%u addr:%#llx>\n",
-            time, m_config.block_addr(mf->get_addr()), time,
-            mf->get_request_uid(), mf->get_inst().get_uid(), mf->get_addr());
-        }  
-
+        const u64 block_addr = m_config.block_addr(mf->get_addr());
+        BYPASS_KEY byp_key(mf->get_streamID(), m_gpu->m_kernel_id, block_addr);
+        m_tag_array->set_l1d_rd_fill_time(byp_key, time);
         mf->set_l1d_rd_miss_served_time(time - mf->m_l1d_rd_miss_serve_begin_time);
         m_stats.avg_l1d_rd_miss_served_cycles(
           mf->get_streamID(), time - mf->m_l1d_rd_miss_serve_begin_time);
-
       } else if (mf->is_write()) {
         m_stats.avg_l1d_wr_miss_served_cycles(
           mf->get_streamID(), time - mf->m_wr_miss_serve_begin_time);
       }
     }
-  } else {  
+  } else {
     m_mshrs.mark_ready(m_is_l2 ? "L2" : m_is_l1d ? "L1D" : "other$", 
       e->second.m_block_addr, has_atomic, time);
     m_tag_array->m_total_records_in_mshr++;
@@ -4584,8 +4647,9 @@ void baseline_cache::dumpCacheEvent(
     );
   } else {
     fprintf(Trace::out, "%llu %s%s stage(%s) cache_event(%s) "
-      "mf:{TPC:%u SM:%u WARP:%u req_uid:%u uid:%u block_addr:%#llx addr:%#llx acc_type:%s pos:%s}\n", 
+      "mf:{streamID:%llu kernel:%u TPC:%u SM:%u WARP:%u req_uid:%u uid:%u block_addr:%#llx addr:%#llx acc_type:%s pos:%s}\n", 
       time, cache_name, suffix.c_str(), stage, event,
+      mf->get_streamID(), m_gpu->m_kernel_id,
       mf->get_tpc(), mf->get_sid(), mf->get_wid(), 
       mf->get_request_uid(), mf->get_inst().get_uid(), 
       m_config.block_addr(mf->get_addr()),
@@ -4727,7 +4791,8 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
       } else {
         if (m_config.m_bypass_low_loc_lines == 'T') {
           assert(m_is_l1d);
-          if (!m_tag_array->hit_l1d_bypassed_item(mf)) {
+          BYPASS_KEY byp_key(mf->get_streamID(), m_gpu->m_kernel_id, block_addr);
+          if (!m_tag_array->hit_l1d_bypassed_item(byp_key, mf)) {
             m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);  
           } else {
             if (DTRACE(TRACE_BYPASSED_L1D_PKT) || 
@@ -4742,10 +4807,11 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
       }
 
       // case can pass
+      BYPASS_KEY byp_key(mf->get_streamID(), m_gpu->m_kernel_id, block_addr);
       m_extra_mf_fields[mf] = extra_mf_fields(
           mshr_addr, mf->get_addr(), 
           cache_index, mf->get_data_size(), 
-          m_config, m_tag_array->hit_l1d_bypassed_item(mf));
+          m_config, m_tag_array->hit_l1d_bypassed_item(byp_key, mf));
 
       mf->set_data_size(m_config.get_atom_sz());
       mf->set_addr(mshr_addr);
@@ -4759,7 +4825,7 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
           "3. m_miss_queue.push_back(mf)", mf);
       }
       if (DTRACE(TRACE_BYPASSED_L1D_PKT) || DTRACE(HIT_L1D_BYPASSED_ITEM)) {
-        if (m_tag_array->hit_l1d_bypassed_item(mf)) {
+        if (m_tag_array->hit_l1d_bypassed_item(byp_key, mf)) {
           dumpCacheEvent(time, "baseline_cache::send_read_request", 
             "HIT_L1D_BYPASSED_ITEM l1d_bypassed_item should also "
             "1. new extra_mf_fields[mf] "
@@ -4875,7 +4941,8 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
       bool is_new_mshr_entry = false;
 
       if (m_config.m_bypass_low_loc_lines == 'T') {
-        if (!m_tag_array->hit_l1d_bypassed_item(mf)) {
+        BYPASS_KEY byp_key(mf->get_streamID(), m_gpu->m_kernel_id, block_addr);
+        if (!m_tag_array->hit_l1d_bypassed_item(byp_key, mf)) {
           m_tag_array->set_recorded_in_mshr(cache_index);
         } else {
           // assert(!(*it)->isatomic());
@@ -4897,10 +4964,11 @@ void baseline_cache::send_read_request(new_addr_type block_addr,
       m_stats.inc_mshr_stats(mf->get_streamID(), mf->get_sid(), mf->get_wid());
 
       // case can pass
+      BYPASS_KEY byp_key(mf->get_streamID(), m_gpu->m_kernel_id, block_addr);
       m_extra_mf_fields[mf] = extra_mf_fields(
           mshr_addr, mf->get_addr(), cache_index, 
           mf->get_data_size(), 
-          m_config, m_tag_array->hit_l1d_bypassed_item(mf));
+          m_config, m_tag_array->hit_l1d_bypassed_item(byp_key, mf));
 
       mf->set_data_size(m_config.get_atom_sz());
       mf->set_addr(mshr_addr);
@@ -5548,7 +5616,8 @@ enum cache_request_status data_cache::rd_hit_base(
   new_addr_type block_addr = m_config.block_addr(addr);
 
   if (m_config.m_bypass_low_loc_lines == 'T') {
-    if (m_is_l1d && m_tag_array->hit_l1d_bypassed_item(mf)) {
+    BYPASS_KEY byp_key(mf->get_streamID(), m_gpu->m_kernel_id, block_addr);
+    if (m_is_l1d && m_tag_array->hit_l1d_bypassed_item(byp_key, mf)) {
       assert(0);
     }
   }
@@ -5578,6 +5647,8 @@ enum cache_request_status data_cache::rd_miss_base(
     new_addr_type addr, unsigned cache_index, mem_fetch *mf, 
     unsigned long long time,
     std::list<cache_event> &events, enum cache_request_status status) {
+
+  // "addr" is just used for generating "block_addr" in this function
 
   assert(time == m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
   new_addr_type block_addr = m_config.block_addr(addr);  
@@ -5732,7 +5803,8 @@ enum cache_request_status data_cache::process_tag_probe(
   } else {  // Read
     if (probe_status == HIT) {
       if (m_config.m_bypass_low_loc_lines == 'T') {
-        if (m_is_l1d && m_tag_array->hit_l1d_bypassed_item(mf)) {
+        BYPASS_KEY byp_key(mf->get_streamID(), m_gpu->m_kernel_id, m_config.block_addr(addr));
+        if (m_is_l1d && m_tag_array->hit_l1d_bypassed_item(byp_key, mf)) {
           // nothing
         } else {
           access_status = (this->*m_rd_hit)(addr, cache_index, mf, time, events, probe_status);  
@@ -5748,13 +5820,6 @@ enum cache_request_status data_cache::process_tag_probe(
 
       if (m_is_l1d) {
         m_stats.inc_l1d_rd_misses(mf->get_streamID(), m_gpu->m_kernel_id);
-        if (DTRACE(INC_L1D_RD_MISSES)) {
-          // m_kernel_id changes 
-          fprintf(Trace::out, "%llu kernel:%u sm:%u inc_l1d_rd_misses[streamID:%llu][kernel:%u] = %u\n",
-            time, m_gpu->m_kernel_id, mf->get_sid(),
-            mf->get_streamID(), m_gpu->m_kernel_id,
-            m_stats.get_l1d_rd_misses(mf->get_streamID(), m_gpu->m_kernel_id));            
-        }
       }      
 
       access_status = (this->*m_rd_miss)(addr, cache_index, mf, time, events, probe_status);
@@ -5827,7 +5892,8 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
 
   enum cache_request_status probe_status = cache_request_status::MISS;
   if (m_config.m_bypass_low_loc_lines == 'T') {
-    if (m_tag_array->hit_l1d_bypassed_item(mf)) {
+    BYPASS_KEY byp_key(mf->get_streamID(), m_gpu->m_kernel_id, block_addr);
+    if (m_tag_array->hit_l1d_bypassed_item(byp_key, mf)) {
       assert(!mf->is_write());
       assert(!mf->isatomic());
 
@@ -5847,7 +5913,7 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
           "get_l1d_bypass_noalloc = %u. Before tag_array->probe "
           "for mf uid:%u addr:%#llx, probe_status = %s\n",
           time, m_config.get_cache_name(), 
-          m_tag_array->hit_l1d_bypassed_item(mf),
+          m_tag_array->hit_l1d_bypassed_item(byp_key, mf),
           mf->get_inst().get_uid(), mf->get_addr(),
           cache_request_status_str(probe_status));                  
       }
@@ -5859,38 +5925,13 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
           block_addr, cache_index, mf, mf->is_write(), time,
           inter_warp_has_interference, inter_warp_interfere_record,
           true /* probe_mode */);
-      
-      // update_l1d_miss_stats(probe_status, mf); // 3/17 Commented for debug
-
-      if (DTRACE(TAG_PROBE)) {
-        fprintf(Trace::out, "%llu %s m_bypass_low_loc_lines == 'T' "
-          "get_l1d_bypass_noalloc = %u. After tag_array->probe "
-          "for mf uid:%u addr:%#llx, probe_status = %s\n",
-          time, m_config.get_cache_name(), 
-          m_tag_array->hit_l1d_bypassed_item(mf),
-          mf->get_inst().get_uid(), mf->get_addr(),
-          cache_request_status_str(probe_status));
-      }
     }
   } else {
     probe_status = m_tag_array->probe(
       "data_cache::access",
       block_addr, cache_index, mf, mf->is_write(), time,
       inter_warp_has_interference, inter_warp_interfere_record,
-      true /* probe_mode */); // default logic
-
-    // update_l1d_miss_stats(probe_status, mf); // 3/17 Commented for debug
-
-    if (DTRACE(TAG_PROBE)) {
-      fprintf(Trace::out, "%llu %s m_bypass_low_loc_lines == 'F' "
-        "mf->get_l1d_bypass_noalloc = %u "
-        "After tag_array->probe "
-        "for mf uid:%u addr:%#llx, probe_status = %s\n",
-        time, m_config.get_cache_name(), 
-        m_tag_array->hit_l1d_bypassed_item(mf),
-        mf->get_inst().get_uid(), mf->get_addr(),
-        cache_request_status_str(probe_status));
-    }       
+      true /* probe_mode */); // default logic     
   }
 
   unsigned interfered  = inter_warp_interfere_record.last_warp_id;
@@ -5923,32 +5964,16 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
     }    
   }
 
-  // std::vector<std::set<new_addr_type>> l1d_unique_lines = m_tag_array->get_l1d_unique_lines();
-  // m_gpu->get_shader_stats()->m_unique_cachelines[sid] = l1d_unique_lines[sid].size();
-
   [[maybe_unused]] bool bypass_inc_miss_cnt = false;
+  BYPASS_KEY byp_key(mf->get_streamID(), m_gpu->m_kernel_id, block_addr);
   if (m_config.m_bypass_low_loc_lines == 'T') {
-    if (m_tag_array->hit_l1d_bypassed_item(mf)) {
+    if (m_tag_array->hit_l1d_bypassed_item(byp_key, mf)) {
       bypass_inc_miss_cnt = true;
-      assert(m_is_l1d);
-      new_addr_type block_addr = m_config.block_addr(mf->get_addr());
-      // Update shader stats by L1D probed result
-      m_stats.overall_average_l1d_rd_fill_to_evict_gap(
-        mf->get_streamID(), m_tag_array->get_l1d_rd_fill_to_evict_gap(block_addr));
+      assert(m_is_l1d);      
        
       if (DTRACE(HIT_L1D_BYPASSED_ITEM)) {
         dumpCacheEvent(time, "data_cache::access", 
           "HIT_L1D_BYPASSED_ITEM Bypassed m_tag_array->probe", mf);
-      }
-
-      if (probe_status != cache_request_status::MISS) {
-        if (DTRACE(TRACE_BYPASSED_L1D_PKT)) {
-          fprintf(Trace::out, "%llu %s Why probe_status:%s != MISS for bypassed "
-            "mf uid:%u addr:%#llx\n",
-            time, m_config.get_cache_name(), 
-            cache_request_status_str(probe_status),
-            mf->get_inst().get_uid(), mf->get_addr());
-        }
       }
       // 3/17 Commented after enabling tag probe when L1D BYP
       // assert(probe_status == cache_request_status::MISS);
@@ -5965,8 +5990,14 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
   if (m_config.m_bypass_low_loc_lines == 'T') {
     if (mf->get_l1d_rd_byp_change() == 2) {
       access_status = cache_request_status::BYPASS_ACTIVATED; // A hook for inc_stats
+      if (DTRACE(CHECK_BYPASS_RET_STATUS)) {
+        fprintf(Trace::out, "%llu CHECK_BYPASS_RET_STATUS: BYPASS_ACTIVATED\n", time);
+      }
     } else if (mf->get_l1d_rd_byp_change() == 1) {
       access_status = cache_request_status::BYPASS_DEACTIVATED; // A hook for inc_stats
+      if (DTRACE(CHECK_BYPASS_RET_STATUS)) {
+        fprintf(Trace::out, "%llu CHECK_BYPASS_RET_STATUS: BYPASS_DEACTIVATED\n", time);
+      }
     }
   }
 
@@ -5978,10 +6009,10 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
   new_addr_type loc_key = m_config.block_addr(mf->get_addr());
   bool en_inc_byp_act   = m_config.m_bypass_low_loc_lines == 'T' && mf->get_l1d_rd_byp_change() == 2;
   bool en_inc_byp_deact = m_config.m_bypass_low_loc_lines == 'T' && mf->get_l1d_rd_byp_change() == 1;    
-  m_stats.update_l1d_rd_byp_act(
-    en_inc_byp_act, loc_key, m_tag_array->m_l1d_rd_byp_activated_times[loc_key], mf->get_streamID());
-  m_stats.update_l1d_rd_byp_deact(
-    en_inc_byp_deact, loc_key, m_tag_array->m_l1d_rd_byp_deactivated_times[loc_key], mf->get_streamID());
+  // m_stats.update_l1d_rd_byp_act(
+  //   en_inc_byp_act, loc_key, m_tag_array->m_l1d_rd_byp_activated_times[loc_key], mf->get_streamID());
+  // m_stats.update_l1d_rd_byp_deact(
+  //   en_inc_byp_deact, loc_key, m_tag_array->m_l1d_rd_byp_deactivated_times[loc_key], mf->get_streamID());
 
   m_stats.inc_stats(mf->get_access_type(),
                     m_stats.select_stats_status(probe_status, access_status),

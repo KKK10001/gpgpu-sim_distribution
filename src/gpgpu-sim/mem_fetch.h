@@ -207,12 +207,15 @@ class mem_fetch {
   // request type, address, size, mask
   mem_access_t m_access;
   unsigned m_data_size;  // how much data is being written
-  unsigned
-      m_ctrl_size;  // how big would all this meta data be in hardware (does not
-                    // necessarily match actual size of mem_fetch)
-  new_addr_type
-      m_partition_addr;  // linear physical address *within* dram partition
-                         // (partition bank select bits squeezed out)
+
+  // how big would all this meta data be in hardware (does not
+  // necessarily match actual size of mem_fetch)  
+  unsigned m_ctrl_size;
+  
+  // linear physical address *within* dram partition
+  // (partition bank select bits squeezed out)                    
+  new_addr_type m_partition_addr;  
+                         
   addrdec_t m_raw_addr;  // raw physical address (i.e., decoded DRAM
                          // chip-row-bank-column address)
   enum mf_type m_type;
