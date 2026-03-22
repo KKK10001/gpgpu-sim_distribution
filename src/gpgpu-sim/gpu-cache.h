@@ -34,6 +34,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <unordered_set>
 #include "../abstract_hardware_model.h"
 #include "../tr1_hash_map.h"
 #include "gpu-misc.h"
@@ -1644,19 +1645,34 @@ struct BYPASS_KEY
 {
   u64 stream_id;
   u32 kernel;
-  u64 block_addr;
+  u64 sector_addr;
   BYPASS_KEY() : 
-    stream_id((u64) - 1), kernel((u32) - 1), block_addr((u64) - 1) {}
+    stream_id((u64) - 1), kernel((u32) - 1), sector_addr((u64) - 1) {}
   BYPASS_KEY(
-    u64 stream_id_, u32 kernel_, u64 block_addr_) :
-    stream_id(stream_id_), kernel(kernel_), block_addr(block_addr_) {}
+    u64 stream_id_, u32 kernel_, u64 sector_addr_) :
+    stream_id(stream_id_), kernel(kernel_), sector_addr(sector_addr_) {}
 
   bool operator<(const BYPASS_KEY& other) const {
     if (stream_id != other.stream_id) return stream_id < other.stream_id;
     if (kernel != other.kernel) return kernel < other.kernel;
-    if (block_addr != other.block_addr) return block_addr < other.block_addr;
+    if (sector_addr != other.sector_addr) return sector_addr < other.sector_addr;
     return false;
-  }    
+  }
+
+  bool operator==(const BYPASS_KEY& other) const {
+    return stream_id == other.stream_id &&
+      kernel == other.kernel &&
+      sector_addr == other.sector_addr;
+  }
+};
+
+struct BYPASS_KEY_HASH {
+  std::size_t operator()(const BYPASS_KEY& key) const {
+    const std::size_t h1 = std::hash<u64>{}(key.stream_id);
+    const std::size_t h2 = std::hash<u32>{}(key.kernel);
+    const std::size_t h3 = std::hash<u64>{}(key.sector_addr);
+    return h1 ^ (h2 << 1) ^ (h3 << 2);
+  }
 };
 
 class tag_array {
@@ -1716,13 +1732,9 @@ class tag_array {
   }
 
   bool hit_l1d_bypassed_item(BYPASS_KEY key, mem_fetch* mf) {
-    if (m_trashed_reqs.find(key) != m_trashed_reqs.end()) {
-      std::set<new_addr_type> addr_sets = m_trashed_reqs[key];
-      const u64 block_addr = m_config.block_addr(mf->get_addr());
-      if (addr_sets.find(block_addr) != addr_sets.end() && !mf->is_write() && !mf->isatomic()) {
-        return true;
-      }
-      return false;
+    if (m_trashed_reqs.find(key) != m_trashed_reqs.end() &&
+      !mf->is_write() && !mf->isatomic()) {
+      return true;
     }
     return false;
   }
@@ -1806,23 +1818,27 @@ class tag_array {
 
   // addr is block_addr
   enum cache_request_status probe(const std::string& caller,
-                                  new_addr_type addr, unsigned &idx,
+                                  new_addr_type raw_addr,
+                                  new_addr_type addr /* block_addr */, unsigned &idx,
                                   mem_fetch *mf, bool is_write,
                                   unsigned long long time,
                                   bool& inter_warp_has_interference, 
                                   WARP_INTERFERE_RECORD& warp_interfere_record,
                                   bool probe_mode = false);
   enum cache_request_status probe(const std::string& caller,
-                                  new_addr_type addr, unsigned &idx,
+                                  new_addr_type raw_addr,
+                                  new_addr_type addr /* block_addr */, unsigned &idx,
                                   mem_access_sector_mask_t mask, bool is_write,
                                   unsigned long long time,
                                   bool probe_mode,
                                   bool& inter_warp_has_interference, 
                                   WARP_INTERFERE_RECORD& warp_interfere_record,
                                   mem_fetch *mf = NULL);
-  enum cache_request_status access(new_addr_type addr, unsigned long long time,
+  enum cache_request_status access(new_addr_type raw_addr, 
+                                   new_addr_type addr /* block_addr */, unsigned long long time,
                                    unsigned &idx, mem_fetch *mf);
-  enum cache_request_status access(new_addr_type addr, unsigned long long time,
+  enum cache_request_status access(new_addr_type raw_addr,
+                                   new_addr_type addr /* block_addr */, unsigned long long time,
                                    unsigned &idx, bool &wb,
                                    evicted_block_info &evicted, mem_fetch *mf);
   void inc_rrpv_for_one_set(unsigned set_index);
@@ -1898,7 +1914,7 @@ class tag_array {
 
   bool is_used;  // a flag if the whole cache has ever been accessed before
 
-  std::map<BYPASS_KEY, std::set<new_addr_type>> m_trashed_reqs;
+  std::unordered_set<BYPASS_KEY, BYPASS_KEY_HASH> m_trashed_reqs;
 
   typedef tr1_hash_map<new_addr_type, unsigned> line_table;
   line_table pending_lines;
@@ -2666,7 +2682,8 @@ class baseline_cache : public cache_t {
   struct extra_mf_fields {
     extra_mf_fields() { m_valid = false; }
     extra_mf_fields(
-      new_addr_type a, new_addr_type ad, 
+      new_addr_type a /* mshr_addr, i.e., sector_addr */, 
+      new_addr_type ad /* mf->get_addr() */, 
       unsigned i, unsigned d,
       const cache_config &m_config,
       bool l1d_bypass_noalloc) { // case can pass ?
@@ -2715,12 +2732,12 @@ class baseline_cache : public cache_t {
     return ((m_miss_queue.size() + num_miss) >= m_config.m_miss_queue_size);
   }
   /// Read miss handler without writeback
-  void send_read_request(new_addr_type block_addr,
+  void send_read_request(new_addr_type raw_addr, new_addr_type block_addr,
                          unsigned cache_index, mem_fetch *mf, unsigned long long time,
                          bool &do_miss, std::list<cache_event> &events,
                          bool read_only, bool wa);
   /// Read miss handler. Check MSHR hit or MSHR available
-  void send_read_request(new_addr_type block_addr,
+  void send_read_request(new_addr_type raw_addr, new_addr_type block_addr,
                          unsigned cache_index, mem_fetch *mf, unsigned long long time,
                          bool &do_miss, bool &wb, evicted_block_info &evicted,
                          std::list<cache_event> &events, bool read_only,
@@ -2865,7 +2882,7 @@ class data_cache : public baseline_cache {
   //  The access fucntion calls this function
   enum cache_request_status process_tag_probe(bool wr,
                                               enum cache_request_status status,
-                                              new_addr_type addr,
+                                              new_addr_type addr /* raw_addr */,
                                               unsigned cache_index,
                                               mem_fetch *mf, unsigned long long time,
                                               std::list<cache_event> &events);
@@ -2941,7 +2958,7 @@ class data_cache : public baseline_cache {
       new_addr_type addr, unsigned cache_index, mem_fetch *mf, 
       unsigned long long time,
       std::list<cache_event> &events, enum cache_request_status status);
-  enum cache_request_status rd_hit_base(new_addr_type addr,
+  enum cache_request_status rd_hit_base(new_addr_type addr /* raw_addr */,
                                         unsigned cache_index, mem_fetch *mf,
                                         unsigned long long time,
                                         std::list<cache_event> &events,
