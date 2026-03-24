@@ -1743,21 +1743,9 @@ class tag_array {
     u64 this_gap = m_l1d_rd_fill_to_evict_gap[key];
     if (m_avg_l1d_rd_fill_to_evict_gap.find(key) == m_avg_l1d_rd_fill_to_evict_gap.end()) {
       m_avg_l1d_rd_fill_to_evict_gap[key] = this_gap;
-      // if (DTRACE(TUNE_SATCNT_BASED_L1D_BYP)) {
-      //   fprintf(Trace::out, "Init m_avg_l1d_rd_fill_to_evict_gap"
-      //     "[key:<streamID:%llu, kernel:%u, sector_addr:0x%llx>] = %llu\n",
-      //     key.stream_id, key.kernel, key.sector_addr, this_gap);
-      // }
     } else {
-      // [[maybe_unused]] u64 prev_avg = m_avg_l1d_rd_fill_to_evict_gap[key];
       m_avg_l1d_rd_fill_to_evict_gap[key] = 
         (m_avg_l1d_rd_fill_to_evict_gap[key] + this_gap) >> 1;
-      // if (DTRACE(TUNE_SATCNT_BASED_L1D_BYP)) {
-      //   fprintf(Trace::out, "Update for key:<streamID:%llu, kernel:%u, sector_addr:0x%llx> "
-      //     "m_avg_l1d_rd_fill_to_evict_gap:%llu = (prev_avg:%llu + this_gap:%llu) >> 1\n",
-      //     key.stream_id, key.kernel, key.sector_addr,
-      //     m_avg_l1d_rd_fill_to_evict_gap[key], prev_avg, this_gap);
-      // }        
     }
   }
 
@@ -1960,15 +1948,14 @@ class tag_array {
 
   std::unordered_set<BYPASS_KEY, BYPASS_KEY_HASH> m_trashed_reqs;
 
-  typedef tr1_hash_map<new_addr_type, unsigned> line_table;
+  typedef tr1_hash_map<new_addr_type, u32> line_table;
   line_table pending_lines;
   line_table lines_locality;
   std::vector<std::set<new_addr_type>> m_l1d_unique_lines;
   std::vector<std::vector<std::pair<new_addr_type, u64>>> m_reref_gap;  
   std::vector<u64> m_avg_reref_gap;
-  std::vector<unsigned> m_l1d_max_evicts;
-  std::vector<unsigned> m_l1d_avg_evicts;
-  // std::map<BYPASS_KEY, u64 /* cycles */> m_l1d_served_time;
+  std::vector<u32> m_l1d_max_evicts;
+  std::vector<u32> m_l1d_avg_evicts;
   std::map<BYPASS_KEY, u64 /* cycles */> m_l1d_rd_fill_time;
   std::map<BYPASS_KEY, u64 /* cycles */> m_l1d_evict_time;
   std::map<BYPASS_KEY, u64 /* cycles */> m_l1d_rd_fill_to_evict_gap;
@@ -1979,7 +1966,7 @@ class tag_array {
   std::map<BYPASS_KEY, int> m_l1d_rd_bypass_confidence;
   std::map<BYPASS_KEY, bool> m_l1d_rd_bypass_activated;
   std::map<BYPASS_KEY, u64 /* cycles */> m_avg_l1d_rd_fill_to_evict_gap;  
-  std::map<std::pair<u64 /* streamID */, u32 /* kernel */>, std::set<new_addr_type>> m_l1d_fill_to_evict_lines;
+  std::map<LOCALITY_KEY, std::set<new_addr_type>> m_l1d_fill_to_evict_lines;
   std::set<new_addr_type> m_l1d_trashed_lines;
   float m_l1d_mpki;
   unsigned m_low_loc_threshold;
@@ -2249,7 +2236,7 @@ class cache_stats {
   void inc_l1d_wr_misses(u64 streamID, u32 kernel);
   void update_l1d_max_evictions(const LOCALITY_KEY& loc_key, u32 n_evictions);
   void update_l1d_avg_evictions(const LOCALITY_KEY& loc_key, u32 n_evictions);
-  void update_n_l1d_fill_to_evict(u64 streamID, u32 kernel, u32 n_lines);
+  void update_n_l1d_fill_to_evict(const LOCALITY_KEY& loc_key, u32 n_lines);
   
   void inc_mshr_stats(u64 streamID, u32 sm_id, u32 warp_id);
   void inc_accu_l2_dram_queue_size(u64 streamID, u32 l2_sub, u32 size);
@@ -2456,7 +2443,7 @@ class cache_stats {
   std::map<u64 /* streamID */, u64> m_l1d_rd_miss_served_cycles; // done accu
   std::map<u64 /* streamID */, u64> m_l1d_wr_miss_served_cycles; // done accu
 
-  std::map<std::pair<u64 /* streamID */, u32 /* kernel */>, u32> m_n_l1d_fill_to_evict_lines;
+  std::map<LOCALITY_KEY, u32> m_n_l1d_fill_to_evict_lines;
   std::map<u64 /* streamID */, std::map<u64, u32>> m_l1d_rd_byp_activates; // done accu
   std::map<u64 /* streamID */, std::map<u64, u32>> m_l1d_rd_byp_deactivates; // done accu
   // SM is not differentiated in following stats

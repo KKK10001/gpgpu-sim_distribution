@@ -425,12 +425,15 @@ tag_array::tag_array(gpgpu_sim *gpu, cache_config &config, int core_id, int type
   m_l1d_mpki = 0.0f;
   m_low_loc_threshold = m_config.m_low_locality_threshold;
   // m_l1d_evictions_bound = 5; // 124.722 (+3.535%) drops compared with 10 below
-  // m_l1d_evictions_bound = 7; // 
+  // m_l1d_evictions_bound = 8;
   // m_l1d_evictions_bound = 3;
-  m_l1d_evictions_bound = 10; // dead-lock under "lrr" warp-sched scheme but 2nd-highest IPC under "gto"
+  m_l1d_evictions_bound = 9;
+  // m_l1d_evictions_bound = 10; // dead-lock under "lrr" warp-sched scheme but 2nd-highest IPC under "gto"
+  // m_l1d_evictions_bound = 13; // worse
   // m_l1d_evictions_bound = 20;
   // m_trash_conf_cnt_bound = 2; // Drops
   m_trash_conf_cnt_bound = 3; // Highest
+  // m_trash_conf_cnt_bound = 4;
   // m_trash_conf_cnt_bound = 10; // ok (confirmed again with only inc/dec conf cnt inside tag_array::probe)
   // m_trash_conf_cnt_bound = 5; // ok (activate: 2; deactivate: 4)
   // m_trash_conf_cnt_bound = 7; // ok (activate: 2; deactivate: 4)
@@ -1325,33 +1328,21 @@ enum cache_request_status tag_array::probe(
             addr, m_config.get_cache_name());
     abort();
   }
-
-  if (m_is_l2 && mf) {
-    if (mf->get_l1d_rd_byp_change() == 2) {
-      if (DTRACE(L2_GOT_L1D_BYPASSED_ITEM)) {
-        fprintf(Trace::out, "%llu L2_GOT_L1D_BYPASSED_ITEM for "
-          "key(streamID:%llu, kernel:%u, block_addr:%#llx)\n", 
-          time, mf->get_streamID(), m_gpu->m_kernel_id, m_config.block_addr(addr));
-      }
-    }
-  }
   
   if (m_is_l1d && mf && !mf->is_write() && !mf->isatomic()) {
     assert(addr == m_config.block_addr(addr));
-
-    std::pair<u64, u32> f2e_ln_key = std::make_pair(mf->get_streamID(), m_gpu->m_kernel_id);
-    auto it_f2e_line = m_l1d_fill_to_evict_lines.find(f2e_ln_key);
+    LOCALITY_KEY loc_key(mf->get_streamID(), m_gpu->m_kernel_id);
+    auto it_f2e_line = m_l1d_fill_to_evict_lines.find(loc_key);
     if (it_f2e_line == m_l1d_fill_to_evict_lines.end()) {
       std::set<new_addr_type> addr_set;
       addr_set.insert(addr);
-      m_l1d_fill_to_evict_lines[f2e_ln_key] = addr_set;
+      m_l1d_fill_to_evict_lines[loc_key] = addr_set;
     } else {
-      m_l1d_fill_to_evict_lines[f2e_ln_key].insert(addr);
+      m_l1d_fill_to_evict_lines[loc_key].insert(addr);
     }
 
     bool byp_key_hit  = false;
-    bool new_byp_cand = false;
-    LOCALITY_KEY loc_key(mf->get_streamID(), m_gpu->m_kernel_id);
+    bool new_byp_cand = false;    
     BYPASS_KEY byp_key(mf->get_streamID(), m_gpu->m_kernel_id, sector_addr);
     if (m_l1d_occupied.find(byp_key) != m_l1d_occupied.end() && m_l1d_occupied[byp_key]) {
       assert(0); // bypassed L1D item should never be probed again
@@ -2193,9 +2184,8 @@ void cache_stats::update_l1d_avg_evictions(const LOCALITY_KEY& loc_key, u32 n_ev
   }
 }
 
-void cache_stats::update_n_l1d_fill_to_evict(u64 streamID, u32 kernel, u32 n_lines) {
-  const std::pair<u64 /* streamID */, u32 /* kernel */> key = std::make_pair(streamID, kernel);
-  m_n_l1d_fill_to_evict_lines[key] = n_lines;
+void cache_stats::update_n_l1d_fill_to_evict(const LOCALITY_KEY& loc_key, u32 n_lines) {
+  m_n_l1d_fill_to_evict_lines[loc_key] = n_lines;
 }
 
 void cache_stats::inc_l2_sub_miss_served_cycles(
@@ -2762,7 +2752,7 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
 
   for (auto iter = m_n_l1d_fill_to_evict_lines.begin();
     iter != m_n_l1d_fill_to_evict_lines.end(); ++iter) {
-    const std::pair<u64 /* streamID */, u32 /* kernel */> key = iter->first;
+    const LOCALITY_KEY key = iter->first;
     ret.m_n_l1d_fill_to_evict_lines[key] = m_n_l1d_fill_to_evict_lines.at(key);
   }
 
@@ -3013,7 +3003,7 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
   }
 
   for (auto iter = cs.m_n_l1d_fill_to_evict_lines.begin(); iter != cs.m_n_l1d_fill_to_evict_lines.end(); ++iter) {  
-    const std::pair<u64, u32> key = iter->first;
+    const LOCALITY_KEY key = iter->first;
     if (ret.m_n_l1d_fill_to_evict_lines.find(key) == ret.m_n_l1d_fill_to_evict_lines.end()) {
       ret.m_n_l1d_fill_to_evict_lines[key] = cs.m_n_l1d_fill_to_evict_lines.at(key);
     } else {
@@ -3390,7 +3380,7 @@ void cache_stats::accu_single_stat(const char* tgt_item, const cache_stats &cs) 
     }
   } else if (!strcmp(tgt_item, "m_n_l1d_fill_to_evict_lines")) {
     for (auto iter = cs.m_n_l1d_fill_to_evict_lines.begin(); iter != cs.m_n_l1d_fill_to_evict_lines.end(); ++iter) {
-      const std::pair<u64, u32> key = iter->first;
+      const LOCALITY_KEY key = iter->first;
       if (m_n_l1d_fill_to_evict_lines.find(key) == m_n_l1d_fill_to_evict_lines.end()) {
         m_n_l1d_fill_to_evict_lines[key] = cs.m_n_l1d_fill_to_evict_lines.at(key);
       } else {
@@ -3960,7 +3950,7 @@ void cache_stats::print_l1d_writes(FILE* fout, u64 streamID, u32 kernel) const {
 }
 
 void cache_stats::print_l1d_n_fill_to_evict_lines(FILE* fout, u64 streamID, u32 kernel) const {
-  const std::pair<u64, u32> key = std::make_pair(streamID, kernel);
+  const LOCALITY_KEY key(streamID, kernel);
   auto it = m_n_l1d_fill_to_evict_lines.find(key);
   if (it != m_n_l1d_fill_to_evict_lines.end()) {
     fprintf(fout, "\tstreamID:%llu kernel:%u L1D_N_FILL_TO_EVICT_LINES = %u\n", 
@@ -5923,7 +5913,7 @@ enum cache_request_status data_cache::process_tag_probe(
         dumpCacheEvent(time, "data_cache::process_tag_probe", "m_rd_miss", mf);
       }
 
-      if (m_is_l1d && !m_tag_array->hit_l1d_bypassed_item(byp_key, mf)) {
+      if (!m_tag_array->hit_l1d_bypassed_item(byp_key, mf)) {
         m_stats.inc_l1d_rd_misses(mf->get_streamID(), m_gpu->m_kernel_id);
         m_stats.update_l1d_max_evictions(loc_key, m_tag_array->get_l1d_evictions(byp_key));
         m_stats.update_l1d_avg_evictions(loc_key, m_tag_array->get_l1d_evictions(byp_key));
@@ -6062,10 +6052,9 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
     }
   }
 
-  const std::pair<u64, u32> f2e_ln_key = std::make_pair(mf->get_streamID(), m_gpu->m_kernel_id);
-  m_stats.update_n_l1d_fill_to_evict(
-    mf->get_streamID(), m_gpu->m_kernel_id, 
-    m_tag_array->m_l1d_fill_to_evict_lines[f2e_ln_key].size());
+  const LOCALITY_KEY loc_key(mf->get_streamID(), m_gpu->m_kernel_id);
+  m_stats.update_n_l1d_fill_to_evict(loc_key, 
+    m_tag_array->m_l1d_fill_to_evict_lines[loc_key].size());
   
   bool en_inc_byp_act   = m_config.m_bypass_low_loc_lines == 'T' && mf->get_l1d_rd_byp_change() == 2;
   bool en_inc_byp_deact = m_config.m_bypass_low_loc_lines == 'T' && mf->get_l1d_rd_byp_change() == 1;    
