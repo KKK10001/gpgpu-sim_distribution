@@ -429,8 +429,8 @@ tag_array::tag_array(gpgpu_sim *gpu, cache_config &config, int core_id, int type
   // m_l1d_evictions_bound = 5; // 124.722 (+3.535%) drops compared with 10 below
   // m_l1d_evictions_bound = 8;
   // m_l1d_evictions_bound = 3;
-  m_l1d_evictions_bound = 9;
-  // m_l1d_evictions_bound = 10; // dead-lock under "lrr" warp-sched scheme but 2nd-highest IPC under "gto"
+  // m_l1d_evictions_bound = 9; // +0.444%
+  m_l1d_evictions_bound = 10; // 31.962 (+0.353%)	
   // m_l1d_evictions_bound = 13; // worse
   // m_l1d_evictions_bound = 20;
   // m_trash_conf_cnt_bound = 2; // Drops
