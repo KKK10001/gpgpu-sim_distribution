@@ -1641,6 +1641,34 @@ struct REQ_PKT
 typedef unsigned long long u64;
 typedef unsigned u32;
 
+struct LOCALITY_KEY
+{
+  u64 stream_id;
+  u32 kernel;
+  LOCALITY_KEY() : 
+    stream_id((u64) - 1), kernel((u32) - 1) {}
+  LOCALITY_KEY(
+    u64 stream_id_, u32 kernel_) :
+    stream_id(stream_id_), kernel(kernel_) {}
+
+  bool operator<(const LOCALITY_KEY& other) const {
+    if (stream_id != other.stream_id) return stream_id < other.stream_id;
+    if (kernel != other.kernel) return kernel < other.kernel;
+    return false;
+  }
+
+  bool operator==(const LOCALITY_KEY& other) const {
+    return stream_id == other.stream_id && kernel == other.kernel;
+  }
+};
+struct LOCALITY_KEY_HASH {
+  std::size_t operator()(const LOCALITY_KEY& key) const {
+    const std::size_t h1 = std::hash<u64>{}(key.stream_id);
+    const std::size_t h2 = std::hash<u32>{}(key.kernel);
+    return h1 ^ (h2 << 1);
+  }
+};
+
 struct BYPASS_KEY
 {
   u64 stream_id;
@@ -1715,9 +1743,21 @@ class tag_array {
     u64 this_gap = m_l1d_rd_fill_to_evict_gap[key];
     if (m_avg_l1d_rd_fill_to_evict_gap.find(key) == m_avg_l1d_rd_fill_to_evict_gap.end()) {
       m_avg_l1d_rd_fill_to_evict_gap[key] = this_gap;
+      // if (DTRACE(TUNE_SATCNT_BASED_L1D_BYP)) {
+      //   fprintf(Trace::out, "Init m_avg_l1d_rd_fill_to_evict_gap"
+      //     "[key:<streamID:%llu, kernel:%u, sector_addr:0x%llx>] = %llu\n",
+      //     key.stream_id, key.kernel, key.sector_addr, this_gap);
+      // }
     } else {
+      // [[maybe_unused]] u64 prev_avg = m_avg_l1d_rd_fill_to_evict_gap[key];
       m_avg_l1d_rd_fill_to_evict_gap[key] = 
         (m_avg_l1d_rd_fill_to_evict_gap[key] + this_gap) >> 1;
+      // if (DTRACE(TUNE_SATCNT_BASED_L1D_BYP)) {
+      //   fprintf(Trace::out, "Update for key:<streamID:%llu, kernel:%u, sector_addr:0x%llx> "
+      //     "m_avg_l1d_rd_fill_to_evict_gap:%llu = (prev_avg:%llu + this_gap:%llu) >> 1\n",
+      //     key.stream_id, key.kernel, key.sector_addr,
+      //     m_avg_l1d_rd_fill_to_evict_gap[key], prev_avg, this_gap);
+      // }        
     }
   }
 
@@ -1870,6 +1910,10 @@ class tag_array {
   void remove_pending_line(mem_fetch *mf);
   void inc_dirty() { m_dirty++; }
 
+  u32 get_l1d_evictions(const BYPASS_KEY& byp_key) {
+    return m_l1d_evictions[byp_key];
+  }
+
  protected:
   // This constructor is intended for use only from derived classes that wish to
   // avoid unnecessary memory allocation that takes place in the
@@ -1928,18 +1972,19 @@ class tag_array {
   std::map<BYPASS_KEY, u64 /* cycles */> m_l1d_rd_fill_time;
   std::map<BYPASS_KEY, u64 /* cycles */> m_l1d_evict_time;
   std::map<BYPASS_KEY, u64 /* cycles */> m_l1d_rd_fill_to_evict_gap;
+  std::map<BYPASS_KEY, u32 /* evictions */> m_l1d_evictions;
   std::map<BYPASS_KEY, bool /* occupied */> m_l1d_occupied; // bypassed refill but always occupied position, and other lines cannot be inserted 
   std::map<BYPASS_KEY, u32> m_l1d_rd_byp_activated_times;
   std::map<BYPASS_KEY, u32> m_l1d_rd_byp_deactivated_times;
   std::map<BYPASS_KEY, int> m_l1d_rd_bypass_confidence;
   std::map<BYPASS_KEY, bool> m_l1d_rd_bypass_activated;
-  std::map<BYPASS_KEY, u64 /* cycles */> m_avg_l1d_rd_fill_to_evict_gap;
-  std::map<new_addr_type /* block_addr */, u32 /* evictions */> m_l1d_lines_evictions;      
+  std::map<BYPASS_KEY, u64 /* cycles */> m_avg_l1d_rd_fill_to_evict_gap;  
   std::map<std::pair<u64 /* streamID */, u32 /* kernel */>, std::set<new_addr_type>> m_l1d_fill_to_evict_lines;
   std::set<new_addr_type> m_l1d_trashed_lines;
   float m_l1d_mpki;
   unsigned m_low_loc_threshold;
   int m_trash_conf_cnt_bound;
+  int m_l1d_evictions_bound;
 
   void inc_conf_cnt(int& conf, const int upper_bound, const int step);
   void dec_conf_cnt(int& conf, const int lower_bound, const int step);  
@@ -2202,6 +2247,8 @@ class cache_stats {
   void inc_l1d_rd_misses(u64 streamID, u32 kernel);
   void inc_l1d_writes(u64 streamID, u32 kernel);
   void inc_l1d_wr_misses(u64 streamID, u32 kernel);
+  void update_l1d_max_evictions(const LOCALITY_KEY& loc_key, u32 n_evictions);
+  void update_l1d_avg_evictions(const LOCALITY_KEY& loc_key, u32 n_evictions);
   void update_n_l1d_fill_to_evict(u64 streamID, u32 kernel, u32 n_lines);
   
   void inc_mshr_stats(u64 streamID, u32 sm_id, u32 warp_id);
@@ -2268,6 +2315,9 @@ class cache_stats {
   u32 print_l1d_reads(FILE* fout, u64 streamID, u32 kernel, u64 cycle = (u64) - 1) const;
   void print_l1d_rd_miss_rate(
     FILE* fout, u64 streamID, u32 kernel, u32 misses, u32 reads, u64 cycles = (u64) - 1) const;
+
+  u32 print_l1d_max_evictions(FILE* fout, LOCALITY_KEY& loc_key, u64 cycles) const;
+  u32 print_l1d_avg_evictions(FILE* fout, LOCALITY_KEY& loc_key, u64 cycles) const;
 
   void print_l1d_n_fill_to_evict_lines(FILE* fout, u64 streamID, u32 kernel) const;
   void print_l1d_avg_rd_byp_activates(FILE* fout, u64 streamID, u32 kernel) const;
@@ -2416,6 +2466,9 @@ class cache_stats {
   std::map<u64 /* streamID */, std::map<u32 /* kernel */, u32>> m_l1d_writes;    // done accu 
   std::map<u64 /* streamID */, std::map<u32 /* kernel */, u32>> m_l1d_rd_misses; // done accu
   std::map<u64 /* streamID */, std::map<u32 /* kernel */, u32>> m_l1d_wr_misses; // done accu
+  std::map<LOCALITY_KEY, u32> m_l1d_max_evictions;
+  std::map<LOCALITY_KEY, u32> m_l1d_avg_evictions;
+
   std::map<u64 /* streamID */, std::vector<u64>> m_l2_sub_miss_served_cycles;
   std::map<u64 /* streamID */, std::vector<u32>> m_l2_sub_misses;
 
@@ -2852,8 +2905,6 @@ class data_cache : public baseline_cache {
         break;  // Need to set a write miss function
     }
   }
-
-  void update_l1d_miss_stats(const cache_request_status& probe_status, mem_fetch *mf);
 
   virtual enum cache_request_status access(new_addr_type addr, mem_fetch *mf,
                                            unsigned long long time,

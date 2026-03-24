@@ -1720,8 +1720,8 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
   std::map<unsigned, unsigned> per_core_intra_warp_interferences;
 
   unsigned l1d_victims = 0;
-  unsigned l1d_max_evictions = 0;
-  unsigned l1d_avg_evictions = m_shader_stats->m_l1d_avg_evicts[0];
+  // unsigned l1d_max_evictions = 0;
+  // unsigned l1d_avg_evictions = m_shader_stats->m_l1d_avg_evicts[0];
   unsigned l1d_repl_candidates = 0;
   unsigned n_l1d_trashed_lines = 0;
   
@@ -1762,12 +1762,12 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
 
       l1d_victims         += m_shader_stats->m_l1d_victims[sid];
       l1d_repl_candidates += m_shader_stats->m_l1d_repl_cands[sid];
-      l1d_max_evictions   += m_shader_stats->m_l1d_max_evicts[sid];
-      l1d_avg_evictions = (l1d_avg_evictions + m_shader_stats->m_l1d_avg_evicts[sid]) >> 1;
+      // l1d_max_evictions   += m_shader_stats->m_l1d_max_evicts[sid];
+      // l1d_avg_evictions = (l1d_avg_evictions + m_shader_stats->m_l1d_avg_evicts[sid]) >> 1;
       n_l1d_trashed_lines += m_shader_stats->m_n_l1d_trashed_lines[sid];
       printf("l1d_victims[sid:%u] = %u\n", sid, m_shader_stats->m_l1d_victims[sid]);
-      printf("l1d_max_evictions[sid:%u] = %u\n", sid, m_shader_stats->m_l1d_max_evicts[sid]);
-      printf("l1d_avg_evictions[sid:%u] = %u\n", sid, m_shader_stats->m_l1d_avg_evicts[sid]);
+      // printf("l1d_max_evictions[sid:%u] = %u\n", sid, m_shader_stats->m_l1d_max_evicts[sid]);
+      // printf("l1d_avg_evictions[sid:%u] = %u\n", sid, m_shader_stats->m_l1d_avg_evicts[sid]);
 
       for (unsigned interfered = 0; interfered < m_shader_config->max_warps_per_shader; interfered++)
       {
@@ -1888,8 +1888,8 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
       entry.print(); // inter_warp_interfere[sid:%u][warp:%u][warp:%u] = %u
   }
 
-  printf("avg_l1d_max_evictions = %f\n", l1d_max_evictions / (float)m_shader_config->num_shader());
-  printf("avg_l1d_evictions = %u\n", l1d_avg_evictions);
+  // printf("avg_l1d_max_evictions = %f\n", l1d_max_evictions / (float)m_shader_config->num_shader());
+  // printf("avg_l1d_evictions = %u\n", l1d_avg_evictions);
   printf("n_l1d_trashed_lines = %u\n", n_l1d_trashed_lines);
 
   unsigned total_inter_warp_interferences = 0;
@@ -2194,6 +2194,10 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
   u32 l1d_reads     = core_cache_stats.print_l1d_reads(stdout, streamID, kernelID, cycles);
   core_cache_stats.print_l1d_rd_miss_rate(
     stdout, streamID, kernelID, l1d_rd_misses, l1d_reads, cycles);
+
+  LOCALITY_KEY loc_key(streamID, kernelID);
+  u32 l1d_max_evictions = core_cache_stats.print_l1d_max_evictions(stdout, loc_key, cycles);
+  u32 l1d_avg_evictions = core_cache_stats.print_l1d_avg_evictions(stdout, loc_key, cycles);
 
   core_cache_stats.print_l1d_wr_misses(stdout, streamID, kernelID);
   core_cache_stats.print_l1d_writes(stdout, streamID, kernelID);
