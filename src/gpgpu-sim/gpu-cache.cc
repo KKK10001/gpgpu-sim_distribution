@@ -419,6 +419,8 @@ tag_array::tag_array(gpgpu_sim *gpu, cache_config &config, int core_id, int type
   m_l1d_occupied.clear();
   m_l1d_rd_bypass_confidence.clear();
   m_l1d_rd_bypass_activated.clear();
+  m_l1d_victim_cache.clear();
+  m_l1d_victim_cache_capacity = 32;
   m_avg_l1d_rd_fill_to_evict_gap.clear();
   m_l1d_fill_to_evict_lines.clear();
   m_l1d_trashed_lines.clear();  
@@ -1381,6 +1383,7 @@ enum cache_request_status tag_array::probe(
         m_trashed_reqs.insert(byp_key);
         mf->set_l1d_rd_byp_activated(); // m_l1d_rd_byp_change = 2 = 2'b10
         m_l1d_rd_byp_activated_times[byp_key]++;
+        insert_l1d_victim_item(byp_key, addr, time);
         assert(hit_l1d_bypassed_item(byp_key, mf));
       }
       // End of eviction-bound based scheme
@@ -1394,6 +1397,7 @@ enum cache_request_status tag_array::probe(
           m_trashed_reqs.insert(byp_key);
           mf->set_l1d_rd_byp_activated(); // m_l1d_rd_byp_change = 2 = 2'b10
           m_l1d_rd_byp_activated_times[byp_key]++;
+          insert_l1d_victim_item(byp_key, addr, time);
           assert(hit_l1d_bypassed_item(byp_key, mf));
           if (DTRACE(ACTIVATE_L1D_BYPASS)) {
             fprintf(Trace::out, "%llu ACTIVATE_L1D_BYPASS for byp_key: "
@@ -1709,6 +1713,7 @@ void tag_array::set_recorded_in_mshr(unsigned index) {
 
 // TODO: we need write back the flushed data to the upper level
 void tag_array::flush() {
+  m_l1d_victim_cache.clear();
   if (!is_used) return;
 
   for (unsigned i = 0; i < m_config.get_num_lines(); i++)
@@ -1723,6 +1728,7 @@ void tag_array::flush() {
 }
 
 void tag_array::invalidate() {
+  m_l1d_victim_cache.clear();
   if (!is_used) return;
 
   for (unsigned i = 0; i < m_config.get_num_lines(); i++)
@@ -2012,6 +2018,9 @@ void cache_stats::clear() {
   m_n_l1d_fill_to_evict_lines.clear();
   m_l1d_rd_byp_activates.clear();
   m_l1d_rd_byp_deactivates.clear();
+  m_l1d_victim_hits_on_bypass.clear();
+  m_l1d_victim_inserts_on_activate.clear();
+  m_l1d_victim_inserts_on_refill_bypass.clear();
 
   m_l2_sub_miss_served_cycles.clear();
   m_l2_sub_misses.clear();
@@ -2164,6 +2173,15 @@ void cache_stats::inc_l1d_writes(u64 streamID, u32 kernel) {
 }
 void cache_stats::inc_l1d_wr_misses(u64 streamID, u32 kernel) {
   m_l1d_wr_misses[streamID][kernel]++;
+}
+void cache_stats::inc_l1d_victim_hit_on_bypass(u64 streamID) {
+  m_l1d_victim_hits_on_bypass[streamID]++;
+}
+void cache_stats::inc_l1d_victim_insert_on_activate(u64 streamID) {
+  m_l1d_victim_inserts_on_activate[streamID]++;
+}
+void cache_stats::inc_l1d_victim_insert_on_refill_bypass(u64 streamID) {
+  m_l1d_victim_inserts_on_refill_bypass[streamID]++;
 }
 void cache_stats::update_l1d_max_evictions(const LOCALITY_KEY& loc_key, u32 n_evictions) {
   u32 prev_max_evictions = m_l1d_max_evictions[loc_key];
@@ -2638,6 +2656,30 @@ u64 cache_stats::operator()(u64 streamID, const char* tgt_name) const {
       return it->second;
     }
   }
+  else if (!strcmp(tgt_name, "m_l1d_victim_hits_on_bypass")) {
+    auto it = m_l1d_victim_hits_on_bypass.find(streamID);
+    if (it == m_l1d_victim_hits_on_bypass.end()) {
+      return 0;
+    } else {
+      return it->second;
+    }
+  }
+  else if (!strcmp(tgt_name, "m_l1d_victim_inserts_on_activate")) {
+    auto it = m_l1d_victim_inserts_on_activate.find(streamID);
+    if (it == m_l1d_victim_inserts_on_activate.end()) {
+      return 0;
+    } else {
+      return it->second;
+    }
+  }
+  else if (!strcmp(tgt_name, "m_l1d_victim_inserts_on_refill_bypass")) {
+    auto it = m_l1d_victim_inserts_on_refill_bypass.find(streamID);
+    if (it == m_l1d_victim_inserts_on_refill_bypass.end()) {
+      return 0;
+    } else {
+      return it->second;
+    }
+  }
 }
 
 cache_stats cache_stats::operator+(const cache_stats &cs) {
@@ -2722,6 +2764,22 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
     iter != m_l1d_rd_byp_deactivates.end(); ++iter) {
     u64 streamID = iter->first;
     ret.m_l1d_rd_byp_deactivates[streamID] = m_l1d_rd_byp_deactivates.at(streamID);
+  }
+  for (auto iter = m_l1d_victim_hits_on_bypass.begin();
+    iter != m_l1d_victim_hits_on_bypass.end(); ++iter) {
+    u64 streamID = iter->first;
+    ret.m_l1d_victim_hits_on_bypass[streamID] = m_l1d_victim_hits_on_bypass.at(streamID);
+  }
+  for (auto iter = m_l1d_victim_inserts_on_activate.begin();
+    iter != m_l1d_victim_inserts_on_activate.end(); ++iter) {
+    u64 streamID = iter->first;
+    ret.m_l1d_victim_inserts_on_activate[streamID] = m_l1d_victim_inserts_on_activate.at(streamID);
+  }
+  for (auto iter = m_l1d_victim_inserts_on_refill_bypass.begin();
+    iter != m_l1d_victim_inserts_on_refill_bypass.end(); ++iter) {
+    u64 streamID = iter->first;
+    ret.m_l1d_victim_inserts_on_refill_bypass[streamID] =
+      m_l1d_victim_inserts_on_refill_bypass.at(streamID);
   }
 
   for (auto iter = m_l1d_misses.begin(); 
@@ -3242,6 +3300,37 @@ void cache_stats::accu_single_stat(const char* tgt_item, const cache_stats &cs) 
         }
       }
     }
+  } else if (!strcmp(tgt_item, "m_l1d_victim_hits_on_bypass")) {
+    for (auto iter = cs.m_l1d_victim_hits_on_bypass.begin();
+      iter != cs.m_l1d_victim_hits_on_bypass.end(); ++iter) {
+      u64 streamID = iter->first;
+      if (m_l1d_victim_hits_on_bypass.find(streamID) == m_l1d_victim_hits_on_bypass.end()) {
+        m_l1d_victim_hits_on_bypass[streamID] = cs.m_l1d_victim_hits_on_bypass.at(streamID);
+      } else {
+        m_l1d_victim_hits_on_bypass.at(streamID) += cs(streamID, tgt_item);
+      }
+    }
+  } else if (!strcmp(tgt_item, "m_l1d_victim_inserts_on_activate")) {
+    for (auto iter = cs.m_l1d_victim_inserts_on_activate.begin();
+      iter != cs.m_l1d_victim_inserts_on_activate.end(); ++iter) {
+      u64 streamID = iter->first;
+      if (m_l1d_victim_inserts_on_activate.find(streamID) == m_l1d_victim_inserts_on_activate.end()) {
+        m_l1d_victim_inserts_on_activate[streamID] = cs.m_l1d_victim_inserts_on_activate.at(streamID);
+      } else {
+        m_l1d_victim_inserts_on_activate.at(streamID) += cs(streamID, tgt_item);
+      }
+    }
+  } else if (!strcmp(tgt_item, "m_l1d_victim_inserts_on_refill_bypass")) {
+    for (auto iter = cs.m_l1d_victim_inserts_on_refill_bypass.begin();
+      iter != cs.m_l1d_victim_inserts_on_refill_bypass.end(); ++iter) {
+      u64 streamID = iter->first;
+      if (m_l1d_victim_inserts_on_refill_bypass.find(streamID) == m_l1d_victim_inserts_on_refill_bypass.end()) {
+        m_l1d_victim_inserts_on_refill_bypass[streamID] =
+          cs.m_l1d_victim_inserts_on_refill_bypass.at(streamID);
+      } else {
+        m_l1d_victim_inserts_on_refill_bypass.at(streamID) += cs(streamID, tgt_item);
+      }
+    }
   } else if (!strcmp(tgt_item, "m_l1d_accesses")) {
     for (auto iter = cs.m_l1d_accesses.begin(); iter != cs.m_l1d_accesses.end(); ++iter) {
       u64 streamID = iter->first;
@@ -3617,6 +3706,9 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
   accu_single_stat("m_l1d_wr_miss_served_cycles", cs);
   accu_single_stat("m_l1d_rd_byp_activates", cs);
   accu_single_stat("m_l1d_rd_byp_deactivates", cs);
+  accu_single_stat("m_l1d_victim_hits_on_bypass", cs);
+  accu_single_stat("m_l1d_victim_inserts_on_activate", cs);
+  accu_single_stat("m_l1d_victim_inserts_on_refill_bypass", cs);
   accu_single_stat("m_l1d_accesses", cs);
   accu_single_stat("m_l1d_reads", cs);
   accu_single_stat("m_l1d_writes", cs);  
@@ -3734,6 +3826,19 @@ void cache_stats::print_stats(FILE *fout, u64 streamID,
         fprintf(fout, "\t%s[%s][%s] = %u\n", m_cache_info.c_str(),
                 mem_access_type_str((enum mem_access_type)type), "TOTAL_ACCESS",
                 total_access[type]);
+    }
+
+    auto it_victim_hits = m_l1d_victim_hits_on_bypass.find(streamid);
+    if (it_victim_hits != m_l1d_victim_hits_on_bypass.end()) {
+      fprintf(fout, "\tL1D_VICTIM_HITS_ON_BYPASS = %llu\n", it_victim_hits->second);
+    }
+    auto it_insert_act = m_l1d_victim_inserts_on_activate.find(streamid);
+    if (it_insert_act != m_l1d_victim_inserts_on_activate.end()) {
+      fprintf(fout, "\tL1D_VICTIM_INSERTS_ON_ACTIVATE = %llu\n", it_insert_act->second);
+    }
+    auto it_insert_refill = m_l1d_victim_inserts_on_refill_bypass.find(streamid);
+    if (it_insert_refill != m_l1d_victim_inserts_on_refill_bypass.end()) {
+      fprintf(fout, "\tL1D_VICTIM_INSERTS_ON_REFILL_BYPASS = %llu\n", it_insert_refill->second);
     }
   }
 }
@@ -4265,6 +4370,23 @@ void cache_stats::get_sub_stats(
     }
   }
 
+  for (auto iter = m_l1d_victim_hits_on_bypass.begin();
+    iter != m_l1d_victim_hits_on_bypass.end(); ++iter) {
+    u64 streamID = iter->first;
+    t_css.l1d_victim_hits_on_bypass += m_l1d_victim_hits_on_bypass.at(streamID);
+  }
+  for (auto iter = m_l1d_victim_inserts_on_activate.begin();
+    iter != m_l1d_victim_inserts_on_activate.end(); ++iter) {
+    u64 streamID = iter->first;
+    t_css.l1d_victim_inserts_on_activate += m_l1d_victim_inserts_on_activate.at(streamID);
+  }
+  for (auto iter = m_l1d_victim_inserts_on_refill_bypass.begin();
+    iter != m_l1d_victim_inserts_on_refill_bypass.end(); ++iter) {
+    u64 streamID = iter->first;
+    t_css.l1d_victim_inserts_on_refill_bypass +=
+      m_l1d_victim_inserts_on_refill_bypass.at(streamID);
+  }
+
   t_css.port_available_cycles = m_cache_port_available_cycles;
   t_css.data_port_busy_cycles = m_cache_data_port_busy_cycles;
   t_css.fill_port_busy_cycles = m_cache_fill_port_busy_cycles;
@@ -4599,6 +4721,8 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
           dumpCacheEvent(time, "baseline_cache::fill", 
             "HIT_L1D_BYPASSED_ITEM L1D bypassed m_tag_array->fill", mf);
         }
+        m_stats.inc_l1d_victim_insert_on_refill_bypass(mf->get_streamID());
+        m_tag_array->insert_l1d_victim_item(byp_key, e->second.m_block_addr, time);
       }
     } else {
       if (DTRACE(CACHE_EVENT)) {
@@ -5866,22 +5990,23 @@ enum cache_request_status read_only_cache::access(
 //  and performs the correspding functions based on the cache configuration
 //  The access fucntion calls this function
 enum cache_request_status data_cache::process_tag_probe(
-    bool wr, enum cache_request_status probe_status, 
+  bool wr, enum cache_request_status status,
     new_addr_type addr /* raw_addr */,
     unsigned cache_index, mem_fetch *mf, unsigned long long time,
-    std::list<cache_event> &events) {
+  std::list<cache_event> &events,
+  bool bypass_victim_hit) {
   
   // Each function pointer ( m_[rd/wr]_[hit/miss] ) is set in the
   // data_cache constructor to reflect the corresponding cache configuration
   // options. Function pointers were used to avoid many long conditional
   // branches resulting from many cache configuration options.
-  cache_request_status access_status = probe_status;
+  cache_request_status access_status = status;
   new_addr_type sector_addr = m_config.mshr_addr(addr);
   if (wr) { // Write
-    if (probe_status == HIT) {
-      access_status = (this->*m_wr_hit)(addr, cache_index, mf, time, events, probe_status);
-    } else if ((probe_status != RESERVATION_FAIL) ||
-               (probe_status == RESERVATION_FAIL &&
+    if (status == HIT) {
+      access_status = (this->*m_wr_hit)(addr, cache_index, mf, time, events, status);
+    } else if ((status != RESERVATION_FAIL) ||
+               (status == RESERVATION_FAIL &&
                 m_config.m_write_alloc_policy == NO_WRITE_ALLOCATE)) {
 
       if (DTRACE(CACHE_EVENT)) {
@@ -5893,7 +6018,7 @@ enum cache_request_status data_cache::process_tag_probe(
         m_stats.inc_l1d_wr_misses(mf->get_streamID(), mf->get_sid());
       }      
 
-      access_status = (this->*m_wr_miss)(addr, cache_index, mf, time, events, probe_status);
+      access_status = (this->*m_wr_miss)(addr, cache_index, mf, time, events, status);
       if (access_status == cache_request_status::MISS) {
         mf->set_wr_miss_serve_begin_time(time);
       }      
@@ -5906,9 +6031,14 @@ enum cache_request_status data_cache::process_tag_probe(
   } else {  // Read
     BYPASS_KEY byp_key(mf->get_streamID(), m_gpu->m_kernel_id, sector_addr);
     LOCALITY_KEY loc_key(mf->get_streamID(), m_gpu->m_kernel_id);
-    if (probe_status == HIT) {
-      access_status = (this->*m_rd_hit)(addr, cache_index, mf, time, events, probe_status);  
-    } else if (probe_status != RESERVATION_FAIL) {
+    if (status == HIT) {
+      if (bypass_victim_hit && m_config.m_bypass_low_loc_lines == 'T' &&
+          m_tag_array->hit_l1d_bypassed_item(byp_key, mf)) {
+        access_status = HIT;
+      } else {
+        access_status = (this->*m_rd_hit)(addr, cache_index, mf, time, events, status);
+      }
+    } else if (status != RESERVATION_FAIL) {
       if (DTRACE(CACHE_EVENT)) {
         dumpCacheEvent(time, "data_cache::process_tag_probe", "m_rd_miss", mf);
       }
@@ -5919,7 +6049,7 @@ enum cache_request_status data_cache::process_tag_probe(
         m_stats.update_l1d_avg_evictions(loc_key, m_tag_array->get_l1d_evictions(byp_key));
       }
 
-      access_status = (this->*m_rd_miss)(addr, cache_index, mf, time, events, probe_status);
+      access_status = (this->*m_rd_miss)(addr, cache_index, mf, time, events, status);
       if (access_status == cache_request_status::MISS) {
         mf->set_rd_miss_serve_begin_time(time);
       }
@@ -5977,14 +6107,25 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
   }
 
   enum cache_request_status probe_status = cache_request_status::MISS;
+  bool bypass_victim_hit = false;
   if (m_config.m_bypass_low_loc_lines == 'T') {
     BYPASS_KEY byp_key(mf->get_streamID(), m_gpu->m_kernel_id, sector_addr);
     if (m_tag_array->hit_l1d_bypassed_item(byp_key, mf)) {
       assert(!mf->is_write());
       assert(!mf->isatomic());
-      if (DTRACE(TRACE_BYPASSED_L1D_PKT) || DTRACE(HIT_L1D_BYPASSED_ITEM)) {
-        dumpCacheEvent(time, "data_cache::access", 
-          "HIT_L1D_BYPASSED_ITEM Bypassed m_tag_array->probe", mf);
+      if (m_tag_array->hit_l1d_victim_item(byp_key)) {
+        probe_status = HIT;
+        bypass_victim_hit = true;
+        m_stats.inc_l1d_victim_hit_on_bypass(mf->get_streamID());
+        if (DTRACE(TRACE_BYPASSED_L1D_PKT) || DTRACE(HIT_L1D_BYPASSED_ITEM)) {
+          dumpCacheEvent(time, "data_cache::access",
+            "HIT_L1D_BYPASSED_ITEM Victim-cache hit", mf);
+        }
+      } else {
+        if (DTRACE(TRACE_BYPASSED_L1D_PKT) || DTRACE(HIT_L1D_BYPASSED_ITEM)) {
+          dumpCacheEvent(time, "data_cache::access", 
+            "HIT_L1D_BYPASSED_ITEM Bypassed m_tag_array->probe", mf);
+        }
       }
     } else {
       probe_status = m_tag_array->probe(
@@ -6031,7 +6172,8 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
     }    
   }
 
-  enum cache_request_status access_status = process_tag_probe(wr, probe_status, addr, cache_index, mf, time, events);
+  enum cache_request_status access_status = process_tag_probe(
+    wr, probe_status, addr, cache_index, mf, time, events, bypass_victim_hit);
   enum cache_request_status access_stats_bak = access_status;
 
   if (DTRACE(CACHE_EVENT)) {
@@ -6062,6 +6204,10 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
   //   en_inc_byp_act, loc_key, m_tag_array->m_l1d_rd_byp_activated_times[loc_key], mf->get_streamID());
   // m_stats.update_l1d_rd_byp_deact(
   //   en_inc_byp_deact, loc_key, m_tag_array->m_l1d_rd_byp_deactivated_times[loc_key], mf->get_streamID());
+
+  if (m_is_l1d && en_inc_byp_act) {
+    m_stats.inc_l1d_victim_insert_on_activate(mf->get_streamID());
+  }
 
   m_stats.inc_stats(mf->get_access_type(),
                     m_stats.select_stats_status(probe_status, access_status),

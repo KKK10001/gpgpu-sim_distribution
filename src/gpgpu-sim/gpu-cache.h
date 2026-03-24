@@ -1767,6 +1767,38 @@ class tag_array {
     return false;
   }
 
+  bool hit_l1d_victim_item(const BYPASS_KEY& key) {
+    for (auto it = m_l1d_victim_cache.begin(); it != m_l1d_victim_cache.end(); ++it) {
+      if (it->key == key) {
+        // Keep recently reused victim lines hot.
+        if (it != m_l1d_victim_cache.begin()) {
+          L1D_VICTIM_ENTRY hit_entry = *it;
+          m_l1d_victim_cache.erase(it);
+          m_l1d_victim_cache.push_front(hit_entry);
+        }
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void insert_l1d_victim_item(const BYPASS_KEY& key, new_addr_type block_addr,
+                              unsigned long long time) {
+    if (!m_is_l1d) return;
+
+    for (auto it = m_l1d_victim_cache.begin(); it != m_l1d_victim_cache.end(); ++it) {
+      if (it->key == key) {
+        m_l1d_victim_cache.erase(it);
+        break;
+      }
+    }
+
+    m_l1d_victim_cache.push_front(L1D_VICTIM_ENTRY(key, block_addr, time));
+    while (m_l1d_victim_cache.size() > m_l1d_victim_cache_capacity) {
+      m_l1d_victim_cache.pop_back();
+    }
+  }
+
   static bool cmpForSmallerTimestamp(
     const std::pair<unsigned, LINE_RECENCY>& a, 
     const std::pair<unsigned, LINE_RECENCY>& b) {
@@ -1948,6 +1980,15 @@ class tag_array {
 
   std::unordered_set<BYPASS_KEY, BYPASS_KEY_HASH> m_trashed_reqs;
 
+  struct L1D_VICTIM_ENTRY {
+    L1D_VICTIM_ENTRY(const BYPASS_KEY& k, new_addr_type addr,
+                     unsigned long long t)
+        : key(k), block_addr(addr), insert_time(t) {}
+    BYPASS_KEY key;
+    new_addr_type block_addr;
+    unsigned long long insert_time;
+  };
+
   typedef tr1_hash_map<new_addr_type, u32> line_table;
   line_table pending_lines;
   line_table lines_locality;
@@ -1966,6 +2007,8 @@ class tag_array {
   std::map<BYPASS_KEY, int> m_l1d_rd_bypass_confidence;
   std::map<BYPASS_KEY, bool> m_l1d_rd_bypass_activated;
   std::map<BYPASS_KEY, u64 /* cycles */> m_avg_l1d_rd_fill_to_evict_gap;  
+  std::list<L1D_VICTIM_ENTRY> m_l1d_victim_cache;
+  size_t m_l1d_victim_cache_capacity;
   std::map<LOCALITY_KEY, std::set<new_addr_type>> m_l1d_fill_to_evict_lines;
   std::set<new_addr_type> m_l1d_trashed_lines;
   float m_l1d_mpki;
@@ -2069,6 +2112,9 @@ struct cache_sub_stats {
   unsigned long long avg_evict_interval;
   unsigned long long avg_rd_byp_activates;
   unsigned long long avg_rd_byp_deactivates;
+  unsigned long long l1d_victim_hits_on_bypass;
+  unsigned long long l1d_victim_inserts_on_activate;
+  unsigned long long l1d_victim_inserts_on_refill_bypass;
 
   unsigned long long port_available_cycles;
   unsigned long long data_port_busy_cycles;
@@ -2092,6 +2138,9 @@ struct cache_sub_stats {
     avg_evict_interval = 0;
     avg_rd_byp_activates   = 0;
     avg_rd_byp_deactivates = 0;
+    l1d_victim_hits_on_bypass = 0;
+    l1d_victim_inserts_on_activate = 0;
+    l1d_victim_inserts_on_refill_bypass = 0;
     port_available_cycles  = 0;
     data_port_busy_cycles  = 0;
     fill_port_busy_cycles  = 0;
@@ -2115,6 +2164,9 @@ struct cache_sub_stats {
     avg_evict_interval     = (avg_evict_interval + css.avg_evict_interval) >> 1;
     avg_rd_byp_activates   = (avg_rd_byp_activates + css.avg_rd_byp_activates) >> 1;
     avg_rd_byp_deactivates = (avg_rd_byp_deactivates + css.avg_rd_byp_deactivates) >> 1;
+    l1d_victim_hits_on_bypass += css.l1d_victim_hits_on_bypass;
+    l1d_victim_inserts_on_activate += css.l1d_victim_inserts_on_activate;
+    l1d_victim_inserts_on_refill_bypass += css.l1d_victim_inserts_on_refill_bypass;
     port_available_cycles += css.port_available_cycles;
     data_port_busy_cycles += css.data_port_busy_cycles;
     fill_port_busy_cycles += css.fill_port_busy_cycles;
@@ -2139,6 +2191,11 @@ struct cache_sub_stats {
     ret.avg_evict_interval     = (avg_evict_interval + cs.avg_evict_interval) >> 1;
     ret.avg_rd_byp_activates   = (avg_rd_byp_activates + cs.avg_rd_byp_activates) >> 1;
     ret.avg_rd_byp_deactivates = (avg_rd_byp_deactivates + cs.avg_rd_byp_deactivates) >> 1;
+    ret.l1d_victim_hits_on_bypass = l1d_victim_hits_on_bypass + cs.l1d_victim_hits_on_bypass;
+    ret.l1d_victim_inserts_on_activate =
+      l1d_victim_inserts_on_activate + cs.l1d_victim_inserts_on_activate;
+    ret.l1d_victim_inserts_on_refill_bypass =
+      l1d_victim_inserts_on_refill_bypass + cs.l1d_victim_inserts_on_refill_bypass;
     ret.port_available_cycles =
         port_available_cycles + cs.port_available_cycles;
     ret.data_port_busy_cycles =
@@ -2234,6 +2291,9 @@ class cache_stats {
   void inc_l1d_rd_misses(u64 streamID, u32 kernel);
   void inc_l1d_writes(u64 streamID, u32 kernel);
   void inc_l1d_wr_misses(u64 streamID, u32 kernel);
+  void inc_l1d_victim_hit_on_bypass(u64 streamID);
+  void inc_l1d_victim_insert_on_activate(u64 streamID);
+  void inc_l1d_victim_insert_on_refill_bypass(u64 streamID);
   void update_l1d_max_evictions(const LOCALITY_KEY& loc_key, u32 n_evictions);
   void update_l1d_avg_evictions(const LOCALITY_KEY& loc_key, u32 n_evictions);
   void update_n_l1d_fill_to_evict(const LOCALITY_KEY& loc_key, u32 n_lines);
@@ -2446,6 +2506,9 @@ class cache_stats {
   std::map<LOCALITY_KEY, u32> m_n_l1d_fill_to_evict_lines;
   std::map<u64 /* streamID */, std::map<u64, u32>> m_l1d_rd_byp_activates; // done accu
   std::map<u64 /* streamID */, std::map<u64, u32>> m_l1d_rd_byp_deactivates; // done accu
+  std::map<u64 /* streamID */, u64> m_l1d_victim_hits_on_bypass;
+  std::map<u64 /* streamID */, u64> m_l1d_victim_inserts_on_activate;
+  std::map<u64 /* streamID */, u64> m_l1d_victim_inserts_on_refill_bypass;
   // SM is not differentiated in following stats
   std::map<u64 /* streamID */, std::map<u32 /* kernel */, u32>> m_l1d_accesses;  // done accu
   std::map<u64 /* streamID */, std::map<u32 /* kernel */, u32>> m_l1d_misses;    // done accu
@@ -2923,7 +2986,8 @@ class data_cache : public baseline_cache {
                                               new_addr_type addr /* raw_addr */,
                                               unsigned cache_index,
                                               mem_fetch *mf, unsigned long long time,
-                                              std::list<cache_event> &events);
+                                              std::list<cache_event> &events,
+                                              bool bypass_victim_hit = false);
 
  protected:
   mem_fetch_allocator *m_memfetch_creator;
