@@ -946,6 +946,8 @@ enum cache_type { NORMAL = 0, SECTOR };
 #define MAX_WARP_PER_SHADER 64
 #define MAX_WARP_PER_SHADER 64
 
+typedef unsigned long long u64;
+typedef unsigned u32;
 class cache_config {
  public:
   cache_config() {    
@@ -957,7 +959,6 @@ class cache_config {
     m_data_port_width = 0;
     m_set_index_function = LINEAR_SET_FUNCTION;
     m_is_streaming = false;
-    m_low_locality_threshold = 30;
     m_wr_percent = 0;    
   }
   void init(
@@ -972,6 +973,10 @@ class cache_config {
     assert(mshr_config);
     assert(rrpv_config);
     assert(rep_enhance_config);
+
+    m_bypass_enable = 'F';
+    m_max_evictions_bound = 0;
+    m_trash_conf_cnt_bound = 0;
 
     [[maybe_unused]] int ntok_mshr = 
       sscanf(mshr_config, "%c,%c", &m_mshr_disable, &m_mshr_corr_repl);
@@ -989,12 +994,11 @@ class cache_config {
             &m_rrpv_bits, &m_combined_srrip_lru, &m_srrip_up);
 
     [[maybe_unused]] int ntok_rep_enhance = 
-      sscanf(rep_enhance_config, "%c,%c,%c", 
-        &m_fill_time_ascend, &m_warp_interfere_aware, &m_bypass_low_loc_lines);
+      sscanf(rep_enhance_config, "%c,%c", &m_fill_time_ascend, &m_warp_interfere_aware);
     fprintf(Trace::out, 
       "----------- %s rep_enhance_config is below -----------\n "
-      "m_fill_time_ascend = %c m_warp_interfere_aware = %c m_bypass_low_loc_lines = %c\n",
-      cache_name, m_fill_time_ascend, m_warp_interfere_aware, m_bypass_low_loc_lines);
+      "m_fill_time_ascend = %c m_warp_interfere_aware = %c\n",
+      cache_name, m_fill_time_ascend, m_warp_interfere_aware);
 
     fprintf(Trace::out, 
       "----------- %s srrip_config is below -----------\n "
@@ -1292,7 +1296,6 @@ class cache_config {
       );
     }
   }
-  char bypass_low_loc_lines() const { return m_bypass_low_loc_lines; }
 
   bool disabled() const { return m_disabled; }
   unsigned get_line_sz() const {
@@ -1383,10 +1386,16 @@ class cache_config {
   char *m_mshr_config_string;
   char *m_rrpv_config_string;
   char *m_rep_enhance_string;
+  char *m_bypass_config_string;
   char *m_config_stringPrefL1;
   char *m_config_stringPrefShared;
+
+  char m_bypass_enable;
+  char m_total_evictions_aware;
+  u32 m_max_evictions_bound;
+  u32 m_trash_conf_cnt_bound;
+
   FuncCache cache_status;
-  unsigned m_low_locality_threshold;
   unsigned m_wr_percent;
   write_allocate_policy_t get_write_allocate_policy() {
     return m_write_alloc_policy;
@@ -1440,7 +1449,6 @@ class cache_config {
   char m_mshr_corr_repl;
   char m_fill_time_ascend;
   char m_warp_interfere_aware;
-  char m_bypass_low_loc_lines;
 
   enum srrip_update_policy_t m_srrip_update_policy;
   unsigned m_rrpv_bits;
@@ -1480,13 +1488,15 @@ class l1d_cache_config : public cache_config {
   }
   unsigned set_bank(new_addr_type addr) const;
   void init(
-    char *config, char *mshr_config, char* rrpv_config, char* rep_enhance_config, 
+    char *config, char *mshr_config, char* rrpv_config, 
+    char* rep_enhance_config,
     FuncCache status, const char* cache_name = "L1D") {
     l1_banks_byte_interleaving_log2 = LOGB2(l1_banks_byte_interleaving);
     l1_banks_log2 = LOGB2(l1_banks);
-    cache_config::init(
-      config, mshr_config, rrpv_config, rep_enhance_config, status, cache_name);
+    cache_config::init(config, mshr_config, rrpv_config, 
+      rep_enhance_config, status, cache_name);
   }
+
   unsigned m_shader_cores;
   unsigned l1_latency;
   unsigned l1_banks;
@@ -1495,17 +1505,9 @@ class l1d_cache_config : public cache_config {
   unsigned l1_banks_byte_interleaving_log2;
   unsigned l1_banks_hashing_function;
   unsigned m_unified_cache_size;
-  virtual unsigned get_max_cache_multiplier() const {
-    // set * assoc * cacheline size. Then convert Byte to KB
-    // gpgpu_unified_cache_size is in KB while original_sz is in B
-    if (m_unified_cache_size > 0) {
-      unsigned original_size = m_nset * original_m_assoc * m_line_sz / 1024;
-      assert(m_unified_cache_size % original_size == 0);
-      return m_unified_cache_size / original_size;
-    } else {
-      return MAX_DEFAULT_CACHE_SIZE_MULTIBLIER;
-    }
-  }
+
+  void extra_config(char* bypass_config);
+  virtual unsigned get_max_cache_multiplier() const;
 };
 
 class l2_cache_config : public cache_config {
@@ -1969,9 +1971,6 @@ class tag_array {
   std::map<LOCALITY_KEY, std::set<new_addr_type>> m_l1d_fill_to_evict_lines;
   std::set<new_addr_type> m_l1d_trashed_lines;
   float m_l1d_mpki;
-  unsigned m_low_loc_threshold;
-  int m_trash_conf_cnt_bound;
-  int m_l1d_evictions_bound;
 
   void inc_conf_cnt(int& conf, const int upper_bound, const int step);
   void dec_conf_cnt(int& conf, const int lower_bound, const int step);  
