@@ -1065,16 +1065,21 @@ enum cache_request_status tag_array::probe(
           if (DTRACE(DEBUG_EARLY_RETURN)) {
             if (!hit_l1d_byp_on_req_path(req_byp_key, mf)) {
               printf("%llu %s tag_array::probe "
-                "early_return failed for addr:%#llx from <streamID:%llu, kernel:%u, block_addr:%#llx>\n",
-                time, m_config.get_cache_name(), addr, mf->get_streamID(), m_gpu->m_kernel_id, addr);              
+                "early_return failed for addr:%#llx from <streamID:%llu, kernel:%u, block_addr:%#llx> "
+                "sector_addr:%#llx way:%u mf:{req_uid:%u uid:%u}\n",
+                time, m_config.get_cache_name(), addr, mf->get_streamID(), m_gpu->m_kernel_id, 
+                addr, sector_addr, way, mf->get_request_uid(), mf->get_inst().get_uid());      
               fprintf(Trace::out, "%llu %s tag_array::probe "
-                "early_return failed for addr:%#llx from <streamID:%llu, kernel:%u, block_addr:%#llx>\n",
-                time, m_config.get_cache_name(), addr, mf->get_streamID(), m_gpu->m_kernel_id, addr);
+                "early_return failed for addr:%#llx from <streamID:%llu, kernel:%u, block_addr:%#llx> "
+                "sector_addr:%#llx way:%u mf:{req_uid:%u uid:%u}\n",
+                time, m_config.get_cache_name(), addr, mf->get_streamID(), m_gpu->m_kernel_id, 
+                addr, sector_addr, way, mf->get_request_uid(), mf->get_inst().get_uid());
             }
           }
 
-          // 3/26 Allow probe even if L1D is already bypassed
-          // assert(hit_l1d_byp_on_req_path(req_byp_key, mf));
+          if (enter_byp_check_flow) {
+            assert(hit_l1d_byp_on_req_path(req_byp_key, mf));  
+          }
 
           line->m_n_acc_after_bypass++; // !!! important for L1D bypass activation control
           if (line->m_n_acc_after_bypass >= 3) {
@@ -1082,12 +1087,13 @@ enum cache_request_status tag_array::probe(
             m_trashed_reqs.erase(req_byp_key); 
             enter_byp_check_flow = false;
             if (DTRACE(REMOVE_L1D_BYPASSED_ITEM)) {
-              fprintf(Trace::out, "%llu Removed req_byp_key"
-                "<streamID:%llu, kernel:%u, block_addr:%#llx> "              
+              fprintf(Trace::out, "%llu %s Removed req_byp_key"
+                "<streamID:%llu, kernel:%u, block_addr:%#llx> sector_addr:%#llx way:%u mf:{req_uid:%u uid:%u} "
                 "due to m_n_acc_after_bypass:%u >= 3, "
                 "and then enter normal tag probe flow\n",
-                time, mf->get_streamID(), m_gpu->m_kernel_id, addr, 
-                line->m_n_acc_after_bypass);
+                time, m_config.get_cache_name(), 
+                mf->get_streamID(), m_gpu->m_kernel_id, addr, sector_addr, way,
+                mf->get_request_uid(), mf->get_inst().get_uid(), line->m_n_acc_after_bypass);
             }
             // return cache_request_status::MISS;
           } else {
@@ -4636,16 +4642,18 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
           if (DTRACE(L1D_BYPASS_WRONG_CASE)) {
             fprintf(Trace::out, "%llu wrong case! "
               "byp_key:<streamID:%llu, kernel:%u, block_addr:%#llx, sector_addr:%#llx> "
+              "mf:{req_uid:%u uid:%u} "
               "missed, but sends cache_index = -1 to m_tag_array->fill\n",
-              time, fill_key.stream_id, fill_key.kernel, fill_key.block_addr, fill_key.sector_addr);
+              time, fill_key.stream_id, fill_key.kernel, fill_key.block_addr, fill_key.sector_addr,
+              mf->get_request_uid(), mf->get_inst().get_uid());
           }
         }
-        if (e->second.m_cache_index == (u32) - 1) { // caused by a previous remove of record from m_trashed_reqs
-          // bypass fill
-        } else {
-          m_tag_array->fill(e->second.m_cache_index, time, mf);  
-        }
-        // m_tag_array->fill(e->second.m_cache_index, time, mf);
+        // if (e->second.m_cache_index == (u32) - 1) { // caused by a previous remove of record from m_trashed_reqs
+        //   // bypass fill
+        // } else {
+        //   m_tag_array->fill(e->second.m_cache_index, time, mf);  
+        // }
+        m_tag_array->fill(e->second.m_cache_index, time, mf);
       } else {
         // [Bugfix]
         // <uid, addr> matches does not mean req_uid also matches
@@ -4966,9 +4974,11 @@ void baseline_cache::send_read_request(new_addr_type raw_addr, new_addr_type blo
       if (DTRACE(FILL_EXTRA_MF_FIELDS)) {
         fprintf(Trace::out, "%llu %s fill extra_mf_fields for "
           "key:<streamID:%llu, kernel:%u, block_addr:%#llx, sector_addr:%#llx> "
+          "mf:{req_uid:%u uid:%u} "
           "cache_index = %#x hit_l1d_byp_on_req_path = %u\n",
           time, cache_type,
           mf->get_streamID(), m_gpu->m_kernel_id, block_addr, mshr_addr,
+          mf->get_request_uid(), mf->get_inst().get_uid(),
           cache_index, m_tag_array->hit_l1d_byp_on_req_path(alloc_key, mf));
       }
 
@@ -5132,9 +5142,11 @@ void baseline_cache::send_read_request(new_addr_type raw_addr, new_addr_type blo
       if (DTRACE(FILL_EXTRA_MF_FIELDS)) {
         fprintf(Trace::out, "%llu %s fill extra_mf_fields for "
           "key:<streamID:%llu, kernel:%u, block_addr:%#llx, sector_addr:%#llx> "
+          "mf:{req_uid:%u uid:%u} "
           "cache_index = %#x hit_l1d_byp_on_req_path = %u\n",
           time, cache_type,
           mf->get_streamID(), m_gpu->m_kernel_id, block_addr, mshr_addr,
+          mf->get_request_uid(), mf->get_inst().get_uid(),
           cache_index, m_tag_array->hit_l1d_byp_on_req_path(alloc_key, mf));
       }
 
