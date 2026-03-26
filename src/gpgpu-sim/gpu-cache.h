@@ -46,6 +46,9 @@
 
 #define MAX_DEFAULT_CACHE_SIZE_MULTIBLIER 4
 
+typedef unsigned u32;
+typedef unsigned long long u64;
+
 enum cache_block_state { 
   INVALID = 0, RESERVED, VALID, MODIFIED,
   NUM_CACHE_BLOCK_STATES
@@ -211,9 +214,10 @@ struct cache_block_t {
     m_tag = 0;
     m_block_addr = 0;
     m_owner = (unsigned) - 1;
-    m_was_recorded_in_mshr = false;
+    m_n_acc_after_bypass = 0;    
     m_n_reused = 0;
     m_n_rereferenced = 0;
+    m_was_recorded_in_mshr = false;
   }
 
   virtual void allocate(new_addr_type tag, new_addr_type block_addr,
@@ -295,9 +299,10 @@ struct cache_block_t {
 
   new_addr_type m_tag;
   new_addr_type m_block_addr;
-  unsigned m_owner; // warp_id  
-  unsigned m_n_reused;
-  unsigned m_n_rereferenced;
+  u32 m_owner; // warp_id
+  u32 m_n_acc_after_bypass;
+  u32 m_n_reused;
+  u32 m_n_rereferenced;
   bool m_was_recorded_in_mshr; // "was" means that the line might be invalid now
 };
 
@@ -1675,16 +1680,20 @@ struct BYPASS_KEY
 {
   u64 stream_id;
   u32 kernel;
+  u64 block_addr;
   u64 sector_addr;
   BYPASS_KEY() : 
-    stream_id((u64) - 1), kernel((u32) - 1), sector_addr((u64) - 1) {}
+    stream_id((u64) - 1), kernel((u32) - 1), 
+    block_addr((u64) - 1), sector_addr((u64) - 1) {}
   BYPASS_KEY(
-    u64 stream_id_, u32 kernel_, u64 sector_addr_) :
-    stream_id(stream_id_), kernel(kernel_), sector_addr(sector_addr_) {}
+    u64 stream_id_, u32 kernel_, u64 block_addr_, u64 sector_addr_) :
+    stream_id(stream_id_), kernel(kernel_), 
+    block_addr(block_addr_), sector_addr(sector_addr_) {} 
 
   bool operator<(const BYPASS_KEY& other) const {
     if (stream_id != other.stream_id) return stream_id < other.stream_id;
     if (kernel != other.kernel) return kernel < other.kernel;
+    if (block_addr != other.block_addr) return block_addr < other.block_addr;
     if (sector_addr != other.sector_addr) return sector_addr < other.sector_addr;
     return false;
   }
@@ -1692,16 +1701,47 @@ struct BYPASS_KEY
   bool operator==(const BYPASS_KEY& other) const {
     return stream_id == other.stream_id &&
       kernel == other.kernel &&
+      block_addr == other.block_addr &&
       sector_addr == other.sector_addr;
   }
 };
 
-struct BYPASS_KEY_HASH {
+struct BYPASS_KEY_REQ_HASH {
+  std::size_t operator()(const BYPASS_KEY& key) const {
+    const std::size_t h1 = std::hash<u64>{}(key.stream_id);
+    const std::size_t h2 = std::hash<u32>{}(key.kernel);
+    const std::size_t h3 = std::hash<u64>{}(key.block_addr);
+    return h1 ^ (h2 << 1) ^ (h3 << 2);
+  }
+};
+struct BYPASS_KEY_REQ_EQ {
+  bool operator()(const BYPASS_KEY& a, const BYPASS_KEY& b) const {
+    return a.stream_id == b.stream_id &&
+           a.kernel == b.kernel &&
+           a.block_addr == b.block_addr;
+  }
+};
+struct BYPASS_KEY_REQ_LESS {
+  bool operator()(const BYPASS_KEY& a, const BYPASS_KEY& b) const {
+    if (a.stream_id != b.stream_id) return a.stream_id < b.stream_id;
+    if (a.kernel != b.kernel) return a.kernel < b.kernel;
+    return a.block_addr < b.block_addr;
+  }
+};
+
+struct BYPASS_KEY_RESP_HASH {
   std::size_t operator()(const BYPASS_KEY& key) const {
     const std::size_t h1 = std::hash<u64>{}(key.stream_id);
     const std::size_t h2 = std::hash<u32>{}(key.kernel);
     const std::size_t h3 = std::hash<u64>{}(key.sector_addr);
     return h1 ^ (h2 << 1) ^ (h3 << 2);
+  }
+};
+struct BYPASS_KEY_RESP_EQ {
+  bool operator()(const BYPASS_KEY& a, const BYPASS_KEY& b) const {
+    return a.stream_id == b.stream_id &&
+           a.kernel == b.kernel &&
+           a.sector_addr == b.sector_addr;
   }
 };
 
@@ -1768,6 +1808,13 @@ class tag_array {
     }
     return false;
   }
+  bool hit_l1d_byp_on_req_path(BYPASS_KEY key, mem_fetch* mf) {
+    if (m_trashed_reqs.find(key) != m_trashed_reqs.end() &&
+      !mf->is_write() && !mf->isatomic()) {
+      return true;
+    }
+    return false;
+  }  
 
   static bool cmpForSmallerTimestamp(
     const std::pair<unsigned, LINE_RECENCY>& a, 
@@ -1846,23 +1893,27 @@ class tag_array {
     std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
     unsigned& valid_line);  
 
-  // addr is block_addr
+  void reset_cnt_for_abort_bypass(int index);
+  
   enum cache_request_status probe(const std::string& caller,
+                                  bool early_return /* L1D bypass required */,
                                   new_addr_type raw_addr,
                                   new_addr_type addr /* block_addr */, unsigned &idx,
                                   mem_fetch *mf, bool is_write,
                                   unsigned long long time,
                                   bool& inter_warp_has_interference, 
                                   WARP_INTERFERE_RECORD& warp_interfere_record,
+                                  
                                   bool probe_mode = false);
   enum cache_request_status probe(const std::string& caller,
+                                  bool early_return /* L1D bypass required */,
                                   new_addr_type raw_addr,
                                   new_addr_type addr /* block_addr */, unsigned &idx,
                                   mem_access_sector_mask_t mask, bool is_write,
                                   unsigned long long time,
                                   bool probe_mode,
                                   bool& inter_warp_has_interference, 
-                                  WARP_INTERFERE_RECORD& warp_interfere_record,
+                                  WARP_INTERFERE_RECORD& warp_interfere_record,                                  
                                   mem_fetch *mf = NULL);
   enum cache_request_status access(new_addr_type raw_addr, 
                                    new_addr_type addr /* block_addr */, unsigned long long time,
@@ -1948,7 +1999,7 @@ class tag_array {
 
   bool is_used;  // a flag if the whole cache has ever been accessed before
 
-  std::unordered_set<BYPASS_KEY, BYPASS_KEY_HASH> m_trashed_reqs;
+  std::unordered_set<BYPASS_KEY, BYPASS_KEY_REQ_HASH, BYPASS_KEY_REQ_EQ> m_trashed_reqs;
 
   typedef tr1_hash_map<new_addr_type, u32> line_table;
   line_table pending_lines;
@@ -1962,13 +2013,11 @@ class tag_array {
   std::map<BYPASS_KEY, u64 /* cycles */> m_l1d_evict_time;
   std::map<BYPASS_KEY, u64 /* cycles */> m_l1d_rd_fill_to_evict_gap;
   std::map<BYPASS_KEY, u32 /* evictions */> m_l1d_evictions;
-  std::map<BYPASS_KEY, bool /* occupied */> m_l1d_occupied; // bypassed refill but always occupied position, and other lines cannot be inserted 
   std::map<BYPASS_KEY, u32> m_l1d_rd_byp_activated_times;
   std::map<BYPASS_KEY, u32> m_l1d_rd_byp_deactivated_times;
   std::map<BYPASS_KEY, int> m_l1d_rd_bypass_confidence;
   std::map<BYPASS_KEY, bool> m_l1d_rd_bypass_activated;
-  std::map<BYPASS_KEY, u64 /* cycles */> m_avg_l1d_rd_fill_to_evict_gap;  
-  std::map<LOCALITY_KEY, std::set<new_addr_type>> m_l1d_fill_to_evict_lines;
+  std::map<BYPASS_KEY, u64 /* cycles */> m_avg_l1d_rd_fill_to_evict_gap;
   std::set<new_addr_type> m_l1d_trashed_lines;
   float m_l1d_mpki;
 

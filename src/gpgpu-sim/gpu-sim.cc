@@ -1032,11 +1032,8 @@ unsigned gpgpu_sim::finished_kernel() {
     return 0;
   }
   if (DTRACE(PROBE_KERNEL)) {
-    for (auto& kernel : m_finished_kernel)
-    {
-      fprintf(Trace::out, "%llu running kernel is the %uth kernel. total %lu kernels\n", 
-        gpu_sim_cycle + gpu_tot_sim_cycle, m_finished_kernel.front(), m_finished_kernel.size());
-    }
+    fprintf(Trace::out, "%llu running kernel is the %uth kernel. total %lu kernels\n", 
+      gpu_sim_cycle + gpu_tot_sim_cycle, m_finished_kernel.front(), m_finished_kernel.size());
   }
 
   unsigned result = m_finished_kernel.front();
