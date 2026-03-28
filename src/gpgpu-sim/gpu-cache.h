@@ -974,9 +974,12 @@ class cache_config {
     assert(rrpv_config);
     assert(rep_enhance_config);
 
-    m_bypass_enable = 'F';
-    m_max_evictions_bound = 0;
-    m_trash_conf_cnt_bound = 0;
+    m_bypass_enable         = 'F';
+    m_infinite_bypasses     = 'F';
+    m_total_evictions_aware = 'F';
+    m_max_bypasses          = 0;
+    m_max_evictions_bound   = 0;
+    m_trash_conf_cnt_bound  = 0;
 
     [[maybe_unused]] int ntok_mshr = 
       sscanf(mshr_config, "%c,%c", &m_mshr_disable, &m_mshr_corr_repl);
@@ -1391,7 +1394,9 @@ class cache_config {
   char *m_config_stringPrefShared;
 
   char m_bypass_enable;
+  char m_infinite_bypasses;
   char m_total_evictions_aware;
+  u32 m_max_bypasses;
   u32 m_max_evictions_bound;
   u32 m_trash_conf_cnt_bound;
 
@@ -1948,7 +1953,8 @@ class tag_array {
 
   bool is_used;  // a flag if the whole cache has ever been accessed before
 
-  std::unordered_set<BYPASS_KEY, BYPASS_KEY_HASH> m_trashed_reqs;
+  // std::unordered_set<BYPASS_KEY, BYPASS_KEY_HASH> m_trashed_reqs;
+  std::set<BYPASS_KEY> m_trashed_reqs;
 
   typedef tr1_hash_map<new_addr_type, u32> line_table;
   line_table pending_lines;

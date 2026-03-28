@@ -447,8 +447,9 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_cache:l1d_bypass", OPT_CSTR,
                          &m_L1D_config.m_bypass_config_string,
                          "L1D bypass configurations"
-                         "<bypass_enable>,<total_evictions_aware>,<max_evictions_bound>,<trash_conf_cnt_bound>",
-                         "T,T,10,3");
+                         "<bypass_enable>,<infinite_bypasses>,<total_evictions_aware>,"
+                         "<max_bypasses>,<max_evictions_bound>,<trash_conf_cnt_bound>",
+                         "T,F,T,40,10,3");                         
   option_parser_register(opp, "-gpgpu_l1_cache_write_ratio", OPT_UINT32,
                          &m_L1D_config.m_wr_percent, "L1D write ratio", "0");
   option_parser_register(opp, "-gpgpu_l1_banks", OPT_UINT32,

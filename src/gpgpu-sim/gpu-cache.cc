@@ -261,14 +261,19 @@ unsigned l1d_cache_config::set_bank(new_addr_type addr) const {
 }
 
 void l1d_cache_config::extra_config(char* bypass_config) {
-  // <bypass_enable>,<total_evictions_aware>,<max_evictions_bound>,<trash_conf_cnt_bound>
+  // <bypass_enable>,<infinite_bypasses>,<total_evictions_aware>,
+  // <max_bypasses>,<max_evictions_bound>,<trash_conf_cnt_bound>
   [[maybe_unused]] int ntok_bypass = 
-    sscanf(bypass_config, "%c,%c,%u,%u", 
-      &m_bypass_enable, &m_total_evictions_aware, &m_max_evictions_bound, &m_trash_conf_cnt_bound);
+    sscanf(bypass_config, "%c,%c,%c,%u,%u,%u", 
+      &m_bypass_enable, &m_infinite_bypasses, &m_total_evictions_aware,
+      &m_max_bypasses, &m_max_evictions_bound, &m_trash_conf_cnt_bound);
   fprintf(Trace::out, 
     "----------- %s bypass_config is below -----------\n "
-    "m_bypass_enable = %c m_total_evictions_aware = %c m_max_evictions_bound = %u m_trash_conf_cnt_bound = %u\n",
-    m_cache_name, m_bypass_enable, m_total_evictions_aware, m_max_evictions_bound, m_trash_conf_cnt_bound);
+    "m_bypass_enable = %c m_infinite_bypasses = %c m_total_evictions_aware = %c "
+    "m_max_bypasses = %u m_max_evictions_bound = %u m_trash_conf_cnt_bound = %u\n",
+    m_cache_name, 
+    m_bypass_enable, m_infinite_bypasses, m_total_evictions_aware, 
+    m_max_bypasses, m_max_evictions_bound, m_trash_conf_cnt_bound);
 }
 
 unsigned l1d_cache_config::get_max_cache_multiplier() const {
@@ -488,8 +493,7 @@ tag_array::tag_array(gpgpu_sim *gpu, cache_config &config, int core_id, int type
 
   init(core_id, type_id);
 
-  // m_trashed_reqs.reserve(100);
-  m_trashed_reqs.reserve(10);
+  m_trashed_reqs.clear();
 }
 
 void tag_array::init(int core_id, int type_id) {  
@@ -1402,10 +1406,26 @@ enum cache_request_status tag_array::probe(
       // Begin of eviction-bound based scheme
       if (m_config.m_total_evictions_aware == 'T') {
         if (get_l1d_evictions(byp_key) > m_config.m_max_evictions_bound) {
-          m_trashed_reqs.insert(byp_key);
-          mf->set_l1d_rd_byp_activated(); // m_l1d_rd_byp_change = 2 = 2'b10
-          m_l1d_rd_byp_activated_times[byp_key]++;
-          assert(hit_l1d_bypassed_item(byp_key, mf));
+          if (m_config.m_infinite_bypasses == 'T') {
+            m_trashed_reqs.insert(byp_key);            
+            mf->set_l1d_rd_byp_activated(); // m_l1d_rd_byp_change = 2 = 2'b10
+            m_l1d_rd_byp_activated_times[byp_key]++;
+            assert(hit_l1d_bypassed_item(byp_key, mf));
+          } else {
+            if (m_trashed_reqs.size() >= m_config.m_max_bypasses) {
+              // nothing
+              if (DTRACE(EVAL_TRASHED_REQ_SIZE)) {
+                fprintf(Trace::out, "%llu m_trashed_reqs reaches m_max_bypasses:%u. "
+                  "Abandon insert key:<streamID:%llu, kernel:%u, sector_addr:%#llx>\n",
+                  time, m_config.m_max_bypasses, mf->get_streamID(), m_gpu->m_kernel_id, sector_addr);
+              }
+            } else {
+              m_trashed_reqs.insert(byp_key);            
+              mf->set_l1d_rd_byp_activated(); // m_l1d_rd_byp_change = 2 = 2'b10
+              m_l1d_rd_byp_activated_times[byp_key]++;
+              assert(hit_l1d_bypassed_item(byp_key, mf));
+            }
+          }
         }
       } 
       // End of eviction-bound based scheme
@@ -1414,16 +1434,32 @@ enum cache_request_status tag_array::probe(
       // Inc confidence && possible insert into trash set
       if (get_l1d_rd_fill_to_evict_gap(byp_key) < get_avg_l1d_rd_fill_to_evict_gap(byp_key)) {
         inc_conf_cnt(m_l1d_rd_bypass_confidence[byp_key], m_config.m_trash_conf_cnt_bound, 1);
-        if (m_l1d_rd_bypass_confidence[byp_key] == m_config.m_trash_conf_cnt_bound) {        
-          m_trashed_reqs.insert(byp_key);
-          mf->set_l1d_rd_byp_activated(); // m_l1d_rd_byp_change = 2 = 2'b10
-          m_l1d_rd_byp_activated_times[byp_key]++;
-          assert(hit_l1d_bypassed_item(byp_key, mf));
-          if (DTRACE(ACTIVATE_L1D_BYPASS)) {
-            fprintf(Trace::out, "%llu ACTIVATE_L1D_BYPASS for byp_key: "
-              "<streamID:%llu, kernel:%u, block_addr:%#llx> mf: <wr:%u, atomic:%u>\n", 
-              time, mf->get_streamID(), m_gpu->m_kernel_id, addr, 
-              mf->is_write(), mf->isatomic());
+        if (m_l1d_rd_bypass_confidence[byp_key] == m_config.m_trash_conf_cnt_bound) {
+          if (m_config.m_infinite_bypasses == 'T') {
+            m_trashed_reqs.insert(byp_key);
+            mf->set_l1d_rd_byp_activated();
+            m_l1d_rd_byp_activated_times[byp_key]++;
+            assert(hit_l1d_bypassed_item(byp_key, mf));
+          } else {
+            if (m_trashed_reqs.size() >= m_config.m_max_bypasses) {
+              // nothing
+              if (DTRACE(EVAL_TRASHED_REQ_SIZE)) {
+                fprintf(Trace::out, "%llu m_trashed_reqs reaches m_max_bypasses:%u. "
+                  "Abandon insert key:<streamID:%llu, kernel:%u, sector_addr:%#llx>\n",
+                  time, m_config.m_max_bypasses, mf->get_streamID(), m_gpu->m_kernel_id, sector_addr);
+              }
+            } else {
+              m_trashed_reqs.insert(byp_key);
+              mf->set_l1d_rd_byp_activated(); // m_l1d_rd_byp_change = 2 = 2'b10
+              m_l1d_rd_byp_activated_times[byp_key]++;
+              assert(hit_l1d_bypassed_item(byp_key, mf));
+              if (DTRACE(ACTIVATE_L1D_BYPASS)) {
+                fprintf(Trace::out, "%llu ACTIVATE_L1D_BYPASS for byp_key: "
+                  "<streamID:%llu, kernel:%u, block_addr:%#llx> mf: <wr:%u, atomic:%u>\n", 
+                  time, mf->get_streamID(), m_gpu->m_kernel_id, addr, 
+                  mf->is_write(), mf->isatomic());
+              }
+            }
           }
         }
       }
@@ -4583,24 +4619,9 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
         if (DTRACE(CACHE_EVENT)) {
           dumpCacheEvent(time, "::fill", "ap:ON_MISS m_tag_array->fill", mf);
         }
-        if (e->second.m_cache_index == (u32) - 1) {
-          if (DTRACE(L1D_BYPASS_WRONG_CASE)) {
-            fprintf(Trace::out, "%llu wrong case! "
-              "!byp_key:<streamID:%llu, kernel:%u, sector_addr:%#llx> "
-              "sends cache_index = -1 to m_tag_array->fill\n", 
-              time, byp_key.stream_id, byp_key.kernel, byp_key.sector_addr);
-          }
-        }
+        assert(e->second.m_cache_index != (u32) - 1);
         m_tag_array->fill(e->second.m_cache_index, time, mf);
       } else {
-        // [Bugfix]
-        // <uid, addr> matches does not mean req_uid also matches
-        // mf indicates specific req_uid.
-        // Hence, mf->get_l1d_bypass_noalloc() might failed here for detecting a different req_uid
-        // req_uid:184804 != req_uid:184805
-        // 37245 In tag_array::probe, m_trashed_reqs.insert trashed mf <req_uid:184804 uid:174712 block_addr:0x7fc72575dd80> addr:0x7fc72575dda0. set_l1d_bypass_noalloc(true)
-        // 38003 L1D stage(baseline_cache::fill) cache_event(Why hit trashed_addresses but !get_l1d_bypass_noalloc ?) 
-        // mf:{TPC:0 SM:0 WARP:7 req_uid:184805 uid:174712 block_addr:0x7fc72575dd80 addr:0x7fc72575dd80 acc_type:GLOBAL_ACC_R pos:IN_SHADER_LDST_RESPONSE_FIFO}
         if (DTRACE(TRACE_BYPASSED_L1D_PKT) || DTRACE(HIT_L1D_BYPASSED_ITEM)) {
           dumpCacheEvent(time, "baseline_cache::fill", 
             "HIT_L1D_BYPASSED_ITEM L1D bypassed m_tag_array->fill", mf);
