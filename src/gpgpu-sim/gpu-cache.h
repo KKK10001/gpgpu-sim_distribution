@@ -46,6 +46,9 @@
 
 #define MAX_DEFAULT_CACHE_SIZE_MULTIBLIER 4
 
+typedef unsigned u32;
+typedef unsigned long long u64;
+
 enum cache_block_state { 
   INVALID = 0, RESERVED, VALID, MODIFIED,
   NUM_CACHE_BLOCK_STATES
@@ -210,6 +213,8 @@ struct cache_block_t {
   cache_block_t() {
     m_tag = 0;
     m_block_addr = 0;
+    m_stream_id = (u64) - 1;
+    m_kernel = (u32) - 1;
     m_owner = (unsigned) - 1;
     m_was_recorded_in_mshr = false;
     m_n_reused = 0;
@@ -217,6 +222,7 @@ struct cache_block_t {
   }
 
   virtual void allocate(new_addr_type tag, new_addr_type block_addr,
+                        u64 stream_id, u32 kernel,
                         unsigned long long time,
                         mem_access_sector_mask_t sector_mask) = 0;
   virtual void fill(
@@ -295,6 +301,8 @@ struct cache_block_t {
 
   new_addr_type m_tag;
   new_addr_type m_block_addr;
+  u64 m_stream_id;
+  u32 m_kernel;
   unsigned m_owner; // warp_id  
   unsigned m_n_reused;
   unsigned m_n_rereferenced;
@@ -324,10 +332,14 @@ struct line_cache_block : public cache_block_t {
     m_set_readable_on_fill = false;
     m_readable = true;
   }
-  void allocate(new_addr_type tag, new_addr_type block_addr, unsigned long long time,
+  void allocate(new_addr_type tag, new_addr_type block_addr, 
+                u64 stream_id, u32 kernel,
+                unsigned long long time,
                 mem_access_sector_mask_t sector_mask) {
     m_tag = tag;
     m_block_addr = block_addr;
+    m_stream_id = stream_id;
+    m_kernel = kernel;
     m_alloc_time = time;
     m_last_access_time = time;
     m_fill_time = 0;
@@ -553,7 +565,10 @@ struct sector_cache_block : public cache_block_t {
   }  
 
   virtual void allocate(new_addr_type tag, new_addr_type block_addr,
+                        u64 stream_id, u32 kernel,
                         unsigned long long time, mem_access_sector_mask_t sector_mask) {
+    m_stream_id = stream_id;
+    m_kernel = kernel;
     allocate_line(tag, block_addr, time, sector_mask);
   }
 
