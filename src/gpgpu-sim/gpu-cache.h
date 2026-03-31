@@ -164,27 +164,49 @@ enum cache_gpu_level {
 };
 
 struct evicted_block_info {
+  u64 m_stream_id;
+  u32 m_kernel;
   new_addr_type m_block_addr;
   unsigned m_modified_size;
   mem_access_byte_mask_t m_byte_mask;
   mem_access_sector_mask_t m_sector_mask;
   evicted_block_info() {
+    m_stream_id = (u64) - 1;
+    m_kernel    = (u32) - 1;
     m_block_addr = 0;
     m_modified_size = 0;
     m_byte_mask.reset();
     m_sector_mask.reset();
   }
-  void set_info(new_addr_type block_addr, unsigned modified_size) {
+  void set_info(
+    u64 stream_id, u32 kernel,
+    new_addr_type block_addr, unsigned modified_size) {
+    m_stream_id  = stream_id;
+    m_kernel     = kernel;
     m_block_addr = block_addr;
     m_modified_size = modified_size;
+    if (DTRACE(INIT_ALLOCATED_LINE)) {
+      fprintf(Trace::out, "INIT_ALLOCATED_LINE %s"
+        "m_stream_id = %llu, kernel = %u, block_addr = %#llx\n",
+        __func__, m_stream_id, m_kernel, m_block_addr);
+    }
   }
-  void set_info(new_addr_type block_addr, unsigned modified_size,
-                mem_access_byte_mask_t byte_mask,
-                mem_access_sector_mask_t sector_mask) {
+  void set_info(
+    u64 stream_id, u32 kernel,
+    new_addr_type block_addr, unsigned modified_size,
+    mem_access_byte_mask_t byte_mask,
+    mem_access_sector_mask_t sector_mask) {
+    m_stream_id  = stream_id;
+    m_kernel     = kernel;
     m_block_addr = block_addr;
     m_modified_size = modified_size;
     m_byte_mask = byte_mask;
     m_sector_mask = sector_mask;
+    if (DTRACE(INIT_ALLOCATED_LINE)) {
+      fprintf(Trace::out, "INIT_ALLOCATED_LINE %s"
+        "m_stream_id = %llu, kernel = %u, block_addr = %#llx\n",
+        __func__, m_stream_id, m_kernel, m_block_addr);
+    }    
   }
 };
 
@@ -215,6 +237,7 @@ struct cache_block_t {
     m_block_addr = 0;
     m_stream_id = (u64) - 1;
     m_kernel = (u32) - 1;
+    m_allocated = false;
     m_owner = (unsigned) - 1;
     m_was_recorded_in_mshr = false;
     m_n_reused = 0;
@@ -303,6 +326,7 @@ struct cache_block_t {
   new_addr_type m_block_addr;
   u64 m_stream_id;
   u32 m_kernel;
+  bool m_allocated;
   unsigned m_owner; // warp_id  
   unsigned m_n_reused;
   unsigned m_n_rereferenced;
@@ -339,7 +363,7 @@ struct line_cache_block : public cache_block_t {
     m_tag = tag;
     m_block_addr = block_addr;
     m_stream_id = stream_id;
-    m_kernel = kernel;
+    m_kernel = kernel;    
     m_alloc_time = time;
     m_last_access_time = time;
     m_fill_time = 0;
@@ -349,6 +373,11 @@ struct line_cache_block : public cache_block_t {
     m_set_modified_on_fill = false;
     m_set_readable_on_fill = false;
     m_set_byte_mask_on_fill = false;
+    if (DTRACE(INIT_ALLOCATED_LINE)) {
+      fprintf(Trace::out, "INIT_ALLOCATED_LINE %s"
+        "m_stream_id = %llu, kernel = %u, block_addr = %#llx\n",
+        __func__, m_stream_id, m_kernel, m_block_addr);
+    }    
   }
 
   virtual void fill(
@@ -562,23 +591,39 @@ struct sector_cache_block : public cache_block_t {
     m_max_rrpv = get_max_rrpv();
 
     m_dirty_byte_mask.reset();
+
+    m_stream_id = (u64) - 1;
+    m_kernel    = (u32) - 1;
+    m_allocated = false;    
   }  
 
   virtual void allocate(new_addr_type tag, new_addr_type block_addr,
                         u64 stream_id, u32 kernel,
                         unsigned long long time, mem_access_sector_mask_t sector_mask) {
-    m_stream_id = stream_id;
-    m_kernel = kernel;
-    allocate_line(tag, block_addr, time, sector_mask);
+    // m_stream_id = stream_id;
+    // m_kernel = kernel;
+    // m_allocated = true;
+    allocate_line(stream_id, kernel, tag, block_addr, time, sector_mask);
   }
 
-  void allocate_line(new_addr_type tag, new_addr_type block_addr, unsigned long long time,
-                     mem_access_sector_mask_t sector_mask) {
+  void allocate_line(
+    u64 stream_id, u32 kernel,
+    new_addr_type tag, new_addr_type block_addr, unsigned long long time,
+    mem_access_sector_mask_t sector_mask) {
     // allocate a new line
     // assert(m_block_addr != 0 && m_block_addr != block_addr);
     init();
+    m_stream_id = stream_id;
+    m_kernel = kernel;
+    m_allocated = true;    
     m_tag = tag;
     m_block_addr = block_addr;
+
+    if (DTRACE(INIT_ALLOCATED_LINE)) {
+      fprintf(Trace::out, "INIT_ALLOCATED_LINE %s "
+        "m_stream_id = %llu, kernel = %u, block_addr = %#llx\n",
+        __func__, m_stream_id, m_kernel, m_block_addr);
+    }
 
     unsigned sidx = get_sector_index(sector_mask);
 
@@ -1970,6 +2015,8 @@ class tag_array {
 
   // std::unordered_set<BYPASS_KEY, BYPASS_KEY_HASH> m_trashed_reqs;
   std::set<BYPASS_KEY> m_trashed_reqs;
+  std::set<BYPASS_KEY> m_incoming_bypasses;
+  std::set<BYPASS_KEY> m_victim_bypasses;
 
   typedef tr1_hash_map<new_addr_type, u32> line_table;
   line_table pending_lines;
@@ -2661,7 +2708,8 @@ class baseline_cache : public cache_t {
   void invalidate() { m_tag_array->invalidate(); }
   void print(FILE *fp, unsigned &accesses, unsigned &misses) const;
   void display_state(FILE *fp) const;
-  virtual void dumpCacheEvent(unsigned long long time, const char* stage, const char* event, mem_fetch *mf);
+  virtual void dumpCacheEvent(
+    u64 time, const char* stage, const char* event, mem_fetch *mf, bool short_info = false);
   virtual void dumpMSHREvent(unsigned long long time, mem_fetch *mf, new_addr_type mshr_addr, bool is_new_entry);
   virtual void dumpMissQueue(unsigned long long time, const char* stage, const char* event, mem_fetch *mf);
 

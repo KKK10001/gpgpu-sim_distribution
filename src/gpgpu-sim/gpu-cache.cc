@@ -494,6 +494,8 @@ tag_array::tag_array(gpgpu_sim *gpu, cache_config &config, int core_id, int type
   init(core_id, type_id);
 
   m_trashed_reqs.clear();
+  m_incoming_bypasses.clear();
+  m_victim_bypasses.clear();
 }
 
 void tag_array::init(int core_id, int type_id) {  
@@ -1325,7 +1327,10 @@ enum cache_request_status tag_array::probe(
   victim->inc_total_evictions();
   if (m_is_l1d) {
     m_gpu->get_shader_stats()->m_l1d_victims[mf->get_sid()]++;
-    // m_victim_cache.push_back(victim);
+    if (DTRACE(L1D_VICTIMS)) {
+      fprintf(Trace::out, "%llu L1D_VICTIMS <streamID:%llu kernel:%u block_addr:%#llx>\n",
+        time, mf->get_streamID(), m_gpu->m_kernel_id, victim_addr);      
+    }
   }
 
   if (m_config.m_warp_interfere_aware == 'F') {
@@ -1369,11 +1374,16 @@ enum cache_request_status tag_array::probe(
       m_l1d_fill_to_evict_lines[loc_key].insert(addr);
     }
 
-    bool byp_key_hit  = false;
-    bool new_byp_cand = false;    
-    BYPASS_KEY byp_key(mf->get_streamID(), m_gpu->m_kernel_id, addr);
+    bool income_key_hit = false;
+    bool victim_key_hit = false;
+
+    bool new_byp_cand   = false;
+    bool new_incom_byp  = false;
+    bool new_victim_byp = false;
+
+    BYPASS_KEY incoming_key(mf->get_streamID(), m_gpu->m_kernel_id, addr);
     BYPASS_KEY victim_key(victim->m_stream_id, victim->m_kernel, victim_addr);
-    if (m_l1d_occupied.find(byp_key) != m_l1d_occupied.end() && m_l1d_occupied[byp_key]) {
+    if (m_l1d_occupied.find(incoming_key) != m_l1d_occupied.end() && m_l1d_occupied[incoming_key]) {
       assert(0); // bypassed L1D item should never be probed again
       if (DTRACE(REFILL_LFB_BYP_FILL_TAG)) {
         fprintf(Trace::out, "%llu L1D bypassed item was refilled, "
@@ -1382,13 +1392,23 @@ enum cache_request_status tag_array::probe(
       }
     }
 
-    auto it_f2e_ln_key = m_l1d_rd_fill_to_evict_gap.find(victim_key);
-    if (it_f2e_ln_key != m_l1d_rd_fill_to_evict_gap.end()) {
-      byp_key_hit = true;
-    } else {
+    auto it_income_key = m_l1d_rd_fill_to_evict_gap.find(incoming_key);
+    auto it_victim_key = m_l1d_rd_fill_to_evict_gap.find(victim_key);
+    if (it_income_key != m_l1d_rd_fill_to_evict_gap.end()) {
+      income_key_hit = true;
+    }
+    if (it_victim_key != m_l1d_rd_fill_to_evict_gap.end()) {
+      victim_key_hit = true;
+    }
+    if (!income_key_hit && !victim_key_hit) {
       for (auto& record : m_l1d_rd_fill_to_evict_gap) {
-        if (record.first.stream_id == victim->m_stream_id && 
-          record.first.kernel == victim->m_kernel) {
+        bool new_incom_byp = 
+          record.first.stream_id == mf->get_streamID() &&
+          record.first.kernel == m_gpu->m_kernel_id;
+        bool new_victim_byp = 
+          record.first.stream_id == victim->m_stream_id &&
+          record.first.kernel == victim->m_kernel;
+        if (new_incom_byp || new_victim_byp) {
           new_byp_cand = true;
         }
       }
@@ -1396,42 +1416,115 @@ enum cache_request_status tag_array::probe(
 
     set_l1d_rd_fill_to_evict_gap(victim_key, time - get_l1d_rd_fill_time(victim_key));
 
-    if (new_byp_cand) { // The 1st time evict after being filled
+    // [[maybe_unused]] const float incoming_byp_ratio = 0.0;
+    // [[maybe_unused]] const float incoming_byp_ratio = 0.2; // 120.354 (-0.091%)	l1d_byp_T_F_T_40_3_3_lrr_srad_v2
+    // [[maybe_unused]] const float incoming_byp_ratio = 0.3; // 120.620 (+0.130%)	l1d_byp_T_F_T_40_3_3_incoming_030_lrr_srad_v2	
+    // [[maybe_unused]] const float incoming_byp_ratio = 0.7;
+    // [[maybe_unused]] const float incoming_byp_ratio = 0.5;
+    // [[maybe_unused]] const float incoming_byp_ratio = 1.0;
+    if (new_byp_cand) { // Just update, and nothing to do with bypass decision
       set_l1d_evict_time(victim_key, time);
       average_l1d_rd_fill_to_evict_gap(victim_key);      
-      m_l1d_rd_bypass_confidence[victim_key] = 0; // Initialize confidence
-    } else if (byp_key_hit) {
+      m_l1d_rd_bypass_confidence[victim_key] = 0;
+    } 
+    else if (income_key_hit) {
       set_l1d_evict_time(victim_key, time);
       average_l1d_rd_fill_to_evict_gap(victim_key);
-      
-      // Begin of eviction-bound based scheme
+
+      // Begin of total-evictions-aware scheme
       if (m_config.m_total_evictions_aware == 'T') {
-        if (get_l1d_evictions(victim_key) > m_config.m_max_evictions_bound) {
+        // if (get_l1d_evictions(incoming_key) > m_config.m_max_evictions_bound) {
+        // if (get_l1d_evictions(incoming_key) > 2) {
+        if (get_l1d_evictions(incoming_key) > 3) {
           if (m_config.m_infinite_bypasses == 'T') {
+            m_incoming_bypasses.insert(incoming_key);
+            m_trashed_reqs.insert(incoming_key);
+            mf->set_l1d_rd_byp_activated();
+            m_l1d_rd_byp_activated_times[incoming_key]++;
+            assert(hit_l1d_bypassed_item(incoming_key, mf));        
+          } else {
+            if (m_trashed_reqs.size() < m_config.m_max_bypasses) {
+            // if (m_incoming_bypasses.size() < (incoming_byp_ratio * m_config.m_max_bypasses) &&
+            //     m_trashed_reqs.size() < m_config.m_max_bypasses) {
+            // if (m_incoming_bypasses.size() < m_config.m_max_bypasses &&
+            //     m_trashed_reqs.size() < 2 * m_config.m_max_bypasses) {
+              m_incoming_bypasses.insert(incoming_key); // -gpgpu_cache:l1d_bypass T,F,T,40,3,3 reaches here
+              m_trashed_reqs.insert(incoming_key);            
+              mf->set_l1d_rd_byp_activated();
+              m_l1d_rd_byp_activated_times[incoming_key]++;
+              assert(hit_l1d_bypassed_item(incoming_key, mf));
+            }
+          }
+        }
+      } // End of total-evictions-aware scheme
+
+      // // Begin of locality-aware scheme
+      // if (get_l1d_rd_fill_to_evict_gap(incoming_key) < get_avg_l1d_rd_fill_to_evict_gap(incoming_key)) {
+      //   inc_conf_cnt(m_l1d_rd_bypass_confidence[incoming_key], m_config.m_trash_conf_cnt_bound, 1);
+      //   if (m_l1d_rd_bypass_confidence[incoming_key] == m_config.m_trash_conf_cnt_bound) {
+      //     if (m_config.m_infinite_bypasses == 'T') {
+      //       m_incoming_bypasses.insert(incoming_key);
+      //       m_trashed_reqs.insert(incoming_key);
+      //       mf->set_l1d_rd_byp_activated();
+      //       m_l1d_rd_byp_activated_times[incoming_key]++;
+      //       assert(hit_l1d_bypassed_item(incoming_key, mf));            
+      //     } else {
+      //       // if (m_trashed_reqs.size() < m_config.m_max_bypasses) {
+      //       if (m_incoming_bypasses.size() < (incoming_byp_ratio * m_config.m_max_bypasses) &&
+      //           m_trashed_reqs.size() < m_config.m_max_bypasses) {
+      //         m_incoming_bypasses.insert(incoming_key);        
+      //         m_trashed_reqs.insert(incoming_key);
+      //         mf->set_l1d_rd_byp_activated();
+      //         m_l1d_rd_byp_activated_times[incoming_key]++;
+      //         assert(hit_l1d_bypassed_item(incoming_key, mf));
+      //       }
+      //     }
+      //   }
+      // } // End of locality-aware scheme
+    } else if (victim_key_hit) {
+      set_l1d_evict_time(victim_key, time);
+      average_l1d_rd_fill_to_evict_gap(victim_key);  
+      // Begin of total-evictions-aware scheme
+      const char* insert_src = "xx";
+      if (m_config.m_total_evictions_aware == 'T') {
+        if (get_l1d_evictions(victim_key) > m_config.m_max_evictions_bound) {          
+          if (m_config.m_infinite_bypasses == 'T') {
+            m_victim_bypasses.insert(victim_key);
             m_trashed_reqs.insert(victim_key);       
             mf->set_l1d_rd_byp_activated(); // m_l1d_rd_byp_change = 2 = 2'b10
             m_l1d_rd_byp_activated_times[victim_key]++;
             assert(hit_l1d_bypassed_item(victim_key, mf));
+            if (DTRACE(INSERTED_BYP_ITEM)) {
+              insert_src = "scheme1 infinite_bypasses";
+              fprintf(Trace::out, "%llu caller:%s %s INSERTED_BYP_ITEM "
+                "<streamID:%llu, kernel:%u, block_addr:%#llx> victim->m_allocated = %u\n", 
+                time, caller.c_str(), insert_src, victim_key.stream_id, victim_key.kernel, victim_key.sector_addr,
+                victim->m_allocated);
+            }
           } else {
-            if (m_trashed_reqs.size() >= m_config.m_max_bypasses) {
-              // nothing
-              if (DTRACE(EVAL_TRASHED_REQ_SIZE)) {
-                fprintf(Trace::out, "%llu m_trashed_reqs reaches m_max_bypasses:%u. "
-                  "Abandon insert victim_key:<streamID:%llu, kernel:%u, victim_addr:%#llx>\n",
-                  time, m_config.m_max_bypasses, mf->get_streamID(), m_gpu->m_kernel_id, victim_addr);
-              }
-            } else {
+            if (m_trashed_reqs.size() < m_config.m_max_bypasses) {
+            // if (m_victim_bypasses.size() < ((1 - incoming_byp_ratio) * m_config.m_max_bypasses) &&
+            //     m_trashed_reqs.size() < m_config.m_max_bypasses) {
+            // if (m_victim_bypasses.size() < m_config.m_max_bypasses &&
+            //     m_trashed_reqs.size() < 2 * m_config.m_max_bypasses) {
+              m_victim_bypasses.insert(victim_key);
               m_trashed_reqs.insert(victim_key);            
               mf->set_l1d_rd_byp_activated(); // m_l1d_rd_byp_change = 2 = 2'b10
               m_l1d_rd_byp_activated_times[victim_key]++;
               assert(hit_l1d_bypassed_item(victim_key, mf));
+              if (DTRACE(INSERTED_BYP_ITEM)) {
+                insert_src = "scheme1 finite_bypasses";
+                fprintf(Trace::out, "%llu caller:%s %s INSERTED_BYP_ITEM "
+                  "<streamID:%llu, kernel:%u, block_addr:%#llx> victim->m_allocated = %u\n", 
+                  time, caller.c_str(), insert_src, victim_key.stream_id, victim_key.kernel, victim_key.sector_addr,
+                  victim->m_allocated);
+              }                
             }
           }
-        }
-      } 
-      // End of eviction-bound based scheme
+        } // victim_key_hit == True
+      } // End of total-evictions-aware scheme
 
-      // Begin of sat-cnt based scheme
+      // Begin of locality-aware scheme
       // Inc confidence && possible insert into trash set
       if (get_l1d_rd_fill_to_evict_gap(victim_key) < get_avg_l1d_rd_fill_to_evict_gap(victim_key)) {
         inc_conf_cnt(m_l1d_rd_bypass_confidence[victim_key], m_config.m_trash_conf_cnt_bound, 1);
@@ -1441,31 +1534,36 @@ enum cache_request_status tag_array::probe(
             mf->set_l1d_rd_byp_activated();
             m_l1d_rd_byp_activated_times[victim_key]++;
             assert(hit_l1d_bypassed_item(victim_key, mf));
+            if (DTRACE(INSERTED_BYP_ITEM)) {
+              insert_src = "scheme2 infinite_bypasses";
+              fprintf(Trace::out, "%llu caller:%s %s INSERTED_BYP_ITEM "
+                "<streamID:%llu, kernel:%u, block_addr:%#llx> victim->m_allocated = %u\n", 
+                time, caller.c_str(), insert_src, victim_key.stream_id, victim_key.kernel, victim_key.sector_addr,
+                victim->m_allocated);
+            }            
           } else {
-            if (m_trashed_reqs.size() >= m_config.m_max_bypasses) {
-              // nothing
-              if (DTRACE(EVAL_TRASHED_REQ_SIZE)) {
-                fprintf(Trace::out, "%llu m_trashed_reqs reaches m_max_bypasses:%u. "
-                  "Abandon insert victim_key:<streamID:%llu, kernel:%u, victim_addr:%#llx>\n",
-                  time, m_config.m_max_bypasses, 
-                  mf->get_streamID(), m_gpu->m_kernel_id, victim_addr);
-              }
-            } else {
+            if (m_trashed_reqs.size() < m_config.m_max_bypasses) {
+            // if (m_victim_bypasses.size() < ((1 - incoming_byp_ratio) * m_config.m_max_bypasses) &&
+            //     m_trashed_reqs.size() < m_config.m_max_bypasses) {
+            // if (m_victim_bypasses.size() < m_config.m_max_bypasses &&
+            //     m_trashed_reqs.size() < 2 * m_config.m_max_bypasses) {            
+              m_victim_bypasses.insert(victim_key);        
               m_trashed_reqs.insert(victim_key);
               mf->set_l1d_rd_byp_activated(); // m_l1d_rd_byp_change = 2 = 2'b10
               m_l1d_rd_byp_activated_times[victim_key]++;
               assert(hit_l1d_bypassed_item(victim_key, mf));
-              if (DTRACE(ACTIVATE_L1D_BYPASS)) {
-                fprintf(Trace::out, "%llu ACTIVATE_L1D_BYPASS for victim_key: "
-                  "<streamID:%llu, kernel:%u, victim_addr:%#llx>\n", 
-                  time, mf->get_streamID(), m_gpu->m_kernel_id, victim_addr);
-              }
+              if (DTRACE(INSERTED_BYP_ITEM)) {
+                insert_src = "scheme2 finite_bypasses";
+                fprintf(Trace::out, "%llu caller:%s %s INSERTED_BYP_ITEM "
+                  "<streamID:%llu, kernel:%u, block_addr:%#llx> victim->m_allocated = %u\n", 
+                  time, caller.c_str(), insert_src, victim_key.stream_id, victim_key.kernel, victim_key.sector_addr,
+                  victim->m_allocated);
+              }              
             }
           }
         }
-      }
-      // End of sat-cnt based scheme
-    }
+      } // End of locality-aware scheme
+    } // victim_key_hit = True
         
     m_l1d_evictions[victim_key]++;
 
@@ -1597,10 +1695,13 @@ enum cache_request_status tag_array::access(new_addr_type raw_addr,
       if (m_config.m_alloc_policy == ON_MISS) {
         if (m_lines[idx]->is_modified_line()) {
           wb = true;
-          evicted.set_info(m_lines[idx]->m_block_addr,
-                           m_lines[idx]->get_modified_size(),
-                           m_lines[idx]->get_dirty_byte_mask(),
-                           m_lines[idx]->get_dirty_sector_mask());
+          evicted.set_info(
+            m_lines[idx]->m_stream_id,
+            m_lines[idx]->m_kernel,
+            m_lines[idx]->m_block_addr,
+            m_lines[idx]->get_modified_size(),
+            m_lines[idx]->get_dirty_byte_mask(),
+            m_lines[idx]->get_dirty_sector_mask());
           m_dirty--;
         }
         m_lines[idx]->allocate(m_config.tag(addr), m_config.block_addr(addr),
@@ -4629,6 +4730,12 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
         if (DTRACE(CACHE_EVENT)) {
           dumpCacheEvent(time, "::fill", "ap:ON_MISS m_tag_array->fill", mf);
         }
+        if (DTRACE(NOT_HIT_L1D_BYPASSED_ITEM)) {
+          fprintf(Trace::out, "NOT_HIT_L1D_BYPASSED_ITEM "
+            "<streamID:%llu kernel:%u block_addr:%#llx>\n", 
+            mf->get_streamID(), m_gpu->m_kernel_id, m_config.block_addr(e->second.m_addr));
+          dumpCacheEvent(time, "baseline_cache::fill", "NOT_HIT_L1D_BYPASSED_ITEM", mf, true);
+        }
         assert(e->second.m_cache_index != (u32) - 1);
         m_tag_array->fill(e->second.m_cache_index, time, mf);
       } else {
@@ -4640,6 +4747,9 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
     } else {
       if (DTRACE(CACHE_EVENT)) {
         dumpCacheEvent(time, "::fill", "ap:ON_MISS m_tag_array->fill", mf);
+      }
+      if (DTRACE(L1D_FILLS)) {
+        dumpCacheEvent(time, "::fill", "ap:ON_MISS m_tag_array->fill", mf, true);
       }
       m_tag_array->fill(e->second.m_cache_index, time, mf);
     }
@@ -4761,7 +4871,7 @@ void baseline_cache::display_state(FILE *fp) const {
 }
 
 void baseline_cache::dumpCacheEvent(
-  unsigned long long time, const char* stage, const char* event, mem_fetch *mf) {
+  u64 time, const char* stage, const char* event, mem_fetch *mf, bool short_info) {
 
   const char* cache_name = m_config.get_cache_name(); // {L1D, L2, ...} with no suffix
   std::string suffix = "";
@@ -4779,17 +4889,27 @@ void baseline_cache::dumpCacheEvent(
       time, cache_name, suffix.c_str(), stage, event
     );
   } else {
-    fprintf(Trace::out, "%llu %s%s stage(%s) cache_event(%s) "
-      "mf:{streamID:%llu kernel:%u TPC:%u SM:%u WARP:%u req_uid:%u uid:%u block_addr:%#llx addr:%#llx acc_type:%s pos:%s}\n", 
-      time, cache_name, suffix.c_str(), stage, event,
-      mf->get_streamID(), m_gpu->m_kernel_id,
-      mf->get_tpc(), mf->get_sid(), mf->get_wid(), 
-      mf->get_request_uid(), mf->get_inst().get_uid(), 
-      m_config.block_addr(mf->get_addr()),
-      mf->get_addr(), // mf info
-      mem_access_type_str(mem_access_type(mf->get_access_type())),
-      mf->mem_fetch_status_str(mf->get_status())
-    );    
+    if (short_info) {
+      fprintf(Trace::out, "%llu %s%s stage(%s) cache_event(%s) "
+        "<streamID:%llu kernel:%u req_uid:%u uid:%u block_addr:%#llx addr:%#llx>\n", 
+        time, cache_name, suffix.c_str(), stage, event,
+        mf->get_streamID(), m_gpu->m_kernel_id,
+        mf->get_request_uid(), mf->get_inst().get_uid(), 
+        m_config.block_addr(mf->get_addr()),
+        mf->get_addr());
+    } else {
+      fprintf(Trace::out, "%llu %s%s stage(%s) cache_event(%s) "
+        "mf:{streamID:%llu kernel:%u TPC:%u SM:%u WARP:%u req_uid:%u uid:%u block_addr:%#llx addr:%#llx acc_type:%s pos:%s}\n", 
+        time, cache_name, suffix.c_str(), stage, event,
+        mf->get_streamID(), m_gpu->m_kernel_id,
+        mf->get_tpc(), mf->get_sid(), mf->get_wid(), 
+        mf->get_request_uid(), mf->get_inst().get_uid(), 
+        m_config.block_addr(mf->get_addr()),
+        mf->get_addr(), // mf info
+        mem_access_type_str(mem_access_type(mf->get_access_type())),
+        mf->mem_fetch_status_str(mf->get_status())
+      );  
+    }
   }
 }
 
