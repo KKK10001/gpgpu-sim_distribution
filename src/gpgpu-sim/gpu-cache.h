@@ -56,6 +56,7 @@ enum cache_block_state {
 
 enum cache_request_status {
   HIT = 0,
+  VC_HIT, // victim cache hit
   HIT_RESERVED,
   MISS,
   RESERVATION_FAIL,
@@ -1449,10 +1450,13 @@ class cache_config {
   char *m_mshr_config_string;
   char *m_rrpv_config_string;
   char *m_rep_enhance_string;
+  char *m_victim_cache_config_string;
   char *m_bypass_config_string;
   char *m_config_stringPrefL1;
   char *m_config_stringPrefShared;
 
+  char m_victim_cache_enable;
+  u32 m_victim_cache_entries;
   char m_bypass_enable;
   char m_infinite_bypasses;
   char m_total_evictions_aware;
@@ -1571,7 +1575,7 @@ class l1d_cache_config : public cache_config {
   unsigned l1_banks_hashing_function;
   unsigned m_unified_cache_size;
 
-  void extra_config(char* bypass_config);
+  void extra_config(char* bypass_config, char* victim_cache_config);
   virtual unsigned get_max_cache_multiplier() const;
 };
 
@@ -1754,6 +1758,18 @@ struct BYPASS_KEY
     return false;
   }
 
+  // bool operator<(const BYPASS_KEY& other) const {
+  //   if (kernel != other.kernel) return kernel < other.kernel;
+  //   if (sector_addr != other.sector_addr) return sector_addr < other.sector_addr;
+  //   return false;
+  // }  
+
+  // Check if only address being reserved would help improve performance.
+  // bool operator<(const BYPASS_KEY& other) const {
+  //   if (sector_addr != other.sector_addr) return sector_addr < other.sector_addr;
+  //   return false;
+  // }
+
   bool operator==(const BYPASS_KEY& other) const {
     return stream_id == other.stream_id &&
       kernel == other.kernel &&
@@ -1770,6 +1786,7 @@ struct BYPASS_KEY_HASH {
   }
 };
 
+class baseline_cache;
 class tag_array {
   friend class baseline_cache;
   friend class data_cache;
@@ -1913,6 +1930,7 @@ class tag_array {
 
   // addr is block_addr
   enum cache_request_status probe(const std::string& caller,
+                                  baseline_cache* cache,
                                   new_addr_type raw_addr,
                                   new_addr_type addr /* block_addr */, unsigned &idx,
                                   mem_fetch *mf, bool is_write,
@@ -1921,6 +1939,7 @@ class tag_array {
                                   WARP_INTERFERE_RECORD& warp_interfere_record,
                                   bool probe_mode = false);
   enum cache_request_status probe(const std::string& caller,
+                                  baseline_cache* cache,
                                   new_addr_type raw_addr,
                                   new_addr_type addr /* block_addr */, unsigned &idx,
                                   mem_access_sector_mask_t mask, bool is_write,
@@ -1929,19 +1948,23 @@ class tag_array {
                                   bool& inter_warp_has_interference, 
                                   WARP_INTERFERE_RECORD& warp_interfere_record,
                                   mem_fetch *mf = NULL);
-  enum cache_request_status access(new_addr_type raw_addr, 
-                                   new_addr_type addr /* block_addr */, unsigned long long time,
-                                   unsigned &idx, mem_fetch *mf);
-  enum cache_request_status access(new_addr_type raw_addr,
-                                   new_addr_type addr /* block_addr */, unsigned long long time,
-                                   unsigned &idx, bool &wb,
-                                   evicted_block_info &evicted, mem_fetch *mf);
+  enum cache_request_status access(
+    baseline_cache* cache,
+    new_addr_type raw_addr, 
+    new_addr_type addr /* block_addr */, unsigned long long time,
+    unsigned &idx, mem_fetch *mf);
+  enum cache_request_status access(
+    baseline_cache* cache,
+    new_addr_type raw_addr,
+    new_addr_type addr /* block_addr */, unsigned long long time,
+    unsigned &idx, bool &wb,
+    evicted_block_info &evicted, mem_fetch *mf);
   void inc_rrpv_for_one_set(unsigned set_index);
   bool already_has_max_rrpv_in_one_set(unsigned set_index);
 
-  void fill(new_addr_type addr, unsigned long long time, mem_fetch *mf, bool is_write);
-  void fill(unsigned index, unsigned long long time, mem_fetch *mf);
-  void fill(new_addr_type addr, unsigned long long time, mem_access_sector_mask_t mask,
+  void fill(baseline_cache* cache, new_addr_type addr, unsigned long long time, mem_fetch *mf, bool is_write);
+  void fill(baseline_cache* cache, unsigned index, unsigned long long time, mem_fetch *mf);
+  void fill(baseline_cache* cache, new_addr_type addr, unsigned long long time, mem_access_sector_mask_t mask,
             mem_access_byte_mask_t byte_mask, bool is_write,
             mem_fetch *mf = NULL);
   void reset_record_in_mshr(unsigned index);
@@ -1981,7 +2004,7 @@ class tag_array {
   gpgpu_sim *m_gpu;
   cache_config &m_config;
 
-  cache_block_t **m_lines; /* nbanks x nset x assoc lines in total */
+  cache_block_t **m_lines; /* nbanks x nset x assoc lines in total */  
   unsigned m_total_records_in_mshr;
 
   bool m_is_l1d;
@@ -2013,7 +2036,6 @@ class tag_array {
 
   bool is_used;  // a flag if the whole cache has ever been accessed before
 
-  // std::unordered_set<BYPASS_KEY, BYPASS_KEY_HASH> m_trashed_reqs;
   std::set<BYPASS_KEY> m_trashed_reqs;
   std::set<BYPASS_KEY> m_incoming_bypasses;
   std::set<BYPASS_KEY> m_victim_bypasses;
@@ -2649,6 +2671,7 @@ class baseline_cache : public cache_t {
 
   virtual ~baseline_cache() { delete m_tag_array; }
 
+  std::string get_this_cache_name() const { return m_name; }
   void update_cache_parameters(cache_config &config) {
     m_config = config;
     m_tag_array->update_cache_parameters(config);
@@ -2755,10 +2778,11 @@ class baseline_cache : public cache_t {
   // filling the cache on cudamemcopies. We don't care about anything other than
   // L2 state after the memcopy - so just force the tag array to act as though
   // something is read or written without doing anything else.
-  void force_tag_access(new_addr_type addr, unsigned long long time,
-                        mem_access_sector_mask_t mask) {
+  void force_tag_access(
+    new_addr_type addr, unsigned long long time,
+    mem_access_sector_mask_t mask) {
     mem_access_byte_mask_t byte_mask;
-    m_tag_array->fill(addr, time, mask, byte_mask, true);
+    m_tag_array->fill(this, addr, time, mask, byte_mask, true);
   }
 
  protected:
@@ -2827,7 +2851,8 @@ class baseline_cache : public cache_t {
   // Line Fill Buffer (LFB) to buffer response from downstream when MSHR is disabled
   std::list<mem_fetch *> m_lfb;
   
-  std::list<cache_block_t* > m_victim_cache; // Assume perfect
+  // std::list<new_addr_type> m_victim_cache; // Assume perfect  
+  std::set<new_addr_type> m_victim_cache; // Assume perfect  
 
   /// Checks whether this request can be handled on this cycle. num_miss equals
   /// max # of misses to be handled on this cycle

@@ -71,6 +71,7 @@ void print_hex_128_for_bitset(const std::bitset<128>& bs) {
 const char *cache_request_status_str(enum cache_request_status status) {
   static const char *static_cache_request_status_str[] = {
       "HIT",
+      "VC_HIT",
       "HIT_RESERVED", 
       "MISS",
       "RESERVATION_FAIL",
@@ -260,7 +261,15 @@ unsigned l1d_cache_config::set_bank(new_addr_type addr) const {
                                      l1_banks_log2, l1_banks_hashing_function);
 }
 
-void l1d_cache_config::extra_config(char* bypass_config) {
+void l1d_cache_config::extra_config(
+  char* bypass_config, char* victim_cache_config) {
+  // <victim_cache_enable>
+  [[maybe_unused]] int ntok_victim_cache = 
+    sscanf(victim_cache_config, "%c,%u", &m_victim_cache_enable, &m_victim_cache_entries);
+  fprintf(Trace::out, "----------- L1D victim_cache config is below -----------\n"
+    "m_victim_cache_enable = %c m_victim_cache_entries = %u\n",
+    m_victim_cache_enable, m_victim_cache_entries);
+
   // <bypass_enable>,<infinite_bypasses>,<total_evictions_aware>,
   // <max_bypasses>,<max_evictions_bound>,<trash_conf_cnt_bound>
   [[maybe_unused]] int ntok_bypass = 
@@ -536,6 +545,7 @@ void tag_array::remove_pending_line(mem_fetch *mf) {
 
 enum cache_request_status tag_array::probe(
   const std::string& caller,
+  baseline_cache* cache,
   new_addr_type raw_addr,
   new_addr_type addr /* block_addr */, unsigned &idx,
   mem_fetch *mf, bool is_write,
@@ -560,7 +570,7 @@ enum cache_request_status tag_array::probe(
   }
 
   return probe(
-    final_caller.c_str(), raw_addr, addr, idx, mask, is_write, time, 
+    final_caller.c_str(), cache, raw_addr, addr, idx, mask, is_write, time, 
     probe_mode, inter_warp_has_interference, inter_warp_interfere_record, mf);
 }
 
@@ -881,6 +891,7 @@ void tag_array::dec_conf_cnt(int& conf, const int lower_bound, const int step) {
 
 enum cache_request_status tag_array::probe(
   const std::string& caller,
+  baseline_cache* cache,
   new_addr_type raw_addr,
   new_addr_type addr /* block_addr*/, unsigned &idx,
   mem_access_sector_mask_t mask,
@@ -1084,10 +1095,6 @@ enum cache_request_status tag_array::probe(
       line->inc_total_hits();
       cache_hit = true;
       lines_locality[addr]++;
-
-      if (m_is_l1d && mf) {
-        // m_lines_locality[mf->get_sid()][addr].total_hits++;
-      }
 
       if (m_config.m_replacement_policy == SRRIP) {
         if (m_config.m_srrip_update_policy == srrip_update_policy_t::HP) {
@@ -1323,15 +1330,71 @@ enum cache_request_status tag_array::probe(
 
   assert(idx != (unsigned) - 1);
   cache_block_t *victim = m_lines[idx];
+
+  // Begin of probing L1D victim cache
+  if (m_config.m_victim_cache_enable == 'T') {
+    if (cache->m_victim_cache.find(addr) != cache->m_victim_cache.end()) {
+      if (DTRACE(L1D_VICTIM_CACHE)) {
+        fprintf(Trace::out, "%llu L1D in-coming request "
+          "<stream_id:%llu kernel:%u TPC:%u SM:%u block_addr:%#llx> "
+          "hit in m_victim_cache (size:%u)\n",
+          time, mf->get_streamID(), m_gpu->m_kernel_id, mf->get_tpc(), mf->get_sid(), addr,
+          cache->m_victim_cache.size());
+      }
+      // Fill L1D TAG RAM at once 
+      // no mf was recorded in m_extra_mf_fields, and hence do not call baseline_cache::fill     
+      fill(cache, idx, time, mf);
+      cache->m_victim_cache.erase(addr);
+      return VC_HIT;
+    }
+
+    // When using std::list for search
+    // for (auto& victim : cache->m_victim_cache) {
+    //   if (victim == addr) {
+    //     if (DTRACE(L1D_VICTIM_CACHE)) {
+    //       fprintf(Trace::out, "%llu L1D in-coming request "
+    //         "<stream_id:%llu kernel:%u TPC:%u SM:%u block_addr:%#llx> "
+    //         "hit in m_victim_cache (size:%u)\n",
+    //         time, mf->get_streamID(), m_gpu->m_kernel_id, mf->get_tpc(), mf->get_sid(), addr,
+    //         cache->m_victim_cache.size());
+    //     }
+    //     return HIT;
+    //   }
+    // }
+  } // End of probing L1D victim cache  
+
   u64 victim_addr = victim->m_block_addr;
   victim->inc_total_evictions();
   if (m_is_l1d) {
     m_gpu->get_shader_stats()->m_l1d_victims[mf->get_sid()]++;
+    assert(victim->is_reserved_line() == false);
     if (DTRACE(L1D_VICTIMS)) {
-      fprintf(Trace::out, "%llu L1D_VICTIMS <streamID:%llu kernel:%u block_addr:%#llx>\n",
-        time, mf->get_streamID(), m_gpu->m_kernel_id, victim_addr);      
+      if (victim->is_valid_line()) {
+        fprintf(Trace::out, "%llu L1D evicted valid_line "
+          "<streamID:%llu kernel:%u block_addr:%#llx>\n", time, 
+          mf->get_streamID(), m_gpu->m_kernel_id, victim_addr);
+      }
     }
   }
+  // Begin of filling L1D victim cache
+  if (m_config.m_victim_cache_enable == 'T') {
+    if (victim->is_valid_line()) {
+      const u32 prev_size = cache->m_victim_cache.size();
+      if (prev_size < m_config.m_victim_cache_entries) {
+        cache->m_victim_cache.insert(victim->m_block_addr);
+        if (DTRACE(L1D_VICTIM_CACHE)) {
+          fprintf(Trace::out, "%llu L1D TPC:%u SM:%u "
+            "inserted victim: {m_block_addr:%#llx, status:%s stream_id:%llu kernel:%u} "
+            "into m_victim_cache (size:%u->%u)\n",
+            time, mf->get_tpc(), mf->get_sid(),
+            victim->m_block_addr, 
+            cache_block_state_str(cache_block_state(victim->get_status(mask))),
+            victim->m_stream_id, victim->m_kernel,
+            prev_size, cache->m_victim_cache.size());
+        }    
+      }
+    }
+  } // End of filling L1D victim cache
 
   if (m_config.m_warp_interfere_aware == 'F') {
     if (valid_line != (unsigned) - 1) {
@@ -1416,7 +1479,7 @@ enum cache_request_status tag_array::probe(
 
     set_l1d_rd_fill_to_evict_gap(victim_key, time - get_l1d_rd_fill_time(victim_key));
 
-    // [[maybe_unused]] const float incoming_byp_ratio = 0.0;
+    [[maybe_unused]] const float incoming_byp_ratio = 0.0;
     // [[maybe_unused]] const float incoming_byp_ratio = 0.2; // 120.354 (-0.091%)	l1d_byp_T_F_T_40_3_3_lrr_srad_v2
     // [[maybe_unused]] const float incoming_byp_ratio = 0.3; // 120.620 (+0.130%)	l1d_byp_T_F_T_40_3_3_incoming_030_lrr_srad_v2	
     // [[maybe_unused]] const float incoming_byp_ratio = 0.7;
@@ -1433,8 +1496,6 @@ enum cache_request_status tag_array::probe(
 
       // Begin of total-evictions-aware scheme
       if (m_config.m_total_evictions_aware == 'T') {
-        // if (get_l1d_evictions(incoming_key) > m_config.m_max_evictions_bound) {
-        // if (get_l1d_evictions(incoming_key) > 2) {
         if (get_l1d_evictions(incoming_key) > 3) {
           if (m_config.m_infinite_bypasses == 'T') {
             m_incoming_bypasses.insert(incoming_key);
@@ -1443,11 +1504,8 @@ enum cache_request_status tag_array::probe(
             m_l1d_rd_byp_activated_times[incoming_key]++;
             assert(hit_l1d_bypassed_item(incoming_key, mf));        
           } else {
-            if (m_trashed_reqs.size() < m_config.m_max_bypasses) {
-            // if (m_incoming_bypasses.size() < (incoming_byp_ratio * m_config.m_max_bypasses) &&
-            //     m_trashed_reqs.size() < m_config.m_max_bypasses) {
-            // if (m_incoming_bypasses.size() < m_config.m_max_bypasses &&
-            //     m_trashed_reqs.size() < 2 * m_config.m_max_bypasses) {
+            if (m_incoming_bypasses.size() < (incoming_byp_ratio * m_config.m_max_bypasses) &&
+                m_trashed_reqs.size() < m_config.m_max_bypasses) {
               m_incoming_bypasses.insert(incoming_key); // -gpgpu_cache:l1d_bypass T,F,T,40,3,3 reaches here
               m_trashed_reqs.insert(incoming_key);            
               mf->set_l1d_rd_byp_activated();
@@ -1502,11 +1560,8 @@ enum cache_request_status tag_array::probe(
                 victim->m_allocated);
             }
           } else {
-            if (m_trashed_reqs.size() < m_config.m_max_bypasses) {
-            // if (m_victim_bypasses.size() < ((1 - incoming_byp_ratio) * m_config.m_max_bypasses) &&
-            //     m_trashed_reqs.size() < m_config.m_max_bypasses) {
-            // if (m_victim_bypasses.size() < m_config.m_max_bypasses &&
-            //     m_trashed_reqs.size() < 2 * m_config.m_max_bypasses) {
+            if (m_victim_bypasses.size() < ((1 - incoming_byp_ratio) * m_config.m_max_bypasses) &&
+                m_trashed_reqs.size() < m_config.m_max_bypasses) {
               m_victim_bypasses.insert(victim_key);
               m_trashed_reqs.insert(victim_key);            
               mf->set_l1d_rd_byp_activated(); // m_l1d_rd_byp_change = 2 = 2'b10
@@ -1542,11 +1597,8 @@ enum cache_request_status tag_array::probe(
                 victim->m_allocated);
             }            
           } else {
-            if (m_trashed_reqs.size() < m_config.m_max_bypasses) {
-            // if (m_victim_bypasses.size() < ((1 - incoming_byp_ratio) * m_config.m_max_bypasses) &&
-            //     m_trashed_reqs.size() < m_config.m_max_bypasses) {
-            // if (m_victim_bypasses.size() < m_config.m_max_bypasses &&
-            //     m_trashed_reqs.size() < 2 * m_config.m_max_bypasses) {            
+            if (m_victim_bypasses.size() < ((1 - incoming_byp_ratio) * m_config.m_max_bypasses) &&
+                m_trashed_reqs.size() < m_config.m_max_bypasses) {
               m_victim_bypasses.insert(victim_key);        
               m_trashed_reqs.insert(victim_key);
               mf->set_l1d_rd_byp_activated(); // m_l1d_rd_byp_change = 2 = 2'b10
@@ -1652,23 +1704,28 @@ bool tag_array::already_has_max_rrpv_in_one_set(unsigned set_index) {
   return false;
 }
 
-enum cache_request_status tag_array::access(new_addr_type raw_addr,
-                                            new_addr_type addr /* block_addr */, 
-                                            unsigned long long time,
-                                            unsigned &idx, mem_fetch *mf) {
+enum cache_request_status tag_array::access(
+  baseline_cache *cache,
+  new_addr_type raw_addr,
+  new_addr_type addr /* block_addr */, 
+  unsigned long long time,
+  unsigned &idx, mem_fetch *mf) {
   bool wb = false;
   evicted_block_info evicted;
-  enum cache_request_status result = access(raw_addr, addr, time, idx, wb, evicted, mf);
+  enum cache_request_status result = access(cache, raw_addr, addr, time, idx, wb, evicted, mf);
   assert(!wb);
   return result;
 }
 
-enum cache_request_status tag_array::access(new_addr_type raw_addr,
-                                            new_addr_type addr /* block_addr */, 
-                                            unsigned long long time,
-                                            unsigned &idx, bool &wb,
-                                            evicted_block_info &evicted,
-                                            mem_fetch *mf) {
+enum cache_request_status tag_array::access(
+  baseline_cache *cache,
+  new_addr_type raw_addr,
+  new_addr_type addr /* block_addr */, 
+  unsigned long long time,
+  unsigned &idx, bool &wb,
+  evicted_block_info &evicted,
+  mem_fetch *mf) {
+
   m_access++;
   is_used = true;
   shader_cache_access_log(m_core_id, m_type_id, 0);  // log accesses to cache
@@ -1677,13 +1734,17 @@ enum cache_request_status tag_array::access(new_addr_type raw_addr,
   WARP_INTERFERE_RECORD inter_warp_interfere_record((unsigned )- 1, (unsigned) - 1);
 
   enum cache_request_status status = 
-    probe("tag_array::access", raw_addr, addr, idx, mf, mf->is_write(), time, 
+    probe("tag_array::access", cache, raw_addr, addr, idx, mf, mf->is_write(), time, 
       inter_warp_has_interference, inter_warp_interfere_record);
 
   switch (status) {
     case HIT_RESERVED:
       m_pending_hit++;
     case HIT:
+      mf->get_access_type() == GLOBAL_ACC_W ? m_writes++ : m_reads++;
+      m_lines[idx]->set_last_access_time(time, mf->get_access_sector_mask());
+      break;
+    case VC_HIT:
       mf->get_access_type() == GLOBAL_ACC_W ? m_writes++ : m_reads++;
       m_lines[idx]->set_last_access_time(time, mf->get_access_sector_mask());
       break;
@@ -1738,18 +1799,22 @@ enum cache_request_status tag_array::access(new_addr_type raw_addr,
   return status;
 }
 
-void tag_array::fill(new_addr_type addr, unsigned long long time, mem_fetch *mf, bool is_write) {
-  fill(addr, time, mf->get_access_sector_mask(), mf->get_access_byte_mask(), is_write, mf);
+void tag_array::fill(
+  baseline_cache *cache,
+  new_addr_type addr, unsigned long long time, mem_fetch *mf, bool is_write) {
+  fill(cache, addr, time, mf->get_access_sector_mask(), mf->get_access_byte_mask(), is_write, mf);
 }
 
 // This function will be called in following two scenarios:
 // 1) m_config.m_alloc_policy == ON_FILL inside
 //    baseline_cache::fill(mem_fetch *mf, unsigned long long time)
 // 2) L2 memcpy
-void tag_array::fill(new_addr_type addr, unsigned long long time,
-                     mem_access_sector_mask_t mask,
-                     mem_access_byte_mask_t byte_mask, bool is_write,
-                     mem_fetch *mf) {
+void tag_array::fill(
+  baseline_cache *cache,
+  new_addr_type addr, unsigned long long time,
+  mem_access_sector_mask_t mask,
+  mem_access_byte_mask_t byte_mask, bool is_write,
+  mem_fetch *mf) {
 
   if (DTRACE(TAG_FILL)) {
     if (mf) {
@@ -1766,7 +1831,7 @@ void tag_array::fill(new_addr_type addr, unsigned long long time,
   WARP_INTERFERE_RECORD inter_warp_interfere_record((unsigned )- 1, (unsigned) - 1);
 
   enum cache_request_status status = 
-    probe("tag_array::fill", addr, m_config.block_addr(addr), 
+    probe("tag_array::fill", cache, addr, m_config.block_addr(addr), 
       idx, mask, is_write, time, false /* probe_mode */,
       inter_warp_has_interference, inter_warp_interfere_record, mf);
 
@@ -1801,7 +1866,9 @@ void tag_array::fill(new_addr_type addr, unsigned long long time,
   }
 }
 
-void tag_array::fill(unsigned index, unsigned long long time, mem_fetch *mf) {
+void tag_array::fill(
+  baseline_cache *cache,
+  unsigned index, unsigned long long time, mem_fetch *mf) {
 
   if (DTRACE(TAG_FILL)) {
     if (mf) {
@@ -4587,7 +4654,8 @@ void baseline_cache::bandwidth_management::use_data_port(
   unsigned data_size = mf->get_data_size();
   unsigned port_width = m_config.m_data_port_width;
   switch (outcome) {
-    case HIT: {
+    case HIT: 
+    case VC_HIT: {
       unsigned data_cycles =
           data_size / port_width + ((data_size % port_width > 0) ? 1 : 0);
       m_data_port_occupied_cycles += data_cycles;
@@ -4737,13 +4805,15 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
           dumpCacheEvent(time, "baseline_cache::fill", "NOT_HIT_L1D_BYPASSED_ITEM", mf, true);
         }
         assert(e->second.m_cache_index != (u32) - 1);
-        m_tag_array->fill(e->second.m_cache_index, time, mf);
+        m_tag_array->fill(this, e->second.m_cache_index, time, mf);
       } else {
         if (DTRACE(TRACE_BYPASSED_L1D_PKT) || DTRACE(HIT_L1D_BYPASSED_ITEM)) {
           dumpCacheEvent(time, "baseline_cache::fill", 
             "HIT_L1D_BYPASSED_ITEM L1D bypassed m_tag_array->fill", mf);
         }
       }
+      // Always fill victim cache
+      // m_victim_cache->fill(e->second.m_cache_index, time, mf);
     } else {
       if (DTRACE(CACHE_EVENT)) {
         dumpCacheEvent(time, "::fill", "ap:ON_MISS m_tag_array->fill", mf);
@@ -4751,15 +4821,15 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
       if (DTRACE(L1D_FILLS)) {
         dumpCacheEvent(time, "::fill", "ap:ON_MISS m_tag_array->fill", mf, true);
       }
-      m_tag_array->fill(e->second.m_cache_index, time, mf);
+      m_tag_array->fill(this, e->second.m_cache_index, time, mf);
     }
-    // m_tag_array->fill(e->second.m_cache_index, time, mf); // default logic
+    // m_tag_array->fill(this, e->second.m_cache_index, time, mf); // default logic
   }
   else if (m_config.m_alloc_policy == ON_FILL) {
     if (DTRACE(CACHE_EVENT)) {      
       dumpCacheEvent(time, "::fill", "ap:ON_FILL m_tag_array->fill", mf);
     }     
-    m_tag_array->fill(e->second.m_block_addr, time, mf, mf->is_write());
+    m_tag_array->fill(this, e->second.m_block_addr, time, mf, mf->is_write());
   } else {
     abort();
   }
@@ -5042,13 +5112,13 @@ void baseline_cache::send_read_request(new_addr_type raw_addr, new_addr_type blo
     // No MSHR: only gate on miss_queue capacity, no merge or ready tracking.
     if (m_miss_queue.size() < m_config.m_miss_queue_size) {
       if (read_only) {
-        m_tag_array->access(raw_addr, block_addr, time, cache_index, mf);
+        m_tag_array->access(this,raw_addr, block_addr, time, cache_index, mf);
       } else {
         if (m_config.m_bypass_enable == 'T') {
           assert(m_is_l1d);
           BYPASS_KEY byp_key(mf->get_streamID(), m_gpu->m_kernel_id, block_addr);
           if (!m_tag_array->hit_l1d_bypassed_item(byp_key, mf)) {
-            m_tag_array->access(raw_addr, block_addr, time, cache_index, wb, evicted, mf);  
+            m_tag_array->access(this,raw_addr, block_addr, time, cache_index, wb, evicted, mf);  
           } else {
             if (DTRACE(TRACE_BYPASSED_L1D_PKT) || 
                 DTRACE(BYPASS_L1D_ALLOC) || DTRACE(HIT_L1D_BYPASSED_ITEM)) {
@@ -5057,7 +5127,7 @@ void baseline_cache::send_read_request(new_addr_type raw_addr, new_addr_type blo
             }
           }
         } else {
-          m_tag_array->access(raw_addr, block_addr, time, cache_index, wb, evicted, mf);
+          m_tag_array->access(this,raw_addr, block_addr, time, cache_index, wb, evicted, mf);
         }
       }
 
@@ -5101,14 +5171,15 @@ void baseline_cache::send_read_request(new_addr_type raw_addr, new_addr_type blo
       m_stats.inc_fail_stats(mf->get_access_type(), MISS_QUEUE_FULL,
                             mf->get_streamID(), miss_queue_full_driver::RD_MISS);
     }
-  } else {
+  } // m_config.m_mshr_disable == 'T' 
+  else {
     bool mshr_hit   = m_mshrs.probe(mshr_addr);
     bool mshr_avail = !m_mshrs.full(mshr_addr);
     if (mshr_hit && mshr_avail) {
       if (read_only) {
-        m_tag_array->access(raw_addr, block_addr, time, cache_index, mf);
+        m_tag_array->access(this,raw_addr, block_addr, time, cache_index, mf);
       } else {
-        m_tag_array->access(raw_addr, block_addr, time, cache_index, wb, evicted, mf);
+        m_tag_array->access(this,raw_addr, block_addr, time, cache_index, wb, evicted, mf);
       }
 
       const size_t last_occupied_entries = m_mshrs.occupied_entries();
@@ -5179,9 +5250,9 @@ void baseline_cache::send_read_request(new_addr_type raw_addr, new_addr_type blo
     } else if (!mshr_hit && mshr_avail &&
               (m_miss_queue.size() < m_config.m_miss_queue_size)) {
       if (read_only) {
-        m_tag_array->access(raw_addr, block_addr, time, cache_index, mf);
+        m_tag_array->access(this,raw_addr, block_addr, time, cache_index, mf);
       } else {
-        m_tag_array->access(raw_addr, block_addr, time, cache_index, wb, evicted, mf);
+        m_tag_array->access(this,raw_addr, block_addr, time, cache_index, wb, evicted, mf);
       }
 
       [[maybe_unused]] const unsigned last_occupied_entries = m_mshrs.occupied_entries();
@@ -5313,7 +5384,7 @@ cache_request_status data_cache::wr_hit_wb(new_addr_type addr,
                                            std::list<cache_event> &events,
                                            enum cache_request_status status) {
   new_addr_type block_addr = m_config.block_addr(addr);
-  m_tag_array->access(addr, block_addr, time, cache_index, mf);  // update LRU state
+  m_tag_array->access(this,addr, block_addr, time, cache_index, mf);  // update LRU state
   cache_block_t *block = m_tag_array->get_block(cache_index);
   if (!block->is_modified_line()) {
     m_tag_array->inc_dirty();
@@ -5347,7 +5418,7 @@ cache_request_status data_cache::wr_hit_wt(new_addr_type addr,
   }
 
   new_addr_type block_addr = m_config.block_addr(addr);
-  m_tag_array->access(addr, block_addr, time, cache_index, mf);  // update LRU state
+  m_tag_array->access(this,addr, block_addr, time, cache_index, mf);  // update LRU state
   cache_block_t *block = m_tag_array->get_block(cache_index);
   if (!block->is_modified_line()) {
     m_tag_array->inc_dirty();
@@ -5563,7 +5634,7 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
     evicted_block_info evicted;
 
     cache_request_status status = 
-      m_tag_array->access(addr, block_addr, time, cache_index, wb, evicted, mf);
+      m_tag_array->access(this,addr, block_addr, time, cache_index, wb, evicted, mf);
     assert(status != HIT);
     cache_block_t *block = m_tag_array->get_block(cache_index);
     if (!block->is_modified_line()) {
@@ -5740,7 +5811,7 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
   evicted_block_info evicted;
 
   cache_request_status req_status = 
-    m_tag_array->access(addr, block_addr, time, cache_index, wb, evicted, mf);
+    m_tag_array->access(this,addr, block_addr, time, cache_index, wb, evicted, mf);
 
   assert(req_status != HIT);
   cache_block_t *block = m_tag_array->get_block(cache_index);
@@ -5879,7 +5950,15 @@ enum cache_request_status data_cache::rd_hit_base(
       assert(0);
     }
   }
-  m_tag_array->access(addr, block_addr, time, cache_index, mf); // default  
+  
+  if (status == VC_HIT) {
+    evicted_block_info evicted;
+    bool wb = false;
+    m_tag_array->access(this, addr, block_addr, time, cache_index, wb, evicted, mf);
+  } else {    
+    m_tag_array->access(this, addr, block_addr, time, cache_index, mf); // default version moved here
+  }
+  // m_tag_array->access(this, addr, block_addr, time, cache_index, mf); // default  
 
   // Atomics treated as global read/write requests - Perform read, mark line as
   // MODIFIED
@@ -5973,13 +6052,13 @@ enum cache_request_status read_only_cache::access(
   WARP_INTERFERE_RECORD inter_warp_interfere_record((unsigned )- 1, (unsigned) - 1);
 
   enum cache_request_status status = m_tag_array->probe(
-    "read_only_cache::access", addr, block_addr, cache_index, mf, mf->is_write(), 
+    "read_only_cache::access", this, addr, block_addr, cache_index, mf, mf->is_write(), 
     time, inter_warp_has_interference, inter_warp_interfere_record);
   
   enum cache_request_status cache_status = RESERVATION_FAIL;
 
   if (status == HIT) {
-    cache_status = m_tag_array->access(addr, block_addr, time, cache_index, mf); // update LRU state
+    cache_status = m_tag_array->access(this,addr, block_addr, time, cache_index, mf); // update LRU state
   } else if (status != RESERVATION_FAIL) {
     if (!miss_queue_full(0, "read_only_cache::access")) {
       bool do_miss = false;
@@ -6063,7 +6142,7 @@ enum cache_request_status data_cache::process_tag_probe(
   } else {  // Read
     BYPASS_KEY byp_key(mf->get_streamID(), m_gpu->m_kernel_id, m_config.block_addr(addr));
     LOCALITY_KEY loc_key(mf->get_streamID(), m_gpu->m_kernel_id);
-    if (probe_status == HIT) {
+    if (probe_status == HIT || probe_status == VC_HIT) {
       access_status = (this->*m_rd_hit)(addr, cache_index, mf, time, events, probe_status);  
     } else if (probe_status != RESERVATION_FAIL) {
       if (DTRACE(CACHE_EVENT)) {
@@ -6145,14 +6224,14 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
       }
     } else {
       probe_status = m_tag_array->probe(
-          "data_cache::access",
+          "data_cache::access", this,
           addr, block_addr, cache_index, mf, mf->is_write(), time,
           inter_warp_has_interference, inter_warp_interfere_record,
           true /* probe_mode */);
     }
   } else {
     probe_status = m_tag_array->probe(
-      "data_cache::access",
+      "data_cache::access", this,
       addr, block_addr, cache_index, mf, mf->is_write(), time,
       inter_warp_has_interference, inter_warp_interfere_record,
       true /* probe_mode */); // default logic     
@@ -6284,7 +6363,7 @@ enum cache_request_status tex_cache::access(new_addr_type addr, mem_fetch *mf,
   // allocate line
   new_addr_type block_addr = m_config.block_addr(addr);
   unsigned cache_index = (unsigned)-1;
-  enum cache_request_status status = m_tags.access(addr, block_addr, time, cache_index, mf);
+  enum cache_request_status status = m_tags.access(nullptr, addr, block_addr, time, cache_index, mf);
   enum cache_request_status cache_status = RESERVATION_FAIL;
   assert(status != RESERVATION_FAIL);
   assert(status != HIT_RESERVED);  // as far as tags are concerned: HIT or MISS
@@ -6294,7 +6373,7 @@ enum cache_request_status tex_cache::access(new_addr_type addr, mem_fetch *mf,
     unsigned rob_index = m_rob.push(rob_entry(cache_index, mf, block_addr));
     m_extra_mf_fields[mf] = extra_mf_fields(rob_index, m_config);
     mf->set_data_size(m_config.get_line_sz());
-    m_tags.fill(cache_index, time, mf);  // mark block as valid
+    m_tags.fill(nullptr, cache_index, time, mf);  // mark block as valid
     m_request_fifo.push(mf);
     mf->set_status(m_request_queue_status, time);
     events.push_back(cache_event(READ_REQUEST_SENT));

@@ -444,6 +444,11 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "per-shader L1D replacement enhance config "
                          "<fill_time_ascend>,<warp_interfere_aware>,<pending_longop_aware>",
                          "F,F,F");
+  option_parser_register(opp, "-gpgpu_cache:l1d_victim_cache", OPT_CSTR,
+                         &m_L1D_config.m_victim_cache_config_string,
+                         "L1D victim cache configurations"
+                         "<victim_cache_enable>,<victim_cache_entries>",
+                         "T,128");
   option_parser_register(opp, "-gpgpu_cache:l1d_bypass", OPT_CSTR,
                          &m_L1D_config.m_bypass_config_string,
                          "L1D bypass configurations"

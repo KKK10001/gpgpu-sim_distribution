@@ -37,6 +37,8 @@
 #include <string.h>
 #include <unordered_map>
 #include <tuple>
+#include <deque>
+#include <unordered_set>
 #include "../../libcuda/gpgpu_context.h"
 #include "../cuda-sim/cuda-sim.h"
 #include "../cuda-sim/ptx-stats.h"
@@ -3630,7 +3632,8 @@ void ldst_unit::writeback() {
       case 4:
         if (m_L1D && m_L1D->access_ready()) {
           const char* cache_type = "L1D";
-          mem_fetch *mf = m_L1D->next_access(cache_type, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+          u64 time = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+          mem_fetch *mf = m_L1D->next_access(cache_type, time);
           m_next_wb = mf->get_inst();
           m_next_wb_source = "L1D_FILL_RETURN";
           delete mf;
