@@ -1952,13 +1952,15 @@ class tag_array {
     baseline_cache* cache,
     new_addr_type raw_addr, 
     new_addr_type addr /* block_addr */, unsigned long long time,
-    unsigned &idx, mem_fetch *mf);
+    unsigned &idx, mem_fetch *mf, 
+    bool bypass_2nd_probe = false);
   enum cache_request_status access(
     baseline_cache* cache,
     new_addr_type raw_addr,
     new_addr_type addr /* block_addr */, unsigned long long time,
     unsigned &idx, bool &wb,
-    evicted_block_info &evicted, mem_fetch *mf);
+    evicted_block_info &evicted, mem_fetch *mf,
+    bool bypass_2nd_probe = false);
   void inc_rrpv_for_one_set(unsigned set_index);
   bool already_has_max_rrpv_in_one_set(unsigned set_index);
 

@@ -1341,26 +1341,43 @@ enum cache_request_status tag_array::probe(
           time, mf->get_streamID(), m_gpu->m_kernel_id, mf->get_tpc(), mf->get_sid(), addr,
           cache->m_victim_cache.size());
       }
-      // Fill L1D TAG RAM at once 
-      // no mf was recorded in m_extra_mf_fields, and hence do not call baseline_cache::fill     
+      // True swap between L1D and victim-cache:
+      // 1) install VC-hit line into selected L1D slot
+      // 2) move replaced valid L1D line back into victim-cache
+      // cache_block_t *swap_out_line = m_lines[idx];
+      // const bool swap_out_valid =
+      //     swap_out_line->is_valid_line() || swap_out_line->is_modified_line();
+
+      const bool swap_out_valid = victim->is_valid_line() || victim->is_modified_line();
+
+      // Save the address to be inserted into victim cache
+      // This is a must, because victim->allocate would flush victim's own original m_block_addr
+      // const new_addr_type swap_out_addr = swap_out_line->m_block_addr; // for inserting into victim cache
+      const new_addr_type swap_out_addr = victim->m_block_addr;
+
+      // const bool swap_out_valid = victim->is_valid_line() || victim->is_modified_line();
+      // assert(victim->m_block_addr != addr);
+      // const new_addr_type swap_out_addr = victim->m_block_addr;
+      assert(swap_out_addr != addr);
+
+      // swap_out_line->allocate(
+      //     m_config.tag(addr), m_config.block_addr(addr), mf->get_streamID(),
+      //     m_gpu->m_kernel_id, time, mf->get_access_sector_mask());
+
+      // victim->m_block_addr would be updated inside below
+      victim->allocate(
+          m_config.tag(addr), m_config.block_addr(addr), mf->get_streamID(),
+          m_gpu->m_kernel_id, time, mf->get_access_sector_mask());          
+       
       fill(cache, idx, time, mf);
+
       cache->m_victim_cache.erase(addr);
+      if (swap_out_valid &&
+          cache->m_victim_cache.size() < m_config.m_victim_cache_entries) {
+        cache->m_victim_cache.insert(swap_out_addr);
+      }
       return VC_HIT;
     }
-
-    // When using std::list for search
-    // for (auto& victim : cache->m_victim_cache) {
-    //   if (victim == addr) {
-    //     if (DTRACE(L1D_VICTIM_CACHE)) {
-    //       fprintf(Trace::out, "%llu L1D in-coming request "
-    //         "<stream_id:%llu kernel:%u TPC:%u SM:%u block_addr:%#llx> "
-    //         "hit in m_victim_cache (size:%u)\n",
-    //         time, mf->get_streamID(), m_gpu->m_kernel_id, mf->get_tpc(), mf->get_sid(), addr,
-    //         cache->m_victim_cache.size());
-    //     }
-    //     return HIT;
-    //   }
-    // }
   } // End of probing L1D victim cache  
 
   u64 victim_addr = victim->m_block_addr;
@@ -1666,8 +1683,6 @@ enum cache_request_status tag_array::probe(
     }
   }
 
-  // m_victim_cache.push_back();
-
   return MISS;
 }
 
@@ -1709,10 +1724,13 @@ enum cache_request_status tag_array::access(
   new_addr_type raw_addr,
   new_addr_type addr /* block_addr */, 
   unsigned long long time,
-  unsigned &idx, mem_fetch *mf) {
+  unsigned &idx, mem_fetch *mf,
+  bool bypass_2nd_probe) {
   bool wb = false;
   evicted_block_info evicted;
-  enum cache_request_status result = access(cache, raw_addr, addr, time, idx, wb, evicted, mf);
+  
+  enum cache_request_status result = 
+    access(cache, raw_addr, addr, time, idx, wb, evicted, mf, bypass_2nd_probe);
   assert(!wb);
   return result;
 }
@@ -1724,7 +1742,8 @@ enum cache_request_status tag_array::access(
   unsigned long long time,
   unsigned &idx, bool &wb,
   evicted_block_info &evicted,
-  mem_fetch *mf) {
+  mem_fetch *mf,
+  bool bypass_2nd_probe) {
 
   m_access++;
   is_used = true;
@@ -1733,9 +1752,16 @@ enum cache_request_status tag_array::access(
   bool inter_warp_has_interference = false;
   WARP_INTERFERE_RECORD inter_warp_interfere_record((unsigned )- 1, (unsigned) - 1);
 
-  enum cache_request_status status = 
-    probe("tag_array::access", cache, raw_addr, addr, idx, mf, mf->is_write(), time, 
-      inter_warp_has_interference, inter_warp_interfere_record);
+  enum cache_request_status status = MISS;
+  if (bypass_2nd_probe) {
+    status = VC_HIT;
+  } else {
+    status = probe("tag_array::access", cache, raw_addr, addr, idx, mf, mf->is_write(), time, 
+        inter_warp_has_interference, inter_warp_interfere_record);    
+  }
+  // enum cache_request_status status = 
+  //   probe("tag_array::access", cache, raw_addr, addr, idx, mf, mf->is_write(), time, 
+  //     inter_warp_has_interference, inter_warp_interfere_record);
 
   switch (status) {
     case HIT_RESERVED:
@@ -5952,13 +5978,13 @@ enum cache_request_status data_cache::rd_hit_base(
   }
   
   if (status == VC_HIT) {
-    evicted_block_info evicted;
-    bool wb = false;
-    m_tag_array->access(this, addr, block_addr, time, cache_index, wb, evicted, mf);
+    m_tag_array->access(this, addr, block_addr, time, cache_index, mf, true /* bypass 2nd tag_array->probe*/);
+    // evicted_block_info evicted;
+    // bool wb = false;
+    // m_tag_array->access(this, addr, block_addr, time, cache_index, wb, evicted, mf);
   } else {    
-    m_tag_array->access(this, addr, block_addr, time, cache_index, mf); // default version moved here
+    m_tag_array->access(this, addr, block_addr, time, cache_index, mf); // default
   }
-  // m_tag_array->access(this, addr, block_addr, time, cache_index, mf); // default  
 
   // Atomics treated as global read/write requests - Perform read, mark line as
   // MODIFIED
@@ -6032,8 +6058,16 @@ enum cache_request_status data_cache::rd_miss_base(
       send_write_request("data_cache::rd_miss_base()", 
         wb, WRITE_BACK_REQUEST_SENT, time, events);
     }
-    return MISS;
+    return status; // 4/2
+    // return MISS;
   }
+  if (status != RESERVATION_FAIL) {
+    if (DTRACE(DEBUG_DUP_TAG_PROBE)) {
+      fprintf(Trace::out, "status is %s != RESERVATION_FAIL\n", cache_request_status_str(status));    
+    }    
+    assert(0);
+  }
+  
   return RESERVATION_FAIL;
 }
 
@@ -6267,7 +6301,11 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
     }    
   }
 
+  // access_status is not always equal to probe_status
+  // Ex.1: probe_status (SECTOR_MISS) -> access_status (MISS)
+  // Ex.2: probe_status (HIT_RESERVED) -> access_status (RESERVATION_FAIL) when miss_queue_full(1) during a 2nd tag_array->probe
   enum cache_request_status access_status = process_tag_probe(wr, probe_status, addr, cache_index, mf, time, events);
+
   enum cache_request_status access_stats_bak = access_status;
 
   if (DTRACE(CACHE_EVENT)) {
