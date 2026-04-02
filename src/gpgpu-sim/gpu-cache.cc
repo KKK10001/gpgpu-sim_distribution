@@ -1330,57 +1330,91 @@ enum cache_request_status tag_array::probe(
 
   assert(idx != (unsigned) - 1);
   cache_block_t *victim = m_lines[idx];
+  const new_addr_type swap_out_addr = victim->m_block_addr;  
+  const new_addr_type victim_addr = victim->m_block_addr;
+  BYPASS_KEY victim_key(victim->m_stream_id, victim->m_kernel, victim_addr);  
 
   // Begin of probing L1D victim cache
   if (m_config.m_victim_cache_enable == 'T') {
     if (cache->m_victim_cache.find(addr) != cache->m_victim_cache.end()) {
-      if (DTRACE(L1D_VICTIM_CACHE)) {
-        fprintf(Trace::out, "%llu L1D in-coming request "
-          "<stream_id:%llu kernel:%u TPC:%u SM:%u block_addr:%#llx> "
-          "hit in m_victim_cache (size:%u)\n",
-          time, mf->get_streamID(), m_gpu->m_kernel_id, mf->get_tpc(), mf->get_sid(), addr,
-          cache->m_victim_cache.size());
-      }
+      // if (victim->is_modified_line()) {
+      //   // Fall through as normal Miss path
+      // } else {
+      //   // True swap between L1D and victim-cache:
+      //   // 1) install VC-hit line into selected L1D slot
+      //   // 2) move replaced valid L1D line back into victim-cache
+      //   // const bool swap_out_valid = victim->is_valid_line() || victim->is_modified_line();
+      //   const bool swap_out_valid = victim->is_valid_line() && !victim->is_modified_line(); // tune
+      //   // Save the address to be swapped out from L1D into victim-cache
+      //   // This is a must, because victim->allocate would flush victim's original m_block_addr
+      //   // Using victim->m_block_addr for inserting back into victim-cache would cause error
+      //   assert(swap_out_addr != addr);
+
+      //   // L1D side:
+      //   // 1) Allocate the line that is to be filled
+      //   // victim->m_block_addr would be updated inside below
+      //   victim->allocate(
+      //       m_config.tag(addr), m_config.block_addr(addr), mf->get_streamID(),
+      //       m_gpu->m_kernel_id, time, mf->get_access_sector_mask());          
+      //   // 2) Fill the line (sector) with new timestamp and status       
+      //   fill(cache, idx, time, mf);
+
+      //   // VC side:
+      //   // 1) Remove the hit address that has been swapped into L1D
+      //   cache->m_victim_cache.erase(addr);
+      //   // 2) Insert the swapped out address into VC
+      //   if (swap_out_valid &&
+      //       cache->m_victim_cache.size() < m_config.m_victim_cache_entries) {
+      //     cache->m_victim_cache.insert(swap_out_addr); // logic
+      //     m_l1d_evictions[victim_key]++; // stats
+
+      //     if (DTRACE(L1D_VC_HIT)) {
+      //       fprintf(Trace::out, "%llu L1D VC hit. L1D VC insert swap_out_addr:%#llx\n",
+      //         time, swap_out_addr);
+      //     }        
+      //   }
+      //   return VC_HIT;
+      // }
+
       // True swap between L1D and victim-cache:
       // 1) install VC-hit line into selected L1D slot
       // 2) move replaced valid L1D line back into victim-cache
-      // cache_block_t *swap_out_line = m_lines[idx];
-      // const bool swap_out_valid =
-      //     swap_out_line->is_valid_line() || swap_out_line->is_modified_line();
-
       const bool swap_out_valid = victim->is_valid_line() || victim->is_modified_line();
-
-      // Save the address to be inserted into victim cache
-      // This is a must, because victim->allocate would flush victim's own original m_block_addr
-      // const new_addr_type swap_out_addr = swap_out_line->m_block_addr; // for inserting into victim cache
-      const new_addr_type swap_out_addr = victim->m_block_addr;
-
-      // const bool swap_out_valid = victim->is_valid_line() || victim->is_modified_line();
-      // assert(victim->m_block_addr != addr);
-      // const new_addr_type swap_out_addr = victim->m_block_addr;
+      // const bool swap_out_valid = victim->is_valid_line() && !victim->is_modified_line(); // tune
+      // Save the address to be swapped out from L1D into victim-cache
+      // This is a must, because victim->allocate would flush victim's original m_block_addr
+      // Using victim->m_block_addr for inserting back into victim-cache would cause error
       assert(swap_out_addr != addr);
 
-      // swap_out_line->allocate(
-      //     m_config.tag(addr), m_config.block_addr(addr), mf->get_streamID(),
-      //     m_gpu->m_kernel_id, time, mf->get_access_sector_mask());
-
+      // L1D side:
+      // 1) Allocate the line that is to be filled
       // victim->m_block_addr would be updated inside below
       victim->allocate(
           m_config.tag(addr), m_config.block_addr(addr), mf->get_streamID(),
           m_gpu->m_kernel_id, time, mf->get_access_sector_mask());          
-       
+      // 2) Fill the line (sector) with new timestamp and status       
       fill(cache, idx, time, mf);
 
+      // VC side:
+      // 1) Remove the hit address that has been swapped into L1D
       cache->m_victim_cache.erase(addr);
+      // 2) Insert the swapped out address into VC
       if (swap_out_valid &&
           cache->m_victim_cache.size() < m_config.m_victim_cache_entries) {
-        cache->m_victim_cache.insert(swap_out_addr);
+        cache->m_victim_cache.insert(swap_out_addr); // logic
+        m_l1d_evictions[victim_key]++; // stats
+
+        if (DTRACE(L1D_VC_HIT)) {
+          fprintf(Trace::out, "%llu L1D VC hit. L1D VC insert swap_out_addr:%#llx\n",
+            time, swap_out_addr);
+        }        
       }
       return VC_HIT;
-    }
+
+
+    } // if (cache->m_victim_cache.find(addr) != cache->m_victim_cache.end())
   } // End of probing L1D victim cache  
 
-  u64 victim_addr = victim->m_block_addr;
   victim->inc_total_evictions();
   if (m_is_l1d) {
     m_gpu->get_shader_stats()->m_l1d_victims[mf->get_sid()]++;
@@ -1395,20 +1429,19 @@ enum cache_request_status tag_array::probe(
   }
   // Begin of filling L1D victim cache
   if (m_config.m_victim_cache_enable == 'T') {
-    if (victim->is_valid_line()) {
-      const u32 prev_size = cache->m_victim_cache.size();
-      if (prev_size < m_config.m_victim_cache_entries) {
-        cache->m_victim_cache.insert(victim->m_block_addr);
-        if (DTRACE(L1D_VICTIM_CACHE)) {
-          fprintf(Trace::out, "%llu L1D TPC:%u SM:%u "
-            "inserted victim: {m_block_addr:%#llx, status:%s stream_id:%llu kernel:%u} "
-            "into m_victim_cache (size:%u->%u)\n",
-            time, mf->get_tpc(), mf->get_sid(),
-            victim->m_block_addr, 
-            cache_block_state_str(cache_block_state(victim->get_status(mask))),
-            victim->m_stream_id, victim->m_kernel,
-            prev_size, cache->m_victim_cache.size());
-        }    
+    const bool swap_out_valid = victim->is_valid_line() || victim->is_modified_line();
+    // const bool swap_out_valid = victim->is_valid_line() && !victim->is_modified_line(); // tune
+    // if (victim->is_valid_line() &&
+    //     cache->m_victim_cache.size() < m_config.m_victim_cache_entries) {
+    if (swap_out_valid &&
+        cache->m_victim_cache.size() < m_config.m_victim_cache_entries) {          
+        cache->m_victim_cache.insert(victim_addr);
+        m_l1d_evictions[victim_key]++; // stats
+        LOCALITY_KEY loc_key(victim->m_stream_id, victim->m_kernel);
+        cache->m_stats.inc_l1d_vc_misses(loc_key);
+        if (DTRACE(L1D_VICTIM_CACHE) || DTRACE(L1D_VC_MISS)) {
+          fprintf(Trace::out, "%llu L1D VC miss. L1D VC insert block_addr:%#llx\n",
+            time, victim_addr);
       }
     }
   } // End of filling L1D victim cache
@@ -1633,8 +1666,6 @@ enum cache_request_status tag_array::probe(
         }
       } // End of locality-aware scheme
     } // victim_key_hit = True
-        
-    m_l1d_evictions[victim_key]++;
 
     // m_l1d_trashed_lines.insert(addr);
     // m_gpu->get_shader_stats()->m_n_l1d_trashed_lines[mf->get_sid()] = m_l1d_trashed_lines.size();    
@@ -1645,6 +1676,7 @@ enum cache_request_status tag_array::probe(
     // m_l1d_avg_evicts[mf->get_sid()] = (m_l1d_avg_evicts[mf->get_sid()] + m_l1d_max_evictions[addr]) >> 1;
     // m_gpu->get_shader_stats()->m_l1d_avg_evicts[mf->get_sid()] = m_l1d_avg_evicts[mf->get_sid()];
   } // if (m_is_l1d && mf && !mf->is_write() && !mf->isatomic()) {
+  m_l1d_evictions[victim_key]++;
 
   // 2/25 Reset MSHR record
   // reset_record_in_mshr(idx);
@@ -2252,6 +2284,8 @@ void cache_stats::clear() {
   m_l1d_misses.clear();
   m_l1d_rd_misses.clear();
   m_l1d_wr_misses.clear();
+  m_l1d_vc_hits.clear();
+  m_l1d_vc_misses.clear();
   m_l1d_max_evictions.clear();
   m_l1d_avg_evictions.clear();
 
@@ -2411,6 +2445,13 @@ void cache_stats::inc_l1d_writes(u64 streamID, u32 kernel) {
 void cache_stats::inc_l1d_wr_misses(u64 streamID, u32 kernel) {
   m_l1d_wr_misses[streamID][kernel]++;
 }
+void cache_stats::inc_l1d_vc_hits(LOCALITY_KEY loc_key) {
+  m_l1d_vc_hits[loc_key]++;
+}
+void cache_stats::inc_l1d_vc_misses(LOCALITY_KEY loc_key) {
+  m_l1d_vc_misses[loc_key]++;
+}
+
 void cache_stats::update_l1d_max_evictions(const LOCALITY_KEY& loc_key, u32 n_evictions) {
   u32 prev_max_evictions = m_l1d_max_evictions[loc_key];
   m_l1d_max_evictions[loc_key] = std::max(prev_max_evictions, n_evictions);
@@ -2848,8 +2889,7 @@ u32 cache_stats::getU32(u64 streamID, u32 kernel, const char* tgt_name) const {
         return it_kernel->second;
       }
     }
-  }
-   else {
+  } else {
     assert(0 && "Unknown cache stat name");
     return 0;
   }
@@ -2986,6 +3026,14 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
   for (auto iter = m_l1d_wr_misses.begin(); iter != m_l1d_wr_misses.end(); ++iter) {
     u64 streamID = iter->first;
     ret.m_l1d_wr_misses[streamID] = m_l1d_wr_misses.at(streamID);
+  }
+  for (auto iter = m_l1d_vc_hits.begin(); iter != m_l1d_vc_hits.end(); ++iter) {
+    LOCALITY_KEY key = iter->first;
+    ret.m_l1d_vc_hits[key] = m_l1d_vc_hits.at(key);
+  }
+  for (auto iter = m_l1d_vc_misses.begin(); iter != m_l1d_vc_misses.end(); ++iter) {
+    LOCALITY_KEY key = iter->first;
+    ret.m_l1d_vc_misses[key] = m_l1d_vc_misses.at(key);
   }
   for (auto iter = m_l1d_max_evictions.begin(); iter != m_l1d_max_evictions.end(); ++iter) {
     LOCALITY_KEY loc_key = iter->first;
@@ -3229,6 +3277,22 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
           recorded[kernel] += in_item.second;
         }
       }
+    }
+  }
+  for (auto iter = cs.m_l1d_vc_hits.begin(); iter != cs.m_l1d_vc_hits.end(); ++iter) {  
+    LOCALITY_KEY key = iter->first;
+    if (ret.m_l1d_vc_hits.find(key) == ret.m_l1d_vc_hits.end()) {
+      ret.m_l1d_vc_hits[key] = cs.m_l1d_vc_hits.at(key);
+    } else {
+      ret.m_l1d_vc_hits[key] += cs.m_l1d_vc_hits.at(key);
+    }
+  }
+  for (auto iter = cs.m_l1d_vc_misses.begin(); iter != cs.m_l1d_vc_misses.end(); ++iter) {  
+    LOCALITY_KEY key = iter->first;
+    if (ret.m_l1d_vc_misses.find(key) == ret.m_l1d_vc_misses.end()) {
+      ret.m_l1d_vc_misses[key] = cs.m_l1d_vc_misses.at(key);
+    } else {
+      ret.m_l1d_vc_misses[key] += cs.m_l1d_vc_misses.at(key);
     }
   }
   for (auto iter = cs.m_l1d_max_evictions.begin(); iter != cs.m_l1d_max_evictions.end(); ++iter) {  
@@ -3594,6 +3658,24 @@ void cache_stats::accu_single_stat(const char* tgt_item, const cache_stats &cs) 
         }
       }
     }
+  } else if (!strcmp(tgt_item, "m_l1d_vc_hits")) {
+    for (auto iter = cs.m_l1d_vc_hits.begin(); iter != cs.m_l1d_vc_hits.end(); ++iter) {
+      LOCALITY_KEY key = iter->first;
+      if (m_l1d_vc_hits.find(key) == m_l1d_vc_hits.end()) {
+        m_l1d_vc_hits[key] = cs.m_l1d_vc_hits.at(key);
+      } else {
+        m_l1d_vc_hits[key] += cs.m_l1d_vc_hits.at(key);
+      }
+    }
+  } else if (!strcmp(tgt_item, "m_l1d_vc_misses")) {
+    for (auto iter = cs.m_l1d_vc_misses.begin(); iter != cs.m_l1d_vc_misses.end(); ++iter) {
+      LOCALITY_KEY key = iter->first;
+      if (m_l1d_vc_misses.find(key) == m_l1d_vc_misses.end()) {
+        m_l1d_vc_misses[key] = cs.m_l1d_vc_misses.at(key);
+      } else {
+        m_l1d_vc_misses[key] += cs.m_l1d_vc_misses.at(key);
+      }
+    }
   } else if (!strcmp(tgt_item, "m_l1d_max_evictions")) {
     for (auto iter = cs.m_l1d_max_evictions.begin(); iter != cs.m_l1d_max_evictions.end(); ++iter) {
       LOCALITY_KEY loc_key = iter->first;
@@ -3869,6 +3951,8 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
   accu_single_stat("m_l1d_misses", cs);
   accu_single_stat("m_l1d_rd_misses", cs);
   accu_single_stat("m_l1d_wr_misses", cs);
+  accu_single_stat("m_l1d_vc_hits", cs);
+  accu_single_stat("m_l1d_vc_misses", cs);
   accu_single_stat("m_l1d_max_evictions", cs);
   accu_single_stat("m_l1d_avg_evictions", cs);
   accu_single_stat("m_n_l1d_fill_to_evict_lines", cs);
@@ -4221,6 +4305,35 @@ u32 cache_stats::print_l1d_avg_evictions(FILE* fout, LOCALITY_KEY& loc_key, u64 
     return it->second;
   }
   return 0;
+}
+
+u32 cache_stats::print_l1d_vc_hits(FILE* fout, LOCALITY_KEY& key, u64 cycles) const {
+  auto it = m_l1d_vc_hits.find(key);
+  if (it != m_l1d_vc_hits.end()) {
+    fprintf(fout, "\tkey: <streamID:%llu kernel:%u> L1D_VC_HITS = %u\n", 
+      key.stream_id, key.kernel, it->second);
+    return it->second;
+  }
+  return 0;
+}
+u32 cache_stats::print_l1d_vc_misses(FILE* fout, LOCALITY_KEY& key, u64 cycles) const {
+  auto it = m_l1d_vc_misses.find(key);
+  if (it != m_l1d_vc_misses.end()) {
+    fprintf(fout, "\tkey: <streamID:%llu kernel:%u> L1D_VC_MISSES = %u\n", 
+      key.stream_id, key.kernel, it->second);
+    return it->second;
+  }
+  return 0;
+}
+void cache_stats::print_l1d_vc_hit_rate(
+  FILE* fout, LOCALITY_KEY& key, u32 hits, u32 misses, u64 cycles) const {
+  u32 accesses = hits + misses;
+  if (accesses) {
+    float hit_rate = hits / (float)accesses;
+    fprintf(fout, "\tkey: <streamID:%llu kernel:%u> L1D_VC_HIT_RATE = "
+      "%f (hits:%u / accesses:%u)\n", 
+      key.stream_id, key.kernel, hit_rate, hits, accesses);
+  }
 }
 
 u32 cache_stats::print_l1d_rd_misses(FILE* fout, u64 streamID, u32 kernel, u64 cycles) const {
@@ -5836,8 +5949,16 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
   bool wb = false;
   evicted_block_info evicted;
 
-  cache_request_status req_status = 
-    m_tag_array->access(this,addr, block_addr, time, cache_index, wb, evicted, mf);
+  cache_request_status req_status = status;
+  if (status == VC_HIT) {
+    // Pass bypass_2nd_probe = true for the last in-arg
+    req_status = m_tag_array->access(this, addr, block_addr, time, cache_index, wb, evicted, mf, true);
+  } else {
+    req_status = m_tag_array->access(this, addr, block_addr, time, cache_index, wb, evicted, mf);
+  }
+  // default logic (below)
+  // cache_request_status req_status = 
+  //   m_tag_array->access(this, addr, block_addr, time, cache_index, wb, evicted, mf);
 
   assert(req_status != HIT);
   cache_block_t *block = m_tag_array->get_block(cache_index);
@@ -5968,7 +6089,7 @@ enum cache_request_status data_cache::rd_hit_base(
 
   assert(addr == mf->get_addr());
   new_addr_type block_addr  = m_config.block_addr(addr);
-  new_addr_type sector_addr = m_config.mshr_addr(addr);
+  [[maybe_unused]] new_addr_type sector_addr = m_config.mshr_addr(addr);
 
   if (m_config.m_bypass_enable == 'T') {
     BYPASS_KEY byp_key(mf->get_streamID(), m_gpu->m_kernel_id, block_addr);
@@ -6146,7 +6267,7 @@ enum cache_request_status data_cache::process_tag_probe(
   // options. Function pointers were used to avoid many long conditional
   // branches resulting from many cache configuration options.
   cache_request_status access_status = probe_status;
-  new_addr_type sector_addr = m_config.mshr_addr(addr);
+  [[maybe_unused]] new_addr_type sector_addr = m_config.mshr_addr(addr);
   if (wr) { // Write
     if (probe_status == HIT) {
       access_status = (this->*m_wr_hit)(addr, cache_index, mf, time, events, probe_status);
@@ -6177,6 +6298,9 @@ enum cache_request_status data_cache::process_tag_probe(
     BYPASS_KEY byp_key(mf->get_streamID(), m_gpu->m_kernel_id, m_config.block_addr(addr));
     LOCALITY_KEY loc_key(mf->get_streamID(), m_gpu->m_kernel_id);
     if (probe_status == HIT || probe_status == VC_HIT) {
+      if (probe_status == VC_HIT) {
+        m_stats.inc_l1d_vc_hits(loc_key);
+      }      
       access_status = (this->*m_rd_hit)(addr, cache_index, mf, time, events, probe_status);  
     } else if (probe_status != RESERVATION_FAIL) {
       if (DTRACE(CACHE_EVENT)) {
@@ -6218,7 +6342,7 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
   assert(mf->get_data_size() <= m_config.get_atom_sz());
   bool wr = mf->get_is_write();
   new_addr_type block_addr  = m_config.block_addr(addr);
-  new_addr_type sector_addr = m_config.mshr_addr(addr);
+  [[maybe_unused]] new_addr_type sector_addr = m_config.mshr_addr(addr);
   unsigned cache_index = (unsigned) - 1;
 
   bool inter_warp_has_interference = false;
@@ -6330,8 +6454,8 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
   m_stats.update_n_l1d_fill_to_evict(loc_key, 
     m_tag_array->m_l1d_fill_to_evict_lines[loc_key].size());
   
-  bool en_inc_byp_act   = m_config.m_bypass_enable == 'T' && mf->get_l1d_rd_byp_change() == 2;
-  bool en_inc_byp_deact = m_config.m_bypass_enable == 'T' && mf->get_l1d_rd_byp_change() == 1;    
+  [[maybe_unused]] bool en_inc_byp_act   = m_config.m_bypass_enable == 'T' && mf->get_l1d_rd_byp_change() == 2;
+  [[maybe_unused]] bool en_inc_byp_deact = m_config.m_bypass_enable == 'T' && mf->get_l1d_rd_byp_change() == 1;    
   // m_stats.update_l1d_rd_byp_act(
   //   en_inc_byp_act, loc_key, m_tag_array->m_l1d_rd_byp_activated_times[loc_key], mf->get_streamID());
   // m_stats.update_l1d_rd_byp_deact(

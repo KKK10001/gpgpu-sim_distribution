@@ -2325,6 +2325,8 @@ class cache_stats {
   void inc_l1d_rd_misses(u64 streamID, u32 kernel);
   void inc_l1d_writes(u64 streamID, u32 kernel);
   void inc_l1d_wr_misses(u64 streamID, u32 kernel);
+  void inc_l1d_vc_hits(LOCALITY_KEY loc_key);
+  void inc_l1d_vc_misses(LOCALITY_KEY loc_key);  
   void update_l1d_max_evictions(const LOCALITY_KEY& loc_key, u32 n_evictions);
   void update_l1d_avg_evictions(const LOCALITY_KEY& loc_key, u32 n_evictions);
   void update_n_l1d_fill_to_evict(const LOCALITY_KEY& loc_key, u32 n_lines);
@@ -2393,6 +2395,11 @@ class cache_stats {
   u32 print_l1d_reads(FILE* fout, u64 streamID, u32 kernel, u64 cycle = (u64) - 1) const;
   void print_l1d_rd_miss_rate(
     FILE* fout, u64 streamID, u32 kernel, u32 misses, u32 reads, u64 cycles = (u64) - 1) const;
+
+  u32 print_l1d_vc_hits(FILE* fout, LOCALITY_KEY& key, u64 cycles) const;
+  u32 print_l1d_vc_misses(FILE* fout, LOCALITY_KEY& key, u64 cycles) const;
+  void print_l1d_vc_hit_rate(
+    FILE* fout, LOCALITY_KEY& key, u32 hits, u32 misses, u64 cycles) const;
 
   u32 print_l1d_max_evictions(FILE* fout, LOCALITY_KEY& loc_key, u64 cycles) const;
   u32 print_l1d_avg_evictions(FILE* fout, LOCALITY_KEY& loc_key, u64 cycles) const;
@@ -2544,6 +2551,8 @@ class cache_stats {
   std::map<u64 /* streamID */, std::map<u32 /* kernel */, u32>> m_l1d_writes;    // done accu 
   std::map<u64 /* streamID */, std::map<u32 /* kernel */, u32>> m_l1d_rd_misses; // done accu
   std::map<u64 /* streamID */, std::map<u32 /* kernel */, u32>> m_l1d_wr_misses; // done accu
+  std::map<LOCALITY_KEY, u32> m_l1d_vc_hits;
+  std::map<LOCALITY_KEY, u32> m_l1d_vc_misses;
   std::map<LOCALITY_KEY, u32> m_l1d_max_evictions;
   std::map<LOCALITY_KEY, u32> m_l1d_avg_evictions;
 

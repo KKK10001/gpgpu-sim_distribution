@@ -2203,6 +2203,10 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
     stdout, streamID, kernelID, l1d_rd_misses, l1d_reads, cycles);
 
   LOCALITY_KEY loc_key(streamID, kernelID);
+  u32 l1d_vc_hits = core_cache_stats.print_l1d_vc_hits(stdout, loc_key, cycles);
+  u32 l1d_vc_misses = core_cache_stats.print_l1d_vc_misses(stdout, loc_key, cycles);
+  core_cache_stats.print_l1d_vc_hit_rate(stdout, loc_key, l1d_vc_hits, l1d_vc_misses, cycles);
+  
   u32 l1d_max_evictions = core_cache_stats.print_l1d_max_evictions(stdout, loc_key, cycles);
   u32 l1d_avg_evictions = core_cache_stats.print_l1d_avg_evictions(stdout, loc_key, cycles);
 
