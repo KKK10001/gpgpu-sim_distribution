@@ -270,18 +270,18 @@ void l1d_cache_config::extra_config(
     "m_victim_cache_enable = %c m_victim_cache_entries = %u\n",
     m_victim_cache_enable, m_victim_cache_entries);
 
-  // <bypass_enable>,<infinite_bypasses>,<total_evictions_aware>,
+  // <bypass_enable>,<bypass_mode>,<infinite_bypasses>,<total_evictions_aware>,
   // <max_bypasses>,<max_evictions_bound>,<trash_conf_cnt_bound>
   [[maybe_unused]] int ntok_bypass = 
-    sscanf(bypass_config, "%c,%c,%c,%u,%u,%u", 
-      &m_bypass_enable, &m_infinite_bypasses, &m_total_evictions_aware,
+    sscanf(bypass_config, "%c,%u,%c,%c,%u,%u,%u", 
+      &m_bypass_enable, &m_bypass_mode, &m_infinite_bypasses, &m_total_evictions_aware,
       &m_max_bypasses, &m_max_evictions_bound, &m_trash_conf_cnt_bound);
   fprintf(Trace::out, 
     "----------- %s bypass_config is below -----------\n "
-    "m_bypass_enable = %c m_infinite_bypasses = %c m_total_evictions_aware = %c "
+    "m_bypass_enable = %c m_bypass_mode = %u m_infinite_bypasses = %c m_total_evictions_aware = %c "
     "m_max_bypasses = %u m_max_evictions_bound = %u m_trash_conf_cnt_bound = %u\n",
     m_cache_name, 
-    m_bypass_enable, m_infinite_bypasses, m_total_evictions_aware, 
+    m_bypass_enable, m_bypass_mode, m_infinite_bypasses, m_total_evictions_aware, 
     m_max_bypasses, m_max_evictions_bound, m_trash_conf_cnt_bound);
 }
 
@@ -1333,86 +1333,32 @@ enum cache_request_status tag_array::probe(
   const new_addr_type swap_out_addr = victim->m_block_addr;  
   const new_addr_type victim_addr = victim->m_block_addr;
   BYPASS_KEY victim_key(victim->m_stream_id, victim->m_kernel, victim_addr);  
+  LOCALITY_KEY loc_key(victim->m_stream_id, victim->m_kernel);
 
+  const int max_evictions_bound = 5;
+  // const bool swap_out_valid = victim->is_valid_line() || victim->is_modified_line();
+  const bool swap_out_valid = victim->is_valid_line() && !victim->is_modified_line();
   // Begin of probing L1D victim cache
   if (m_config.m_victim_cache_enable == 'T') {
+    // VC hit in-coming addr 
     if (cache->m_victim_cache.find(addr) != cache->m_victim_cache.end()) {
-      // if (victim->is_modified_line()) {
-      //   // Fall through as normal Miss path
-      // } else {
-      //   // True swap between L1D and victim-cache:
-      //   // 1) install VC-hit line into selected L1D slot
-      //   // 2) move replaced valid L1D line back into victim-cache
-      //   // const bool swap_out_valid = victim->is_valid_line() || victim->is_modified_line();
-      //   const bool swap_out_valid = victim->is_valid_line() && !victim->is_modified_line(); // tune
-      //   // Save the address to be swapped out from L1D into victim-cache
-      //   // This is a must, because victim->allocate would flush victim's original m_block_addr
-      //   // Using victim->m_block_addr for inserting back into victim-cache would cause error
-      //   assert(swap_out_addr != addr);
-
-      //   // L1D side:
-      //   // 1) Allocate the line that is to be filled
-      //   // victim->m_block_addr would be updated inside below
-      //   victim->allocate(
-      //       m_config.tag(addr), m_config.block_addr(addr), mf->get_streamID(),
-      //       m_gpu->m_kernel_id, time, mf->get_access_sector_mask());          
-      //   // 2) Fill the line (sector) with new timestamp and status       
-      //   fill(cache, idx, time, mf);
-
-      //   // VC side:
-      //   // 1) Remove the hit address that has been swapped into L1D
-      //   cache->m_victim_cache.erase(addr);
-      //   // 2) Insert the swapped out address into VC
-      //   if (swap_out_valid &&
-      //       cache->m_victim_cache.size() < m_config.m_victim_cache_entries) {
-      //     cache->m_victim_cache.insert(swap_out_addr); // logic
-      //     m_l1d_evictions[victim_key]++; // stats
-
-      //     if (DTRACE(L1D_VC_HIT)) {
-      //       fprintf(Trace::out, "%llu L1D VC hit. L1D VC insert swap_out_addr:%#llx\n",
-      //         time, swap_out_addr);
-      //     }        
-      //   }
-      //   return VC_HIT;
-      // }
-
-      // True swap between L1D and victim-cache:
-      // 1) install VC-hit line into selected L1D slot
-      // 2) move replaced valid L1D line back into victim-cache
-      const bool swap_out_valid = victim->is_valid_line() || victim->is_modified_line();
-      // const bool swap_out_valid = victim->is_valid_line() && !victim->is_modified_line(); // tune
-      // Save the address to be swapped out from L1D into victim-cache
-      // This is a must, because victim->allocate would flush victim's original m_block_addr
-      // Using victim->m_block_addr for inserting back into victim-cache would cause error
-      assert(swap_out_addr != addr);
-
-      // L1D side:
-      // 1) Allocate the line that is to be filled
-      // victim->m_block_addr would be updated inside below
-      victim->allocate(
+      // Swap in between L1D and VC
+      if (swap_out_valid) {
+        // L1D side:
+        victim->allocate(
           m_config.tag(addr), m_config.block_addr(addr), mf->get_streamID(),
           m_gpu->m_kernel_id, time, mf->get_access_sector_mask());          
-      // 2) Fill the line (sector) with new timestamp and status       
-      fill(cache, idx, time, mf);
-
-      // VC side:
-      // 1) Remove the hit address that has been swapped into L1D
-      cache->m_victim_cache.erase(addr);
-      // 2) Insert the swapped out address into VC
-      if (swap_out_valid &&
-          cache->m_victim_cache.size() < m_config.m_victim_cache_entries) {
-        cache->m_victim_cache.insert(swap_out_addr); // logic
-        m_l1d_evictions[victim_key]++; // stats
-
-        if (DTRACE(L1D_VC_HIT)) {
-          fprintf(Trace::out, "%llu L1D VC hit. L1D VC insert swap_out_addr:%#llx\n",
-            time, swap_out_addr);
-        }        
+        fill(cache, idx, time, mf);
+        // VC side:
+        cache->m_victim_cache.erase(addr);
+        cache->m_victim_cache.insert(swap_out_addr);        
       }
+      cache->m_stats.inc_l1d_vc_hits(loc_key);
       return VC_HIT;
-
-
-    } // if (cache->m_victim_cache.find(addr) != cache->m_victim_cache.end())
+    } 
+    else { // VC missed in-coming addr as well
+      cache->m_stats.inc_l1d_vc_misses(loc_key);
+    }
   } // End of probing L1D victim cache  
 
   victim->inc_total_evictions();
@@ -1427,24 +1373,24 @@ enum cache_request_status tag_array::probe(
       }
     }
   }
-  // Begin of filling L1D victim cache
-  if (m_config.m_victim_cache_enable == 'T') {
-    const bool swap_out_valid = victim->is_valid_line() || victim->is_modified_line();
-    // const bool swap_out_valid = victim->is_valid_line() && !victim->is_modified_line(); // tune
-    // if (victim->is_valid_line() &&
-    //     cache->m_victim_cache.size() < m_config.m_victim_cache_entries) {
-    if (swap_out_valid &&
-        cache->m_victim_cache.size() < m_config.m_victim_cache_entries) {          
-        cache->m_victim_cache.insert(victim_addr);
-        m_l1d_evictions[victim_key]++; // stats
-        LOCALITY_KEY loc_key(victim->m_stream_id, victim->m_kernel);
-        cache->m_stats.inc_l1d_vc_misses(loc_key);
-        if (DTRACE(L1D_VICTIM_CACHE) || DTRACE(L1D_VC_MISS)) {
-          fprintf(Trace::out, "%llu L1D VC miss. L1D VC insert block_addr:%#llx\n",
-            time, victim_addr);
-      }
-    }
-  } // End of filling L1D victim cache
+  // // Begin of filling L1D victim cache
+  // if (m_config.m_victim_cache_enable == 'T') {
+  //   const bool swap_out_valid = victim->is_valid_line() || victim->is_modified_line();
+  //   // const bool swap_out_valid = victim->is_valid_line() && !victim->is_modified_line(); // tune
+  //   // if (victim->is_valid_line() &&
+  //   //     cache->m_victim_cache.size() < m_config.m_victim_cache_entries) {
+  //   if (swap_out_valid &&
+  //       cache->m_victim_cache.size() < m_config.m_victim_cache_entries) {          
+  //       cache->m_victim_cache.insert(victim_addr);
+  //       m_l1d_evictions[victim_key]++; // stats
+  //       LOCALITY_KEY loc_key(victim->m_stream_id, victim->m_kernel);
+  //       cache->m_stats.inc_l1d_vc_misses(loc_key);
+  //       if (DTRACE(L1D_VICTIM_CACHE) || DTRACE(L1D_VC_MISS)) {
+  //         fprintf(Trace::out, "%llu L1D VC miss. L1D VC insert block_addr:%#llx\n",
+  //           time, victim_addr);
+  //     }
+  //   }
+  // } // End of filling L1D victim cache
 
   if (m_config.m_warp_interfere_aware == 'F') {
     if (valid_line != (unsigned) - 1) {
@@ -1565,37 +1511,13 @@ enum cache_request_status tag_array::probe(
           }
         }
       } // End of total-evictions-aware scheme
-
-      // // Begin of locality-aware scheme
-      // if (get_l1d_rd_fill_to_evict_gap(incoming_key) < get_avg_l1d_rd_fill_to_evict_gap(incoming_key)) {
-      //   inc_conf_cnt(m_l1d_rd_bypass_confidence[incoming_key], m_config.m_trash_conf_cnt_bound, 1);
-      //   if (m_l1d_rd_bypass_confidence[incoming_key] == m_config.m_trash_conf_cnt_bound) {
-      //     if (m_config.m_infinite_bypasses == 'T') {
-      //       m_incoming_bypasses.insert(incoming_key);
-      //       m_trashed_reqs.insert(incoming_key);
-      //       mf->set_l1d_rd_byp_activated();
-      //       m_l1d_rd_byp_activated_times[incoming_key]++;
-      //       assert(hit_l1d_bypassed_item(incoming_key, mf));            
-      //     } else {
-      //       // if (m_trashed_reqs.size() < m_config.m_max_bypasses) {
-      //       if (m_incoming_bypasses.size() < (incoming_byp_ratio * m_config.m_max_bypasses) &&
-      //           m_trashed_reqs.size() < m_config.m_max_bypasses) {
-      //         m_incoming_bypasses.insert(incoming_key);        
-      //         m_trashed_reqs.insert(incoming_key);
-      //         mf->set_l1d_rd_byp_activated();
-      //         m_l1d_rd_byp_activated_times[incoming_key]++;
-      //         assert(hit_l1d_bypassed_item(incoming_key, mf));
-      //       }
-      //     }
-      //   }
-      // } // End of locality-aware scheme
     } else if (victim_key_hit) {
       set_l1d_evict_time(victim_key, time);
       average_l1d_rd_fill_to_evict_gap(victim_key);  
       // Begin of total-evictions-aware scheme
       const char* insert_src = "xx";
       if (m_config.m_total_evictions_aware == 'T') {
-        if (get_l1d_evictions(victim_key) > m_config.m_max_evictions_bound) {          
+        if (get_l1d_evictions(victim_key) > m_config.m_max_evictions_bound) {
           if (m_config.m_infinite_bypasses == 'T') {
             m_victim_bypasses.insert(victim_key);
             m_trashed_reqs.insert(victim_key);       
@@ -1612,8 +1534,56 @@ enum cache_request_status tag_array::probe(
           } else {
             if (m_victim_bypasses.size() < ((1 - incoming_byp_ratio) * m_config.m_max_bypasses) &&
                 m_trashed_reqs.size() < m_config.m_max_bypasses) {
+
+              if (m_config.m_bypass_mode == 0) {
+                // bool swap_out_valid = victim->is_valid_line() || victim->is_modified_line();
+                bool swap_out_valid = victim->is_valid_line() && !victim->is_modified_line();
+                const new_addr_type swap_out_addr = victim->m_block_addr;          
+                const new_addr_type victim_addr = victim->m_block_addr;
+                if (swap_out_valid) {                
+                  ////////////////////////// Look-up VB //////////////////////////
+                  if (cache->m_victim_buffer.find(addr) != cache->m_victim_buffer.end()) {
+                    /////////////////////////// VB ///////////////////////////
+                    // L1D side:
+                    // 1) Allocate the line that is to be filled
+                    // victim->m_block_addr would be updated inside below
+                    victim->allocate(
+                        m_config.tag(addr), m_config.block_addr(addr), mf->get_streamID(),
+                        m_gpu->m_kernel_id, time, mf->get_access_sector_mask());          
+                    // 2) Fill the line (sector) with new timestamp and status       
+                    fill(cache, idx, time, mf);
+
+                    // VB side:
+                    // 1) Remove the hit address that has been swapped into L1D
+                    cache->m_victim_buffer.erase(addr);
+                    // 2) Insert the swapped out address into VC
+                    cache->m_victim_buffer.insert(swap_out_addr); // logic
+                    m_l1d_evictions[victim_key]++; // stats
+
+                    if (DTRACE(L1D_VICTIM_BUFFER)) {
+                      fprintf(Trace::out, "%llu TPC:%u SM:%u L1D VB hit. "
+                        "L1D victim' swap_out_addr:%#llx "
+                        "swapped with VB's addr:%#llx\n", 
+                        time, mf->get_tpc(), mf->get_sid(), swap_out_addr, addr);
+                    }
+
+                    return VC_HIT;
+                    ///////////////////////////////////////////////////////////////
+                  } else if (cache->m_victim_buffer.size() < m_config.m_victim_cache_entries) {
+                    // Just insert new entry into VB
+                    cache->m_victim_buffer.insert(swap_out_addr);
+                    if (DTRACE(L1D_VICTIM_BUFFER)) {
+                      fprintf(Trace::out, "%llu TPC:%u SM:%u L1D VB missed in-coming addr:%#llx "
+                        "and inserted victim's swap_out_addr:%#llx (->size:%u). victim->is_modified_line:%u\n", 
+                        time, mf->get_tpc(), mf->get_sid(), addr, swap_out_addr, cache->m_victim_buffer.size(),
+                        victim->is_modified_line());
+                    }
+                  }     
+                } // swap condition satisfies
+              }
+              
               m_victim_bypasses.insert(victim_key);
-              m_trashed_reqs.insert(victim_key);            
+              m_trashed_reqs.insert(victim_key); 
               mf->set_l1d_rd_byp_activated(); // m_l1d_rd_byp_change = 2 = 2'b10
               m_l1d_rd_byp_activated_times[victim_key]++;
               assert(hit_l1d_bypassed_item(victim_key, mf));
@@ -1626,7 +1596,7 @@ enum cache_request_status tag_array::probe(
               }                
             }
           }
-        } // victim_key_hit == True
+        } // Bypass is activated (1st scheme)
       } // End of total-evictions-aware scheme
 
       // Begin of locality-aware scheme
@@ -4933,7 +4903,14 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
       LOCALITY_KEY loc_key(mf->get_streamID(), m_gpu->m_kernel_id);
       BYPASS_KEY byp_key(
         mf->get_streamID(), m_gpu->m_kernel_id, m_config.block_addr(e->second.m_addr));
-      if (!m_tag_array->hit_l1d_bypassed_item(byp_key, mf)) {
+      if (m_config.m_bypass_mode == 1 &&
+          m_tag_array->hit_l1d_bypassed_item(byp_key, mf)) {
+
+        if (DTRACE(TRACE_BYPASSED_L1D_PKT) || DTRACE(HIT_L1D_BYPASSED_ITEM)) {
+          dumpCacheEvent(time, "baseline_cache::fill", 
+            "HIT_L1D_BYPASSED_ITEM L1D bypassed m_tag_array->fill", mf);
+        }
+      } else {
         if (DTRACE(CACHE_EVENT)) {
           dumpCacheEvent(time, "::fill", "ap:ON_MISS m_tag_array->fill", mf);
         }
@@ -4945,11 +4922,6 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
         }
         assert(e->second.m_cache_index != (u32) - 1);
         m_tag_array->fill(this, e->second.m_cache_index, time, mf);
-      } else {
-        if (DTRACE(TRACE_BYPASSED_L1D_PKT) || DTRACE(HIT_L1D_BYPASSED_ITEM)) {
-          dumpCacheEvent(time, "baseline_cache::fill", 
-            "HIT_L1D_BYPASSED_ITEM L1D bypassed m_tag_array->fill", mf);
-        }
       }
       // Always fill victim cache
       // m_victim_cache->fill(e->second.m_cache_index, time, mf);
@@ -4980,7 +4952,9 @@ void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
     
     BYPASS_KEY byp_key(
       mf->get_streamID(), m_gpu->m_kernel_id, m_config.block_addr(e->second.m_addr));
-    if (m_config.m_bypass_enable == 'T' && m_tag_array->hit_l1d_bypassed_item(byp_key, mf)) {
+    if (m_config.m_bypass_mode == 1 && 
+      m_config.m_bypass_enable == 'T' && 
+      m_tag_array->hit_l1d_bypassed_item(byp_key, mf)) {
       assert(m_is_l1d);
       m_tag_array->m_l1d_occupied[byp_key] = true;
       if (DTRACE(TRACE_BYPASSED_L1D_PKT) || DTRACE(HIT_L1D_BYPASSED_ITEM) ||
@@ -5256,14 +5230,14 @@ void baseline_cache::send_read_request(new_addr_type raw_addr, new_addr_type blo
         if (m_config.m_bypass_enable == 'T') {
           assert(m_is_l1d);
           BYPASS_KEY byp_key(mf->get_streamID(), m_gpu->m_kernel_id, block_addr);
-          if (!m_tag_array->hit_l1d_bypassed_item(byp_key, mf)) {
-            m_tag_array->access(this,raw_addr, block_addr, time, cache_index, wb, evicted, mf);  
-          } else {
+          if (m_config.m_bypass_mode == 1 && m_tag_array->hit_l1d_bypassed_item(byp_key, mf)) {
             if (DTRACE(TRACE_BYPASSED_L1D_PKT) || 
                 DTRACE(BYPASS_L1D_ALLOC) || DTRACE(HIT_L1D_BYPASSED_ITEM)) {
               dumpCacheEvent(time, "baseline_cache::send_read_request", 
                 "HIT_L1D_BYPASSED_ITEM Bypassed m_tag_array->access", mf);
             }
+          } else {
+            m_tag_array->access(this,raw_addr, block_addr, time, cache_index, wb, evicted, mf);  
           }
         } else {
           m_tag_array->access(this,raw_addr, block_addr, time, cache_index, wb, evicted, mf);
@@ -5407,10 +5381,10 @@ void baseline_cache::send_read_request(new_addr_type raw_addr, new_addr_type blo
 
       if (m_config.m_bypass_enable == 'T') {
         BYPASS_KEY byp_key(mf->get_streamID(), m_gpu->m_kernel_id, block_addr);
-        if (!m_tag_array->hit_l1d_bypassed_item(byp_key, mf)) {
-          m_tag_array->set_recorded_in_mshr(cache_index);
+        if (m_config.m_bypass_mode == 1 && m_tag_array->hit_l1d_bypassed_item(byp_key, mf)) {
+            // nothing
         } else {
-          // assert(!(*it)->isatomic());
+          m_tag_array->set_recorded_in_mshr(cache_index);
         }
       } else {
         m_tag_array->set_recorded_in_mshr(cache_index);
@@ -6093,7 +6067,9 @@ enum cache_request_status data_cache::rd_hit_base(
 
   if (m_config.m_bypass_enable == 'T') {
     BYPASS_KEY byp_key(mf->get_streamID(), m_gpu->m_kernel_id, block_addr);
-    if (m_is_l1d && m_tag_array->hit_l1d_bypassed_item(byp_key, mf)) {
+    if (m_is_l1d &&
+      m_config.m_bypass_mode == 1 && 
+      m_tag_array->hit_l1d_bypassed_item(byp_key, mf)) {
       assert(0);
     }
   }
@@ -6298,9 +6274,6 @@ enum cache_request_status data_cache::process_tag_probe(
     BYPASS_KEY byp_key(mf->get_streamID(), m_gpu->m_kernel_id, m_config.block_addr(addr));
     LOCALITY_KEY loc_key(mf->get_streamID(), m_gpu->m_kernel_id);
     if (probe_status == HIT || probe_status == VC_HIT) {
-      if (probe_status == VC_HIT) {
-        m_stats.inc_l1d_vc_hits(loc_key);
-      }      
       access_status = (this->*m_rd_hit)(addr, cache_index, mf, time, events, probe_status);  
     } else if (probe_status != RESERVATION_FAIL) {
       if (DTRACE(CACHE_EVENT)) {
@@ -6373,7 +6346,7 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
   enum cache_request_status probe_status = cache_request_status::MISS;
   if (m_config.m_bypass_enable == 'T') {
     BYPASS_KEY byp_key(mf->get_streamID(), m_gpu->m_kernel_id, block_addr);
-    if (m_tag_array->hit_l1d_bypassed_item(byp_key, mf)) {
+    if (m_config.m_bypass_mode == 1 && m_tag_array->hit_l1d_bypassed_item(byp_key, mf)) {
       assert(!mf->is_write());
       assert(!mf->isatomic());
       if (DTRACE(TRACE_BYPASSED_L1D_PKT) || DTRACE(HIT_L1D_BYPASSED_ITEM)) {

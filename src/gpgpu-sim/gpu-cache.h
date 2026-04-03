@@ -1036,6 +1036,7 @@ class cache_config {
     assert(rep_enhance_config);
 
     m_bypass_enable         = 'F';
+    m_bypass_mode = 1; // default is no VB
     m_infinite_bypasses     = 'F';
     m_total_evictions_aware = 'F';
     m_max_bypasses          = 0;
@@ -1458,6 +1459,7 @@ class cache_config {
   char m_victim_cache_enable;
   u32 m_victim_cache_entries;
   char m_bypass_enable;
+  u32 m_bypass_mode;
   char m_infinite_bypasses;
   char m_total_evictions_aware;
   u32 m_max_bypasses;
@@ -2864,6 +2866,7 @@ class baseline_cache : public cache_t {
   
   // std::list<new_addr_type> m_victim_cache; // Assume perfect  
   std::set<new_addr_type> m_victim_cache; // Assume perfect  
+  std::set<new_addr_type> m_victim_buffer;
 
   /// Checks whether this request can be handled on this cycle. num_miss equals
   /// max # of misses to be handled on this cycle
