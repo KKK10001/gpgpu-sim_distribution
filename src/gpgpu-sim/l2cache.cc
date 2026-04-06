@@ -576,25 +576,6 @@ void memory_sub_partition::cache_cycle(
         m_L2_icnt_queue->push(mf);
         m_L2_icnt_inputs[m_id][mf->get_sid()]++;
         
-        if (DTRACE(CACHE_Q_SIZE)) {
-          fprintf(Trace::out, 
-            "m_L2_icnt_inputs[L2_sub:%u][sid:%u]++ = %u\n", 
-            m_id, mf->get_sid(), m_L2_icnt_inputs[m_id][mf->get_sid()]);
-        }        
-
-        if (DTRACE(RESP_PKT)) {
-          fprintf(Trace::out, "%llu L2_sub[%u] "
-            "push m_L2_icnt_queue with mf of addr: %#llx\n", 
-            unified_cycle, m_id, mf->get_addr());
-        }
-        if (DTRACE(L2_ICNT_QUEUE)) {
-          fprintf(Trace::out, "%llu L2_sub[%u] m_L2_icnt_queue added mf:"
-            "{TPC:%u SM:%u WARP:%u req_uid:%u %#llx acc_type:%s}\n",
-            unified_cycle, m_id,
-            mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(),
-            mem_access_type_str(mem_access_type(mf->get_access_type()))
-            );
-        }
         if (DTRACE(CACHE_EVENT)) {
           if (mf->get_l1d_bypass_noalloc()) {
             m_L2cache->dumpCacheEvent(
@@ -664,20 +645,11 @@ void memory_sub_partition::cache_cycle(
                        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
         m_L2cache->fill(mf, unified_cycle);
 
-        if (DTRACE(L2_TRACE) || DTRACE(MEM_FETCH_LIFETIME) || DTRACE(REFILL_PATH)) {
-          fprintf(Trace::out, "%llu "
-            "mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s pos:%s} "
-            "m_dram_L2_queue(occup:%f) -> L2_sub[%u]\n", 
-            unified_cycle,
-            mf->get_tpc(), mf->get_sid(), mf->get_wid(), 
-            mf->get_request_uid(), mf->get_addr(),
-            mem_access_type_str(mem_access_type(mf->get_access_type())),
-            mf->mem_fetch_status_str(mf->get_status()),
-            (float)(m_dram_L2_queue->get_length() - 1) / m_dram_L2_queue->get_max_len(), // occupancy          
-            m_id
-            );
-        }        
-
+        m_L2cache->dumpCacheEvent(
+          m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, 
+          "memory_sub_partition::cache_cycle",
+          "mf hit in L2 m_extra_mf_fields", mf
+        );
         m_dram_L2_queue->pop(); 
       }
     }
@@ -687,25 +659,17 @@ void memory_sub_partition::cache_cycle(
       // 2026-1-5
       // [BugFix] Added assert(0) on never happened path: 
       // mem_fetch* mf from m_dram_L2_queue bypass L2 and directly go to m_L2_icnt_queue.      
+      m_L2cache->dumpCacheEvent(
+        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, 
+        "memory_sub_partition::cache_cycle",
+        "mf missed in L2 m_extra_mf_fields", mf
+      );
+
       assert(0);
       if (mf->is_write() && mf->get_type() == WRITE_ACK) {
         mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE, 
           m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
       }
-
-      if (DTRACE(L2_TRACE) || DTRACE(MEM_FETCH_LIFETIME) || DTRACE(REFILL_PATH)) {
-        fprintf(Trace::out, "%llu "
-          "mf:{TPC:%u SM:%u WARP:%u req_uid:%u addr:%#llx acc_type:%s pos:%s} "
-          "m_dram_L2_queue(occup:%f) -> L2_sub[%u] -> m_L2_icnt_queue(occup:%f)\n", 
-          unified_cycle, 
-          mf->get_tpc(), mf->get_sid(), mf->get_wid(), mf->get_request_uid(), mf->get_addr(), 
-          mem_access_type_str(mem_access_type(mf->get_access_type())),
-          mf->mem_fetch_status_str(mf->get_status()),
-          (float)(m_dram_L2_queue->get_length() - 1) / m_dram_L2_queue->get_max_len(), // occupancy          
-          m_id,
-          (float)(m_L2_icnt_queue->get_length() + 1) / m_L2_icnt_queue->get_max_len() // occupancy
-          );
-      }    
       
       m_L2_icnt_queue->push(mf);
       m_L2_icnt_inputs[m_id][mf->get_sid()]++;
@@ -842,10 +806,7 @@ void memory_sub_partition::cache_cycle(
               m_request_tracker.erase(mf);
               delete mf;
             } else if (m_config->m_L2_config.get_write_policy() == WRITE_BACK) {
-              mf->set_reply();
-              if (m_config->m_L2_config.get_write_policy() == WRITE_BACK) {
-                assert(0);
-              }              
+              mf->set_reply();            
               mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE,
                              m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
               m_L2_icnt_queue->push(mf);

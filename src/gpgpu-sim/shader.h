@@ -60,6 +60,8 @@
 #include "traffic_breakdown.h"
 
 #define NO_OP_FLAG 0xFF
+typedef unsigned long long u64;
+typedef unsigned u32;
 
 /* READ_PACKET_SIZE:
    bytes: 6 address (flit can specify chanel so this gives up to ~2GB/channel,

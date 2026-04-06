@@ -3102,8 +3102,7 @@ bool ldst_unit::response_buffer_full() const {
 }
 
 void ldst_unit::fill(mem_fetch *mf, unsigned cid) {
-  unsigned long long time = 
-    m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle;
+  u64 time = m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle;
 
   assert(mf); // protect
 
@@ -3116,16 +3115,6 @@ void ldst_unit::fill(mem_fetch *mf, unsigned cid) {
       m_L1D->dumpCacheEvent(time, "ldst_unit::fill", 
         "m_response_fifo.push_back", mf);
     }
-  }
-
-  if (DTRACE(CACHE_Q_SIZE)) {
-    fprintf(Trace::out, "cid = %u LSU m_resp_fifo_inputs++ = %u\n", cid, m_resp_fifo_inputs);
-  }
-  if (DTRACE(RESP_PKT)) {
-    std::string cache_name = m_L1D ? "L1D" : "xx";
-    fprintf(Trace::out, "%llu %s m_response_fifo push mf with addr: %#llx "
-      "m_resp_fifo_inputs++ = %u\n", 
-      time, cache_name.c_str(), mf->get_addr(), m_resp_fifo_inputs);
   }
 
   if (DTRACE(CACHE_EVENT)) {
