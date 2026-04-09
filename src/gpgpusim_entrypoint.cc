@@ -114,6 +114,8 @@ void *gpgpu_sim_thread_concurrent(void *ctx_ptr) {
     pthread_mutex_lock(&(ctx->the_gpgpusim->g_sim_lock));
     ctx->the_gpgpusim->g_sim_active = true;
     pthread_mutex_unlock(&(ctx->the_gpgpusim->g_sim_lock));
+    printf("g_sim_active = true. pthread_mutex_unlock\n");
+
     bool active = false;
     bool sim_cycles = false;
     ctx->the_gpgpusim->g_the_gpu->init();
@@ -153,6 +155,7 @@ void *gpgpu_sim_thread_concurrent(void *ctx_ptr) {
           ctx->the_gpgpusim->g_stream_manager->stop_all_running_kernels();
           ctx->the_gpgpusim->g_sim_done = true;
           ctx->the_gpgpusim->break_limit = true;
+          printf("!active && cycle_insn_cta_max_hit -> g_sim_done = true\n");
         }
       }
 
@@ -177,6 +180,7 @@ void *gpgpu_sim_thread_concurrent(void *ctx_ptr) {
     pthread_mutex_lock(&(ctx->the_gpgpusim->g_sim_lock));
     ctx->the_gpgpusim->g_sim_active = false;
     pthread_mutex_unlock(&(ctx->the_gpgpusim->g_sim_lock));
+    printf("g_sim_active = false. pthread_mutex_unlock\n");
   } while (!ctx->the_gpgpusim->g_sim_done);
 
   printf("GPGPU-Sim: *** simulation thread exiting ***\n");

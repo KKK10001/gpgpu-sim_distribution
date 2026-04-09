@@ -1299,6 +1299,9 @@ bool gpgpu_sim::active() {
       FILE *trace_fp = fopen("active_trace.log", "a");
       if (trace_fp) { fprintf(trace_fp, "early-exit: gpgpu_ctx NULL\n"); fclose(trace_fp);}  
     }
+    if (DTRACE(CHECK_SIM_ACTIVE)) {
+      fprintf(Trace::out, "!gpgpu_ctx -> return false for gpgpu_sim::active()\n");
+    }
     return false;
   }  
   if (!gpgpu_ctx->the_gpgpusim->g_stream_manager) {
@@ -1306,34 +1309,103 @@ bool gpgpu_sim::active() {
       FILE *trace_fp = fopen("active_trace.log", "a");
       if (trace_fp) { fprintf(trace_fp, "early-exit: stream_manager NULL\n"); fclose(trace_fp);}  
     }
+    if (DTRACE(CHECK_SIM_ACTIVE)) {
+      fprintf(Trace::out, "!g_stream_manager -> return false for gpgpu_sim::active()\n");
+    }
     return false;
   }
   if (m_config.gpu_max_cycle_opt &&
-      (gpu_tot_sim_cycle + gpu_sim_cycle) >= m_config.gpu_max_cycle_opt)
+      (gpu_tot_sim_cycle + gpu_sim_cycle) >= m_config.gpu_max_cycle_opt) {
+    if (DTRACE(CHECK_SIM_ACTIVE)) {
+      fprintf(Trace::out, "m_config.gpu_max_cycle_opt && "
+        "(gpu_tot_sim_cycle:%llu + gpu_sim_cycle:%llu) = %llu "
+        ">= m_config.gpu_max_cycle_opt:%llu "
+        "-> return false for gpgpu_sim::active()\n",
+        gpu_tot_sim_cycle, gpu_sim_cycle,
+        gpu_tot_sim_cycle + gpu_sim_cycle, m_config.gpu_max_cycle_opt);
+    }
     return false;
+  }    
   if (m_config.gpu_max_insn_opt &&
-      (gpu_tot_sim_insn + gpu_sim_insn) >= m_config.gpu_max_insn_opt)
+      (gpu_tot_sim_insn + gpu_sim_insn) >= m_config.gpu_max_insn_opt) {
+    if (DTRACE(CHECK_SIM_ACTIVE)) {
+      fprintf(Trace::out, "m_config.gpu_max_insn_opt && "
+        "(gpu_tot_sim_insn:%u + gpu_sim_insn:%u) = %u >= m_config.gpu_max_insn_opt:%u "
+        "-> return false for gpgpu_sim::active()\n", 
+        gpu_tot_sim_insn, gpu_sim_insn,
+        gpu_tot_sim_insn + gpu_sim_insn, m_config.gpu_max_insn_opt);
+    }
     return false;
+  }    
   if (m_config.gpu_max_cta_opt &&
-      (gpu_tot_issued_cta >= m_config.gpu_max_cta_opt))
+      (gpu_tot_issued_cta >= m_config.gpu_max_cta_opt)) {
+    if (DTRACE(CHECK_SIM_ACTIVE)) {
+      fprintf(Trace::out, "m_config.gpu_max_cta_opt && "
+        "gpu_tot_issued_cta:%u >= m_config.gpu_max_cta_opt:%u "
+        "-> return false for gpgpu_sim::active()\n",
+        gpu_tot_issued_cta, m_config.gpu_max_cta_opt);
+    }
     return false;
+  }    
   if (m_config.gpu_max_completed_cta_opt &&
-      (gpu_completed_cta >= m_config.gpu_max_completed_cta_opt))
+      (gpu_completed_cta >= m_config.gpu_max_completed_cta_opt)) {
+    if (DTRACE(CHECK_SIM_ACTIVE)) {
+      fprintf(Trace::out, "m_config.gpu_max_completed_cta_opt && "
+        "gpu_completed_cta:%u >= m_config.gpu_max_completed_cta_opt:%u "
+        "-> return false for gpgpu_sim::active()\n",
+        gpu_completed_cta, m_config.gpu_max_completed_cta_opt);
+    }
     return false;
-  if (m_config.gpu_deadlock_detect && gpu_deadlock) return false;
-  if (!m_cluster) return false;
+  }
+  if (m_config.gpu_deadlock_detect && gpu_deadlock) {
+    if (DTRACE(CHECK_SIM_ACTIVE)) {
+      fprintf(Trace::out, "m_config.gpu_deadlock_detect && gpu_deadlock "
+        "-> return false for gpgpu_sim::active()\n");
+    }
+    return false;
+  }
+  if (!m_cluster) {
+    if (DTRACE(CHECK_SIM_ACTIVE)) {
+      fprintf(Trace::out, "m_cluster -> return false for gpgpu_sim::active()\n");
+    }
+    return false;
+  }
   for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
-    if (m_cluster[i] && m_cluster[i]->get_not_completed() > 0) return true;
+    if (m_cluster[i] && m_cluster[i]->get_not_completed() > 0) {
+      if (DTRACE(CHECK_SIM_ACTIVE)) {
+        fprintf(Trace::out, "m_cluster[%u] && m_cluster[%u]->get_not_completed() "
+          "-> return true for gpgpu_sim::active()\n", i, i);
+      }
+      return true;
+    }
   }
 
   if (m_memory_partition_unit) {
     for (unsigned i = 0; i < m_memory_config->m_n_mem; i++) {
-      if (m_memory_partition_unit[i] && m_memory_partition_unit[i]->busy() > 0)
+      if (m_memory_partition_unit[i] && m_memory_partition_unit[i]->busy() > 0) {
+        if (DTRACE(CHECK_SIM_ACTIVE)) {
+          fprintf(Trace::out, "m_memory_partition_unit[%u] && m_memory_partition_unit[%u]->busy "
+            "-> return true for gpgpu_sim::active()\n", i, i);          
+        }
         return true;
+      }
     }
   }
-  if (icnt_busy()) return true;
-  if (get_more_cta_left()) return true;
+  if (icnt_busy()) {
+    if (DTRACE(CHECK_SIM_ACTIVE)) {
+      fprintf(Trace::out, "icnt_busy() = 1 -> return true for gpgpu_sim::active()\n");
+    }    
+    return true;
+  }
+  if (get_more_cta_left()) {
+    if (DTRACE(CHECK_SIM_ACTIVE)) {
+      fprintf(Trace::out, "get_more_cta_left() = 1 -> return true for gpgpu_sim::active()\n");
+    }
+    return true;
+  }
+  if (DTRACE(CHECK_SIM_ACTIVE)) {
+    fprintf(Trace::out, "return false for gpgpu_sim::active()\n");
+  }
   return false;
 }
 

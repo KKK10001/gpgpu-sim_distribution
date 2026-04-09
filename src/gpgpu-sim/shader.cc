@@ -5323,7 +5323,8 @@ void opndcoll_rfu_t::dispatch_ready_cu() {
         // 2/11. "num_operands = num_regs" is set inside 
         // trace_warp_inst_t::parse_from_trace_struct
         // Hence, "cu->get_num_operands() - cu->get_num_regs() = 0"
-        assert(0);
+        // 4/9 Commented for debugging PTX-DIRECT + PERF MODE
+        // assert(0);
 
         if (m_shader->get_config()->gpgpu_clock_gated_reg_file) {
           unsigned active_count = 0;
