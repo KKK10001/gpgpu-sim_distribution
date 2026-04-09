@@ -645,11 +645,14 @@ void memory_sub_partition::cache_cycle(
                        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
         m_L2cache->fill(mf, unified_cycle);
 
-        m_L2cache->dumpCacheEvent(
-          m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, 
-          "memory_sub_partition::cache_cycle",
-          "mf hit in L2 m_extra_mf_fields", mf
-        );
+        if (DTRACE(CACHE_EVENT)) {
+          m_L2cache->dumpCacheEvent(
+            m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, 
+            "memory_sub_partition::cache_cycle",
+            "mf hit in L2 m_extra_mf_fields", mf
+          );
+        }
+
         m_dram_L2_queue->pop(); 
       }
     }
@@ -659,12 +662,13 @@ void memory_sub_partition::cache_cycle(
       // 2026-1-5
       // [BugFix] Added assert(0) on never happened path: 
       // mem_fetch* mf from m_dram_L2_queue bypass L2 and directly go to m_L2_icnt_queue.      
-      m_L2cache->dumpCacheEvent(
-        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, 
-        "memory_sub_partition::cache_cycle",
-        "mf missed in L2 m_extra_mf_fields", mf
-      );
-
+      if (DTRACE(CACHE_EVENT)) {
+        m_L2cache->dumpCacheEvent(
+          m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, 
+          "memory_sub_partition::cache_cycle",
+          "mf missed in L2 m_extra_mf_fields", mf
+        );        
+      }
       assert(0);
       if (mf->is_write() && mf->get_type() == WRITE_ACK) {
         mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE, 

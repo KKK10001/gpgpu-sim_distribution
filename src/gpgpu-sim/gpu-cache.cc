@@ -1407,6 +1407,13 @@ enum cache_request_status tag_array::probe(
             addr, m_config.get_cache_name());
     abort();
   }
+
+  if (m_is_l1d && mf) {
+    cache_block_t *victim = m_lines[idx];
+    const new_addr_type victim_addr = victim->m_block_addr;
+    BYPASS_KEY victim_key(victim->m_stream_id, victim->m_kernel, victim_addr);  
+    m_l1d_evictions[victim_key]++;
+  }  
   
   // Switch on/off L1D bypass
   if (m_is_l1d && m_config.m_bypass_enable == 'T' && mf && !mf->is_write() && !mf->isatomic()) {
@@ -1466,12 +1473,12 @@ enum cache_request_status tag_array::probe(
 
     set_l1d_rd_fill_to_evict_gap(victim_key, time - get_l1d_rd_fill_time(victim_key));
 
-    [[maybe_unused]] const float incoming_byp_ratio = 0.0;
+    // [[maybe_unused]] const float incoming_byp_ratio = 0.0;
     // [[maybe_unused]] const float incoming_byp_ratio = 0.2; // 120.354 (-0.091%)	l1d_byp_T_F_T_40_3_3_lrr_srad_v2
     // [[maybe_unused]] const float incoming_byp_ratio = 0.3; // 120.620 (+0.130%)	l1d_byp_T_F_T_40_3_3_incoming_030_lrr_srad_v2	
     // [[maybe_unused]] const float incoming_byp_ratio = 0.7;
     // [[maybe_unused]] const float incoming_byp_ratio = 0.5;
-    // [[maybe_unused]] const float incoming_byp_ratio = 1.0;
+    [[maybe_unused]] const float incoming_byp_ratio = 1.0;
     if (new_byp_cand) { // Just update, and nothing to do with bypass decision
       set_l1d_evict_time(victim_key, time);
       average_l1d_rd_fill_to_evict_gap(victim_key);      
@@ -1483,7 +1490,7 @@ enum cache_request_status tag_array::probe(
 
       // Begin of total-evictions-aware scheme
       if (m_config.m_total_evictions_aware == 'T') {
-        if (get_l1d_evictions(incoming_key) > 3) {
+        if (get_l1d_evictions(incoming_key) > m_config.m_max_evictions_bound) {
           if (m_config.m_infinite_bypasses == 'T') {
             m_incoming_bypasses.insert(incoming_key);
             m_trashed_reqs.insert(incoming_key);
@@ -1638,12 +1645,12 @@ enum cache_request_status tag_array::probe(
     // m_gpu->get_shader_stats()->m_l1d_avg_evicts[mf->get_sid()] = m_l1d_avg_evicts[mf->get_sid()];
   } // if (m_is_l1d && mf && !mf->is_write() && !mf->isatomic()) {
 
-  if (m_is_l1d && mf) {
-    cache_block_t *victim = m_lines[idx];
-    const new_addr_type victim_addr = victim->m_block_addr;
-    BYPASS_KEY victim_key(victim->m_stream_id, victim->m_kernel, victim_addr);  
-    m_l1d_evictions[victim_key]++;
-  }  
+  // if (m_is_l1d && mf) {
+  //   cache_block_t *victim = m_lines[idx];
+  //   const new_addr_type victim_addr = victim->m_block_addr;
+  //   BYPASS_KEY victim_key(victim->m_stream_id, victim->m_kernel, victim_addr);  
+  //   m_l1d_evictions[victim_key]++;
+  // }  
 
   // 2/25 Reset MSHR record
   // reset_record_in_mshr(idx);

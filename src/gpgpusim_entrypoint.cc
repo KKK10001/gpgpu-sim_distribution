@@ -42,6 +42,7 @@
 
 static int sg_argc = 3;
 static const char *sg_argv[] = {"", "-config", "gpgpusim.config"};
+// static const char *sg_argv[] = {"", "-config", "xxxx.config"};
 
 // Help funcs to avoid multiple '->' for SST
 GPGPUsim_ctx *GPGPUsim_ctx_ptr() { return GPGPU_Context()->the_gpgpusim; }
@@ -128,17 +129,18 @@ void *gpgpu_sim_thread_concurrent(void *ctx_ptr) {
       // behaviour may be incorrect. Check that a kernel has finished and
       // no other kernel is currently running.
       if (ctx->the_gpgpusim->g_stream_manager->operation(&sim_cycles) &&
-          !ctx->the_gpgpusim->g_the_gpu->active())
+          !ctx->the_gpgpusim->g_the_gpu->active()) {
         break;
+      }
 
       // functional simulation
       if (ctx->the_gpgpusim->g_the_gpu->is_functional_sim()) {
-        kernel_info_t *kernel =
-            ctx->the_gpgpusim->g_the_gpu->get_functional_kernel();
+        kernel_info_t *kernel = ctx->the_gpgpusim->g_the_gpu->get_functional_kernel();
         assert(kernel);
-        ctx->the_gpgpusim->gpgpu_ctx->func_sim->gpgpu_cuda_ptx_sim_main_func(
-            *kernel);
+        ctx->the_gpgpusim->gpgpu_ctx->func_sim->gpgpu_cuda_ptx_sim_main_func(*kernel);
         ctx->the_gpgpusim->g_the_gpu->finish_functional_sim(kernel);
+        printf("finish_functional_sim(kernel:%u) -> Reset m_functional_sim = false\n", 
+          kernel->get_uid());
       }
 
       // performance simulation
@@ -157,7 +159,11 @@ void *gpgpu_sim_thread_concurrent(void *ctx_ptr) {
       active = ctx->the_gpgpusim->g_the_gpu->active() ||
                !(ctx->the_gpgpusim->g_stream_manager->empty_protected());
 
+      printf("active = %u !ctx->the_gpgpusim->g_sim_done = %u\n", 
+        active, !ctx->the_gpgpusim->g_sim_done);
+
     } while (active && !ctx->the_gpgpusim->g_sim_done);
+
     if (g_debug_execution >= 3) {
       printf("GPGPU-Sim: ** STOP simulation thread (no work) **\n");
       fflush(stdout);

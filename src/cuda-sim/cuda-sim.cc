@@ -2464,17 +2464,30 @@ unsigned max_cta(const struct gpgpu_ptx_sim_info *kernel_info,
                  unsigned int gpgpu_shader_registers,
                  unsigned int max_cta_per_core) {
   unsigned int padded_cta_size = threads_per_cta;
-  if (padded_cta_size % warp_size)
+  if (padded_cta_size % warp_size) {
     padded_cta_size = ((padded_cta_size / warp_size) + 1) * (warp_size);
+    printf("padded_cta_size:%u = ((threads_per_cta:%u / warp_size:%u) + 1) * warp_size:%u\n",
+      padded_cta_size, threads_per_cta, warp_size, warp_size);
+  }
   unsigned int result_thread = n_thread_per_shader / padded_cta_size;
+  printf("result_thread:%u = n_thread_per_shader:%u / padded_cta_size:%u\n",
+    result_thread, n_thread_per_shader, padded_cta_size);
 
   unsigned int result_shmem = (unsigned)-1;
-  if (kernel_info->smem > 0)
+  if (kernel_info->smem > 0) {
     result_shmem = gpgpu_shmem_size / kernel_info->smem;
+    printf("result_shmem:%u = gpgpu_shmem_size:%u / kernel_info->smem:%u\n", 
+      result_shmem, gpgpu_shmem_size, kernel_info->smem);
+  }    
   unsigned int result_regs = (unsigned)-1;
-  if (kernel_info->regs > 0)
+  if (kernel_info->regs > 0) {
     result_regs = gpgpu_shader_registers /
                   (padded_cta_size * ((kernel_info->regs + 3) & ~3));
+    printf("result_regs:%u = gpgpu_shader_registers:%u / "
+      "(padded_cta_size:%u * ((kernel_info->regs:%u + 3) & ~3))\n",
+      result_regs, gpgpu_shader_registers, padded_cta_size, kernel_info->regs);
+  }
+
   printf("padded cta size is %d and %d and %d", padded_cta_size,
          kernel_info->regs, ((kernel_info->regs + 3) & ~3));
   // Limit by CTA
@@ -2485,7 +2498,10 @@ unsigned max_cta(const struct gpgpu_ptx_sim_info *kernel_info,
   result = gs_min2(result, result_regs);
   result = gs_min2(result, result_cta);
 
-  printf("GPGPU-Sim uArch: CTA/core = %u, limited by:", result);
+  printf("GPGPU-Sim uArch: CTA/core = %u = "
+    "min(threads:%u, shmem:%u, regs:%u, cta_limit:%u). limited by:", 
+    result, result_thread, result_shmem, result_regs, result_cta);
+
   if (result == result_thread) printf(" threads");
   if (result == result_shmem) printf(" shmem");
   if (result == result_regs) printf(" regs");
@@ -2552,20 +2568,26 @@ void cuda_sim::gpgpu_cuda_ptx_sim_main_func(kernel_info_t &kernel,
     if (cp_op == 0 ||
         (cp_op == 1 && cta_launched < cp_cta_resume &&
          kernel.get_uid() == cp_kernel) ||
-        kernel.get_uid() < cp_kernel)  // just fro testing
+        kernel.get_uid() < cp_kernel)  // just for testing
     {
       functionalCoreSim cta(
           &kernel, gpgpu_ctx->the_gpgpusim->g_the_gpu,
           gpgpu_ctx->the_gpgpusim->g_the_gpu->getShaderCoreConfig()->warp_size);
+      printf("Initialized functionalCoreSim cta\n");
+
       cta.execute(cp_count, temp);
+      printf("Finished cta.execute(cp_count:%u, cta_id:%u)\n", cp_count, temp);
 
 #if (CUDART_VERSION >= 5000)
       gpgpu_ctx->device_runtime->launch_all_device_kernels();
+      printf("Finished launch_all_device_kernels()\n");
 #endif
     } else {
       kernel.increment_cta_id();
+      printf("Finished kernel.increment_cta_id()\n");
     }
     cta_launched++;
+    printf("cta_launched++ = %u\n", cta_launched);
   }
 
   if (cp_op == 1) {
@@ -2583,8 +2605,8 @@ void cuda_sim::gpgpu_cuda_ptx_sim_main_func(kernel_info_t &kernel,
   // register its exit
   if (!openCL) {
     // extern stream_manager *g_stream_manager;
-    gpgpu_ctx->the_gpgpusim->g_stream_manager->register_finished_kernel(
-        kernel.get_uid());
+    gpgpu_ctx->the_gpgpusim->g_stream_manager->register_finished_kernel(kernel.get_uid());
+    printf("register_finished_kernel(kernel:%u)\n", kernel.get_uid());
   }
 
   //******PRINTING*******
