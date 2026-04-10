@@ -6137,7 +6137,10 @@ enum cache_request_status data_cache::rd_miss_base(
 
   // "addr" is just used for generating "block_addr" in this function
 
-  assert(time == m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+  // 4/10 Following assertion would fail when 
+  // '-DEXCLUDE_MEMCPY_CYCLES_FROM_CACHE_TIMING' were not in CXXFLAGS
+  // assert(time == m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+
   new_addr_type block_addr = m_config.block_addr(addr);  
   
   if (status == cache_request_status::MISS || \

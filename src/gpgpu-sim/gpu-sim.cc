@@ -1488,14 +1488,15 @@ void gpgpu_sim::init() {
 
 void gpgpu_sim::update_stats(u32 finished_kernel, u64 finished_kernel_cuda_stream_id) {
   m_memory_stats->memlatstat_lat_pw();
-  gpu_tot_sim_cycle += gpu_sim_cycle;
-  gpu_tot_sim_insn += gpu_sim_insn;
-  gpu_tot_issued_cta += m_total_cta_launched;
-  partition_reqs_in_parallel_total += partition_reqs_in_parallel;
-  partition_replys_in_parallel_total += partition_replys_in_parallel;
+  // |-------- benchmark stats --------|-------- per-kernel stats --------|
+  gpu_tot_sim_cycle                     += gpu_sim_cycle;
+  gpu_tot_sim_insn                      += gpu_sim_insn;
+  gpu_tot_issued_cta                    += m_total_cta_launched;
+  partition_reqs_in_parallel_total      += partition_reqs_in_parallel;
+  partition_replys_in_parallel_total    += partition_replys_in_parallel;
   partition_reqs_in_parallel_util_total += partition_reqs_in_parallel_util;
-  gpu_tot_sim_cycle_partition_util += gpu_sim_cycle_partition_util;
-  gpu_tot_occupancy += gpu_occupancy;
+  gpu_tot_sim_cycle_partition_util      += gpu_sim_cycle_partition_util;
+  gpu_tot_occupancy                     += gpu_occupancy;
 
   print_stats(finished_kernel_cuda_stream_id, finished_kernel);
 
@@ -1504,13 +1505,14 @@ void gpgpu_sim::update_stats(u32 finished_kernel, u64 finished_kernel_cuda_strea
       __func__, gpu_tot_sim_insn, gpu_sim_insn);
   }
 
+  // Reset per-kernel stats
   gpu_sim_cycle = 0;
+  gpu_sim_insn = 0;
+  m_total_cta_launched = 0;
   partition_reqs_in_parallel = 0;
   partition_replys_in_parallel = 0;
   partition_reqs_in_parallel_util = 0;
-  gpu_sim_cycle_partition_util = 0;
-  gpu_sim_insn = 0; // Reset
-  m_total_cta_launched = 0;
+  gpu_sim_cycle_partition_util = 0;  
   gpu_completed_cta = 0;
   gpu_occupancy = occupancy_stats();
 
@@ -1730,7 +1732,7 @@ void gpgpu_sim::clear_executed_kernel_info() {
   m_executed_kernel_uids.clear();
 }
 
-void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
+void gpgpu_sim::gpu_print_stat(u32 kernelID, u64 streamID) {
   FILE *statfout = stdout;
 
   std::string kernel_info_str = executed_kernel_info_string();

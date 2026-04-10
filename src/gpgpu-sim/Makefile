@@ -57,7 +57,7 @@ endif
 CXXFLAGS += -I$(CUDA_INSTALL_PATH)/include
 # CXXFLAGS += -DARISE2_L1P5
 ##################### L2 Performance Study Flags #####################
-CXXFLAGS += -DEXCLUDE_MEMCPY_CYCLES_FROM_CACHE_TIMING
+# CXXFLAGS += -DEXCLUDE_MEMCPY_CYCLES_FROM_CACHE_TIMING
 CXXFLAGS += -DCONSERVATIVE_REQUEST_L2_SUB
 # CXXFLAGS += -DDISABLE_MSHR
 ######################################################################
