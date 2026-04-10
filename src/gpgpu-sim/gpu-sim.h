@@ -67,6 +67,8 @@
 #define DUMPLOG 333
 
 class gpgpu_context;
+typedef unsigned u32;
+typedef unsigned long long u64;
 
 extern tr1_hash_map<new_addr_type, unsigned> address_random_interleaving;
 
@@ -641,7 +643,7 @@ class gpgpu_sim : public gpgpu_t {
 
   void init();
   void cycle();
-  bool active();
+  bool active(std::string& type);
   bool cycle_insn_cta_max_hit() {
     return (m_config.gpu_max_cycle_opt && (gpu_tot_sim_cycle + gpu_sim_cycle) >=
                                               m_config.gpu_max_cycle_opt) ||
@@ -652,8 +654,8 @@ class gpgpu_sim : public gpgpu_t {
            (m_config.gpu_max_completed_cta_opt &&
             (gpu_completed_cta >= m_config.gpu_max_completed_cta_opt));
   }
-  void print_stats(unsigned long long streamID, unsigned kernelID = 0);
-  void update_stats();
+  void print_stats(u64 streamID, u32 kernelID = 0);
+  void update_stats(u32 finished_kernel, u64 finished_kernel_cuda_stream_id = (u64) - 1);
   void deadlock_check();
   void inc_completed_cta() { gpu_completed_cta++; }
   void get_pdom_stack_top_info(unsigned sid, unsigned tid, unsigned *pc,

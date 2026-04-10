@@ -1473,12 +1473,12 @@ enum cache_request_status tag_array::probe(
 
     set_l1d_rd_fill_to_evict_gap(victim_key, time - get_l1d_rd_fill_time(victim_key));
 
-    // [[maybe_unused]] const float incoming_byp_ratio = 0.0;
+    [[maybe_unused]] const float incoming_byp_ratio = 0.0;
     // [[maybe_unused]] const float incoming_byp_ratio = 0.2; // 120.354 (-0.091%)	l1d_byp_T_F_T_40_3_3_lrr_srad_v2
     // [[maybe_unused]] const float incoming_byp_ratio = 0.3; // 120.620 (+0.130%)	l1d_byp_T_F_T_40_3_3_incoming_030_lrr_srad_v2	
     // [[maybe_unused]] const float incoming_byp_ratio = 0.7;
     // [[maybe_unused]] const float incoming_byp_ratio = 0.5;
-    [[maybe_unused]] const float incoming_byp_ratio = 1.0;
+    // [[maybe_unused]] const float incoming_byp_ratio = 1.0;
     if (new_byp_cand) { // Just update, and nothing to do with bypass decision
       set_l1d_evict_time(victim_key, time);
       average_l1d_rd_fill_to_evict_gap(victim_key);      

@@ -971,7 +971,9 @@ bool gpgpu_sim::kernel_more_cta_left(kernel_info_t *kernel) const {
 }
 
 bool gpgpu_sim::get_more_cta_left() const {
-  if (hit_max_cta_count()) return false;
+  if (hit_max_cta_count()) {
+    return false;
+  }
 
   for (unsigned n = 0; n < m_running_kernels.size(); n++) {
     if (m_running_kernels[n] && !m_running_kernels[n]->no_more_ctas_to_run())
@@ -1272,7 +1274,7 @@ void gpgpu_sim::reinit_clock_domains(void) {
   l2_time = 0;
 }
 
-bool gpgpu_sim::active() {
+bool gpgpu_sim::active(std::string &type) {
    // 2025-11-14 eve
   // Lightweight instrumentation: enabled if ACCELSIM_ACTIVE_TRACE env var set.
   // Helps diagnose breakpoint-induced crashes by logging entry state before any dereferences.
@@ -1302,6 +1304,7 @@ bool gpgpu_sim::active() {
     if (DTRACE(CHECK_SIM_ACTIVE)) {
       fprintf(Trace::out, "!gpgpu_ctx -> return false for gpgpu_sim::active()\n");
     }
+    type = "!gpgpu_ctx";
     return false;
   }  
   if (!gpgpu_ctx->the_gpgpusim->g_stream_manager) {
@@ -1312,69 +1315,67 @@ bool gpgpu_sim::active() {
     if (DTRACE(CHECK_SIM_ACTIVE)) {
       fprintf(Trace::out, "!g_stream_manager -> return false for gpgpu_sim::active()\n");
     }
+    type = "!g_stream_manager";
     return false;
   }
   if (m_config.gpu_max_cycle_opt &&
       (gpu_tot_sim_cycle + gpu_sim_cycle) >= m_config.gpu_max_cycle_opt) {
     if (DTRACE(CHECK_SIM_ACTIVE)) {
-      fprintf(Trace::out, "m_config.gpu_max_cycle_opt && "
-        "(gpu_tot_sim_cycle:%llu + gpu_sim_cycle:%llu) = %llu "
-        ">= m_config.gpu_max_cycle_opt:%llu "
-        "-> return false for gpgpu_sim::active()\n",
-        gpu_tot_sim_cycle, gpu_sim_cycle,
-        gpu_tot_sim_cycle + gpu_sim_cycle, m_config.gpu_max_cycle_opt);
+      fprintf(Trace::out, "%llu gpgpu_sim::active(%s) return false\n",
+        gpu_tot_sim_cycle + gpu_sim_cycle, type.c_str());
     }
+    type = "Early-Terminate cfg m_config.gpu_max_cycle_opt";
     return false;
   }    
   if (m_config.gpu_max_insn_opt &&
       (gpu_tot_sim_insn + gpu_sim_insn) >= m_config.gpu_max_insn_opt) {
+    type = "Early-Terminate cfg m_config.gpu_max_insn_opt";
     if (DTRACE(CHECK_SIM_ACTIVE)) {
-      fprintf(Trace::out, "m_config.gpu_max_insn_opt && "
-        "(gpu_tot_sim_insn:%u + gpu_sim_insn:%u) = %u >= m_config.gpu_max_insn_opt:%u "
-        "-> return false for gpgpu_sim::active()\n", 
-        gpu_tot_sim_insn, gpu_sim_insn,
-        gpu_tot_sim_insn + gpu_sim_insn, m_config.gpu_max_insn_opt);
+      fprintf(Trace::out, "%llu gpgpu_sim::active(%s) return false\n", 
+        gpu_tot_sim_cycle + gpu_sim_cycle, type.c_str());
     }
     return false;
   }    
   if (m_config.gpu_max_cta_opt &&
       (gpu_tot_issued_cta >= m_config.gpu_max_cta_opt)) {
+    type = "Early-Terminate cfg m_config.gpu_max_cta_opt";
     if (DTRACE(CHECK_SIM_ACTIVE)) {
-      fprintf(Trace::out, "m_config.gpu_max_cta_opt && "
-        "gpu_tot_issued_cta:%u >= m_config.gpu_max_cta_opt:%u "
-        "-> return false for gpgpu_sim::active()\n",
-        gpu_tot_issued_cta, m_config.gpu_max_cta_opt);
-    }
+      fprintf(Trace::out, "%llu gpgpu_sim::active(%s) return false\n",
+        gpu_tot_sim_cycle + gpu_sim_cycle, type.c_str());
+    }    
     return false;
   }    
   if (m_config.gpu_max_completed_cta_opt &&
       (gpu_completed_cta >= m_config.gpu_max_completed_cta_opt)) {
+    type = "Early-Terminate cfg m_config.gpu_max_completed_cta_opt";
     if (DTRACE(CHECK_SIM_ACTIVE)) {
-      fprintf(Trace::out, "m_config.gpu_max_completed_cta_opt && "
-        "gpu_completed_cta:%u >= m_config.gpu_max_completed_cta_opt:%u "
-        "-> return false for gpgpu_sim::active()\n",
-        gpu_completed_cta, m_config.gpu_max_completed_cta_opt);
-    }
+      fprintf(Trace::out, "%llu gpgpu_sim::active(%s) return false\n",
+        gpu_tot_sim_cycle + gpu_sim_cycle, type.c_str());
+    }    
     return false;
   }
   if (m_config.gpu_deadlock_detect && gpu_deadlock) {
+    type = "Early-Terminate cfg m_config.gpu_deadlock_detect";
     if (DTRACE(CHECK_SIM_ACTIVE)) {
-      fprintf(Trace::out, "m_config.gpu_deadlock_detect && gpu_deadlock "
-        "-> return false for gpgpu_sim::active()\n");
-    }
+      fprintf(Trace::out, "%llu gpgpu_sim::active(%s) return false\n", 
+        gpu_tot_sim_cycle + gpu_sim_cycle, type.c_str());
+    }    
     return false;
   }
   if (!m_cluster) {
+    type = "!m_cluster";
     if (DTRACE(CHECK_SIM_ACTIVE)) {
-      fprintf(Trace::out, "m_cluster -> return false for gpgpu_sim::active()\n");
-    }
+      fprintf(Trace::out, "%llu gpgpu_sim::active(%s) return false\n", 
+        gpu_tot_sim_cycle + gpu_sim_cycle, type.c_str());
+    }    
     return false;
   }
   for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
     if (m_cluster[i] && m_cluster[i]->get_not_completed() > 0) {
+      type = "m_cluster[" + std::to_string(i) + "]->get_not_completed() > 0";      
       if (DTRACE(CHECK_SIM_ACTIVE)) {
-        fprintf(Trace::out, "m_cluster[%u] && m_cluster[%u]->get_not_completed() "
-          "-> return true for gpgpu_sim::active()\n", i, i);
+        fprintf(Trace::out, "%llu gpgpu_sim::active(%s) return true\n", 
+          gpu_tot_sim_cycle + gpu_sim_cycle, type.c_str());
       }
       return true;
     }
@@ -1383,28 +1384,37 @@ bool gpgpu_sim::active() {
   if (m_memory_partition_unit) {
     for (unsigned i = 0; i < m_memory_config->m_n_mem; i++) {
       if (m_memory_partition_unit[i] && m_memory_partition_unit[i]->busy() > 0) {
+        char* str_mem_part_id = reinterpret_cast<char*>(&i);
+        type = "m_memory_partition_unit[" + std::to_string(i) + "]->busy() > 0";        
         if (DTRACE(CHECK_SIM_ACTIVE)) {
-          fprintf(Trace::out, "m_memory_partition_unit[%u] && m_memory_partition_unit[%u]->busy "
-            "-> return true for gpgpu_sim::active()\n", i, i);          
+          fprintf(Trace::out, "%llu gpgpu_sim::active(%s) return true\n",
+            gpu_tot_sim_cycle + gpu_sim_cycle, type.c_str());          
         }
         return true;
       }
     }
   }
   if (icnt_busy()) {
+    type = "icnt_busy()";
     if (DTRACE(CHECK_SIM_ACTIVE)) {
-      fprintf(Trace::out, "icnt_busy() = 1 -> return true for gpgpu_sim::active()\n");
-    }    
-    return true;
-  }
-  if (get_more_cta_left()) {
-    if (DTRACE(CHECK_SIM_ACTIVE)) {
-      fprintf(Trace::out, "get_more_cta_left() = 1 -> return true for gpgpu_sim::active()\n");
+      fprintf(Trace::out, "%llu gpgpu_sim::active(%s) return true\n", 
+        gpu_tot_sim_cycle + gpu_sim_cycle, type.c_str());
     }
     return true;
   }
+  if (get_more_cta_left()) {
+    type = "get_more_cta_left()";
+    if (DTRACE(CHECK_SIM_ACTIVE)) {
+      fprintf(Trace::out, "%llu gpgpu_sim::active(%s) return true\n", 
+        gpu_tot_sim_cycle + gpu_sim_cycle, type.c_str());
+    }    
+    return true;
+  }
+  type = "at the end of ::active";
   if (DTRACE(CHECK_SIM_ACTIVE)) {
-    fprintf(Trace::out, "return false for gpgpu_sim::active()\n");
+    
+    fprintf(Trace::out, "%llu gpgpu_sim::active(%s) return false\n", 
+      gpu_tot_sim_cycle + gpu_sim_cycle, type.c_str());
   }
   return false;
 }
@@ -1476,7 +1486,7 @@ void gpgpu_sim::init() {
   if (g_network_mode) icnt_init();
 }
 
-void gpgpu_sim::update_stats() {
+void gpgpu_sim::update_stats(u32 finished_kernel, u64 finished_kernel_cuda_stream_id) {
   m_memory_stats->memlatstat_lat_pw();
   gpu_tot_sim_cycle += gpu_sim_cycle;
   gpu_tot_sim_insn += gpu_sim_insn;
@@ -1486,6 +1496,8 @@ void gpgpu_sim::update_stats() {
   partition_reqs_in_parallel_util_total += partition_reqs_in_parallel_util;
   gpu_tot_sim_cycle_partition_util += gpu_sim_cycle_partition_util;
   gpu_tot_occupancy += gpu_occupancy;
+
+  print_stats(finished_kernel_cuda_stream_id, finished_kernel);
 
   if (DTRACE(SIM_INSNS)) {
     fprintf(Trace::out, "%s gpu_tot_sim_insn:%llu += gpu_sim_insn:%llu (reset->0)\n",
@@ -1510,7 +1522,7 @@ PowerscalingCoefficients *gpgpu_sim::get_scaling_coeffs() {
   return m_gpgpusim_wrapper->get_scaling_coeffs();
 }
 
-void gpgpu_sim::print_stats(unsigned long long streamID, unsigned kernelID) {
+void gpgpu_sim::print_stats(u64 streamID, u32 kernelID) {
   gpgpu_ctx->stats->ptx_file_line_stats_write_file();
   if (DTRACE(KERNEL_STATS)) {
     fprintf(Trace::out, "%llu gpu_print_stats(kernelID:%u, streamID:%llu)\n", 
@@ -1728,34 +1740,25 @@ void gpgpu_sim::gpu_print_stat(unsigned kernelID, unsigned long long streamID) {
 
   printf("gpu_sim_cycle = %lld\n", gpu_sim_cycle);
   printf("gpu_sim_insn = %lld\n", gpu_sim_insn);
-  printf("gpu_ipc = %12.4f\n", (float)gpu_sim_insn / gpu_sim_cycle);
-  printf("gpu_tot_sim_cycle = %lld\n", gpu_tot_sim_cycle + gpu_sim_cycle);
-  printf("gpu_tot_sim_insn = %lld\n", gpu_tot_sim_insn + gpu_sim_insn);
+  float gpu_ipc = (float)gpu_sim_insn / gpu_sim_cycle;
+  printf("gpu_ipc = %12.4f\n", gpu_ipc);
+  printf("gpu_tot_sim_cycle = %lld\n", gpu_tot_sim_cycle);
+  printf("gpu_tot_sim_insn = %lld\n", gpu_tot_sim_insn);
+  float gpu_tot_ipc = (float)(gpu_tot_sim_insn) / gpu_tot_sim_cycle;
   printf("gpu_tot_ipc = %12.4f = "
-    "(gpu_tot_sim_insn:%llu + gpu_sim_insn:%llu) / "
-    "(gpu_tot_sim_cycle:%llu + gpu_sim_cycle:%llu)\n", 
-    (float)(gpu_tot_sim_insn + gpu_sim_insn) / (gpu_tot_sim_cycle + gpu_sim_cycle),
-    gpu_tot_sim_insn, gpu_sim_insn, gpu_tot_sim_cycle, gpu_sim_cycle);
-
-  printf("gpu_tot_issued_cta = %lld\n",
-         gpu_tot_issued_cta + m_total_cta_launched);
+    "(gpu_tot_sim_insn:%llu) / (gpu_tot_sim_cycle:%llu)\n", 
+    gpu_tot_ipc, gpu_tot_sim_insn, gpu_tot_sim_cycle);
+  printf("gpu_tot_issued_cta = %lld\n", gpu_tot_issued_cta);  
   printf("gpu_occupancy = %.4f%% \n", gpu_occupancy.get_occ_fraction() * 100);
-  printf("gpu_tot_occupancy = %.4f%% \n",
-         (gpu_occupancy + gpu_tot_occupancy).get_occ_fraction() * 100);
+  printf("gpu_tot_occupancy = %.4f%% \n", gpu_tot_occupancy.get_occ_fraction() * 100);  
 
   if (DTRACE(SIM_INSNS)) {
     fprintf(Trace::out, "%s gpu_ipc = %12.4f = "
       "(gpu_sim_insn:%llu / gpu_sim_cycle:%llu)\n",
-      __func__, (float)gpu_sim_insn / gpu_sim_cycle, 
-      gpu_sim_insn, gpu_sim_cycle); 
+      __func__, gpu_ipc, gpu_sim_insn, gpu_sim_cycle); 
     fprintf(Trace::out, "%s gpu_tot_ipc = %12.4f = "
-      "(gpu_tot_sim_insn:%llu + gpu_sim_insn:%llu) / "
-      "(gpu_tot_sim_cycle:%llu + gpu_sim_cycle:%llu)\n",
-      __func__, 
-      (float)(gpu_tot_sim_insn + gpu_sim_insn) /
-      (gpu_tot_sim_cycle + gpu_sim_cycle), 
-      gpu_tot_sim_insn, gpu_sim_insn, 
-      gpu_tot_sim_cycle, gpu_sim_cycle);
+      "(gpu_tot_sim_insn:%llu / gpu_tot_sim_cycle:%llu)\n",
+      __func__, gpu_tot_ipc, gpu_tot_sim_insn, gpu_tot_sim_cycle);
   }
 
   // shader_print_cache_stats(stdout);
@@ -3070,7 +3073,7 @@ void gpgpu_sim::cycle() {
     // launch device kernel
     gpgpu_ctx->device_runtime->launch_one_device_kernel();
 #endif
-  }
+  } // if (clock_mask & CORE)
 }
 
 void sst_gpgpu_sim::cycle() {

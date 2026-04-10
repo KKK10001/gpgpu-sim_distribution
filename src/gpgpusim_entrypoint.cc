@@ -67,18 +67,22 @@ void *gpgpu_sim_thread_sequential(void *ctx_ptr) {
   // at most one kernel running at a time
   bool done;
   do {
+    std::string active_type = "";
     sem_wait(&(ctx->the_gpgpusim->g_sim_signal_start));
     done = true;
     if (ctx->the_gpgpusim->g_the_gpu->get_more_cta_left()) {
       done = false;
       ctx->the_gpgpusim->g_the_gpu->init();
-      while (ctx->the_gpgpusim->g_the_gpu->active()) {
+      while (ctx->the_gpgpusim->g_the_gpu->active(active_type)) {
         ctx->the_gpgpusim->g_the_gpu->cycle();
         ctx->the_gpgpusim->g_the_gpu->deadlock_check();
       }
       ctx->the_gpgpusim->g_the_gpu->print_stats(
           ctx->the_gpgpusim->g_the_gpu->last_streamID);
-      ctx->the_gpgpusim->g_the_gpu->update_stats();
+      ctx->the_gpgpusim->g_the_gpu->update_stats(
+        ctx->the_gpgpusim->g_the_gpu->last_uid,
+        ctx->the_gpgpusim->g_the_gpu->last_streamID);
+
       ctx->print_simulation_time();
     }
     sem_post(&(ctx->the_gpgpusim->g_sim_signal_finish));
@@ -120,6 +124,7 @@ void *gpgpu_sim_thread_concurrent(void *ctx_ptr) {
     bool sim_cycles = false;
     ctx->the_gpgpusim->g_the_gpu->init();
     do {
+      std::string active_type = "";
       // check if a kernel has completed
       // launch operation on device if one is pending and can be run
 
@@ -131,7 +136,7 @@ void *gpgpu_sim_thread_concurrent(void *ctx_ptr) {
       // behaviour may be incorrect. Check that a kernel has finished and
       // no other kernel is currently running.
       if (ctx->the_gpgpusim->g_stream_manager->operation(&sim_cycles) &&
-          !ctx->the_gpgpusim->g_the_gpu->active()) {
+          !ctx->the_gpgpusim->g_the_gpu->active(active_type)) {
         break;
       }
 
@@ -146,7 +151,7 @@ void *gpgpu_sim_thread_concurrent(void *ctx_ptr) {
       }
 
       // performance simulation
-      if (ctx->the_gpgpusim->g_the_gpu->active()) {
+      if (ctx->the_gpgpusim->g_the_gpu->active(active_type)) {
         ctx->the_gpgpusim->g_the_gpu->cycle();
         sim_cycles = true;
         ctx->the_gpgpusim->g_the_gpu->deadlock_check();
@@ -159,7 +164,7 @@ void *gpgpu_sim_thread_concurrent(void *ctx_ptr) {
         }
       }
 
-      active = ctx->the_gpgpusim->g_the_gpu->active() ||
+      active = ctx->the_gpgpusim->g_the_gpu->active(active_type) ||
                !(ctx->the_gpgpusim->g_stream_manager->empty_protected());
 
       printf("active = %u !ctx->the_gpgpusim->g_sim_done = %u\n", 
@@ -174,7 +179,9 @@ void *gpgpu_sim_thread_concurrent(void *ctx_ptr) {
     if (sim_cycles) {
       ctx->the_gpgpusim->g_the_gpu->print_stats(
           ctx->the_gpgpusim->g_the_gpu->last_streamID);
-      ctx->the_gpgpusim->g_the_gpu->update_stats();
+      ctx->the_gpgpusim->g_the_gpu->update_stats(
+          ctx->the_gpgpusim->g_the_gpu->last_uid,
+          ctx->the_gpgpusim->g_the_gpu->last_streamID);
       ctx->print_simulation_time();
     }
     pthread_mutex_lock(&(ctx->the_gpgpusim->g_sim_lock));
@@ -275,7 +282,9 @@ bool SST_Cycle() {
 
   if (!g_the_gpu()->active()) {
     g_the_gpu()->print_stats(GPGPUsim_ctx_ptr()->g_the_gpu->last_streamID);
-    g_the_gpu()->update_stats();
+    g_the_gpu()->update_stats(
+        GPGPUsim_ctx_ptr()->g_the_gpu->last_uid,
+        GPGPUsim_ctx_ptr()->g_the_gpu->last_streamID);
     GPGPU_Context()->print_simulation_time();
   }
 
