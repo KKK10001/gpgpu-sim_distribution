@@ -1039,14 +1039,6 @@ unsigned gpgpu_sim::finished_kernel() {
     last_streamID = -1;
     return 0;
   }
-  if (DTRACE(PROBE_KERNEL)) {
-    for (auto& kernel : m_finished_kernel)
-    {
-      fprintf(Trace::out, "%llu running kernel is the %uth kernel. total %lu kernels\n", 
-        gpu_sim_cycle + gpu_tot_sim_cycle, m_finished_kernel.front(), m_finished_kernel.size());
-    }
-  }
-
   unsigned result = m_finished_kernel.front();
   m_finished_kernel.pop_front();
   return result;
@@ -1515,9 +1507,6 @@ void gpgpu_sim::update_stats(u32 finished_kernel, u64 finished_kernel_cuda_strea
   gpu_sim_cycle_partition_util = 0;  
   gpu_completed_cta = 0;
   gpu_occupancy = occupancy_stats();
-
-  // gpu_sim_tot_uarch_op_lat.clear();
-  // gpu_sim_tot_uarch_op_insts.clear();  
 }
 
 PowerscalingCoefficients *gpgpu_sim::get_scaling_coeffs() {
@@ -1533,14 +1522,10 @@ void gpgpu_sim::print_stats(u64 streamID, u32 kernelID) {
   gpu_print_stat(kernelID, streamID);
 
   if (g_network_mode) {
-    printf(
-        "----------------------------Interconnect-DETAILS----------------------"
-        "----------\n");
+    printf("----------------------------Interconnect-DETAILS----------------------\n");
     icnt_display_stats();
     icnt_display_overall_stats();
-    printf(
-        "----------------------------END-of-Interconnect-DETAILS---------------"
-        "----------\n");
+    printf("----------------------------END-of-Interconnect-DETAILS---------------\n");
   }
 }
 
@@ -2791,19 +2776,34 @@ unsigned long long g_single_step =
 
 void gpgpu_sim::cycle() {
   int clock_mask = next_clock_domain();
-  const char* component_cycle = (clock_mask & CORE) ? "icnt_cycle" :
-    (clock_mask & ICNT) ? "mem_controller->IF cycle" :
-    (clock_mask & DRAM) ? "dram_cycle" :
-    (clock_mask & L2) ? "l2_cycle" : "xxx cycle";
+  // ICNT DRAM L2 CORE
+  // [3]  [2]  [1]  [0]
+  std::string component_cycle = "{";
+  bool not_the_only_cycle = false;
+  if (clock_mask & ICNT) {
+    component_cycle += "ICNT ";
+  }
+  if (clock_mask & DRAM) {
+    component_cycle += "DRAM ";
+  }
+  if (clock_mask & L2) {
+    component_cycle += "L2 ";
+  }
+  if (clock_mask & CORE) {
+    component_cycle += "CORE ";
+  }  
+  component_cycle += "}";
+
   if (DTRACE(SIM_TOP)) {
     fprintf(Trace::out, "%llu current cycle is %s\n", 
-      gpu_sim_cycle + gpu_tot_sim_cycle, component_cycle);
+      gpu_sim_cycle + gpu_tot_sim_cycle, component_cycle.c_str());
   }
 
   if (clock_mask & CORE) {
     // shader core loading (pop from ICNT into core) follows CORE clock
-    for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++)
+    for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
       m_cluster[i]->icnt_cycle();
+    }      
   }
   unsigned partiton_replys_in_parallel_per_cycle = 0;
   if (clock_mask & ICNT) {

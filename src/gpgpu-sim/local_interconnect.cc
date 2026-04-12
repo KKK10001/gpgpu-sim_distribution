@@ -390,7 +390,9 @@ void LocalInterconnect::Push(unsigned input_deviceID, unsigned output_deviceID,
 void* LocalInterconnect::Pop(unsigned ouput_deviceID) {
   // 0-_n_shader-1 indicates reply(network 1), otherwise request(network 0)
   int subnet = 0;
-  if (ouput_deviceID < n_shader) subnet = 1;
+  if (ouput_deviceID < n_shader) {
+    subnet = 1;
+  }
 
   return net[subnet]->Pop(ouput_deviceID);
 }
