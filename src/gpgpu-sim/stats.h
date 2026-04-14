@@ -39,6 +39,15 @@ enum mem_stage_access_type {
   L_MEM_ST,
   N_MEM_STAGE_ACCESS_TYPE
 };
+inline const char* mem_stage_access_type_str(enum mem_stage_access_type type) {
+  static const char *static_mem_stage_access_type_str[] = {
+    "C_MEM", "T_MEM", "S_MEM", "G_MEM_LD", "L_MEM_LD", "G_MEM_ST", "L_MEM_ST"};
+  assert(sizeof(static_mem_stage_access_type_str) / sizeof(const char *) ==
+    N_MEM_STAGE_ACCESS_TYPE);
+  assert(type < N_MEM_STAGE_ACCESS_TYPE);
+  return static_mem_stage_access_type_str[type];
+}
+
 enum tlb_request_status { TLB_HIT = 0, TLB_READY, TLB_PENDING };
 enum mem_stage_stall_type {
   NO_RC_FAIL = 0,
@@ -52,5 +61,15 @@ enum mem_stage_stall_type {
   WB_CACHE_RSRV_FAIL,
   N_MEM_STAGE_STALL_TYPE
 };
+inline const char* mem_stage_stall_type_str(enum mem_stage_stall_type type) {
+  static const char *static_mem_stage_stall_type_str[] = {
+    "NO_RC_FAIL", "BK_CONF", "MSHR_RC_FAIL", "ICNT_RC_FAIL", 
+    "COAL_STALL", "TLB_STALL", "DATA_PORT_STALL", "WB_ICNT_RC_FAIL", 
+    "WB_CACHE_RSRV_FAIL"};
+  assert(sizeof(static_mem_stage_stall_type_str) / sizeof(const char *) ==
+    N_MEM_STAGE_STALL_TYPE);
+  assert(type < N_MEM_STAGE_STALL_TYPE);
+  return static_mem_stage_stall_type_str[type];
+}
 
 #endif

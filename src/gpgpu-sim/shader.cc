@@ -764,79 +764,19 @@ void shader_core_stats::print(FILE *fout) const {
           gpgpu_n_intrawarp_mshr_merge);
   fprintf(fout, "gpgpu_n_cmem_portconflict = %d\n", gpgpu_n_cmem_portconflict);
 
-  fprintf(fout, "gpgpu_stall_shd_mem[c_mem][resource_stall] = %d\n",
-          gpu_stall_shd_mem_breakdown[C_MEM][BK_CONF]);
-  // fprintf(fout, "gpgpu_stall_shd_mem[c_mem][mshr_rc] = %d\n",
-  // gpu_stall_shd_mem_breakdown[C_MEM][MSHR_RC_FAIL]); fprintf(fout,
-  // "gpgpu_stall_shd_mem[c_mem][icnt_rc] = %d\n",
-  // gpu_stall_shd_mem_breakdown[C_MEM][ICNT_RC_FAIL]); fprintf(fout,
-  // "gpgpu_stall_shd_mem[c_mem][data_port_stall] = %d\n",
-  // gpu_stall_shd_mem_breakdown[C_MEM][DATA_PORT_STALL]); fprintf(fout,
-  // "gpgpu_stall_shd_mem[t_mem][mshr_rc] = %d\n",
-  // gpu_stall_shd_mem_breakdown[T_MEM][MSHR_RC_FAIL]); fprintf(fout,
-  // "gpgpu_stall_shd_mem[t_mem][icnt_rc] = %d\n",
-  // gpu_stall_shd_mem_breakdown[T_MEM][ICNT_RC_FAIL]); fprintf(fout,
-  // "gpgpu_stall_shd_mem[t_mem][data_port_stall] = %d\n",
-  // gpu_stall_shd_mem_breakdown[T_MEM][DATA_PORT_STALL]);
-  fprintf(fout, "gpgpu_stall_shd_mem[s_mem][bk_conf] = %d\n",
-          gpu_stall_shd_mem_breakdown[S_MEM][BK_CONF]);
-  fprintf(
-      fout, "gpgpu_stall_shd_mem[gl_mem][resource_stall] = %d\n",
-      gpu_stall_shd_mem_breakdown[G_MEM_LD][BK_CONF] +
-          gpu_stall_shd_mem_breakdown[G_MEM_ST][BK_CONF] +
-          gpu_stall_shd_mem_breakdown[L_MEM_LD][BK_CONF] +
-          gpu_stall_shd_mem_breakdown[L_MEM_ST][BK_CONF]);  // coalescing stall
-                                                            // at data cache
-  fprintf(
-      fout, "gpgpu_stall_shd_mem[gl_mem][coal_stall] = %d\n",
-      gpu_stall_shd_mem_breakdown[G_MEM_LD][COAL_STALL] +
-          gpu_stall_shd_mem_breakdown[G_MEM_ST][COAL_STALL] +
-          gpu_stall_shd_mem_breakdown[L_MEM_LD][COAL_STALL] +
-          gpu_stall_shd_mem_breakdown[L_MEM_ST]
-                                     [COAL_STALL]);  // coalescing stall + bank
-                                                     // conflict at data cache
-  fprintf(fout, "gpgpu_stall_shd_mem[gl_mem][data_port_stall] = %d\n",
-          gpu_stall_shd_mem_breakdown[G_MEM_LD][DATA_PORT_STALL] +
-              gpu_stall_shd_mem_breakdown[G_MEM_ST][DATA_PORT_STALL] +
-              gpu_stall_shd_mem_breakdown[L_MEM_LD][DATA_PORT_STALL] +
-              gpu_stall_shd_mem_breakdown[L_MEM_ST]
-                                         [DATA_PORT_STALL]);  // data port stall
-                                                              // at data cache
-  // fprintf(fout, "gpgpu_stall_shd_mem[g_mem_ld][mshr_rc] = %d\n",
-  // gpu_stall_shd_mem_breakdown[G_MEM_LD][MSHR_RC_FAIL]); fprintf(fout,
-  // "gpgpu_stall_shd_mem[g_mem_ld][icnt_rc] = %d\n",
-  // gpu_stall_shd_mem_breakdown[G_MEM_LD][ICNT_RC_FAIL]); fprintf(fout,
-  // "gpgpu_stall_shd_mem[g_mem_ld][wb_icnt_rc] = %d\n",
-  // gpu_stall_shd_mem_breakdown[G_MEM_LD][WB_ICNT_RC_FAIL]); fprintf(fout,
-  // "gpgpu_stall_shd_mem[g_mem_ld][wb_rsrv_fail] = %d\n",
-  // gpu_stall_shd_mem_breakdown[G_MEM_LD][WB_CACHE_RSRV_FAIL]); fprintf(fout,
-  // "gpgpu_stall_shd_mem[g_mem_st][mshr_rc] = %d\n",
-  // gpu_stall_shd_mem_breakdown[G_MEM_ST][MSHR_RC_FAIL]); fprintf(fout,
-  // "gpgpu_stall_shd_mem[g_mem_st][icnt_rc] = %d\n",
-  // gpu_stall_shd_mem_breakdown[G_MEM_ST][ICNT_RC_FAIL]); fprintf(fout,
-  // "gpgpu_stall_shd_mem[g_mem_st][wb_icnt_rc] = %d\n",
-  // gpu_stall_shd_mem_breakdown[G_MEM_ST][WB_ICNT_RC_FAIL]); fprintf(fout,
-  // "gpgpu_stall_shd_mem[g_mem_st][wb_rsrv_fail] = %d\n",
-  // gpu_stall_shd_mem_breakdown[G_MEM_ST][WB_CACHE_RSRV_FAIL]); fprintf(fout,
-  // "gpgpu_stall_shd_mem[l_mem_ld][mshr_rc] = %d\n",
-  // gpu_stall_shd_mem_breakdown[L_MEM_LD][MSHR_RC_FAIL]); fprintf(fout,
-  // "gpgpu_stall_shd_mem[l_mem_ld][icnt_rc] = %d\n",
-  // gpu_stall_shd_mem_breakdown[L_MEM_LD][ICNT_RC_FAIL]); fprintf(fout,
-  // "gpgpu_stall_shd_mem[l_mem_ld][wb_icnt_rc] = %d\n",
-  // gpu_stall_shd_mem_breakdown[L_MEM_LD][WB_ICNT_RC_FAIL]); fprintf(fout,
-  // "gpgpu_stall_shd_mem[l_mem_ld][wb_rsrv_fail] = %d\n",
-  // gpu_stall_shd_mem_breakdown[L_MEM_LD][WB_CACHE_RSRV_FAIL]); fprintf(fout,
-  // "gpgpu_stall_shd_mem[l_mem_st][mshr_rc] = %d\n",
-  // gpu_stall_shd_mem_breakdown[L_MEM_ST][MSHR_RC_FAIL]); fprintf(fout,
-  // "gpgpu_stall_shd_mem[l_mem_st][icnt_rc] = %d\n",
-  // gpu_stall_shd_mem_breakdown[L_MEM_ST][ICNT_RC_FAIL]); fprintf(fout,
-  // "gpgpu_stall_shd_mem[l_mem_ld][wb_icnt_rc] = %d\n",
-  // gpu_stall_shd_mem_breakdown[L_MEM_ST][WB_ICNT_RC_FAIL]); fprintf(fout,
-  // "gpgpu_stall_shd_mem[l_mem_ld][wb_rsrv_fail] = %d\n",
-  // gpu_stall_shd_mem_breakdown[L_MEM_ST][WB_CACHE_RSRV_FAIL]);
+  for (u32 type = 0; type < N_MEM_STAGE_ACCESS_TYPE; type++) {
+    for (u32 stall = 0; stall < N_MEM_STAGE_STALL_TYPE; stall++) {
+      if (gpu_stall_shd_mem_breakdown[type][stall]) {        
+        fprintf(fout, "gpu_stall_shd_mem_breakdown[%s][%s] = %u\n",
+          mem_stage_access_type_str(mem_stage_access_type(type)),
+          mem_stage_stall_type_str(mem_stage_stall_type(stall)),
+          gpu_stall_shd_mem_breakdown[type][stall]
+        );
+      }
+    }
+  }
 
-  fprintf(fout, "gpu_reg_bank_conflict_stalls = %d\n",
-          gpu_reg_bank_conflict_stalls);
+  fprintf(fout, "gpu_reg_bank_conflict_stalls = %d\n", gpu_reg_bank_conflict_stalls);
 
   fprintf(fout, "Warp Occupancy Distribution:\n");
   fprintf(fout, "Stall:%d\t", shader_cycle_distro[2]);
