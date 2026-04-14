@@ -711,12 +711,12 @@ class gpgpu_t {
 struct gpgpu_ptx_sim_info {
   // Holds properties of the kernel (Kernel's resource use).
   // These will be set to zero if a ptxinfo file is not present.
-  int lmem;
-  int smem;
-  int cmem;
-  int gmem;
-  int regs;
-  int barriers;
+  unsigned lmem;
+  unsigned smem;
+  unsigned cmem;
+  unsigned gmem;
+  unsigned regs; // per thread allocated regs
+  unsigned barriers;
   unsigned maxthreads;
   unsigned ptx_version;
   unsigned sm_target;

@@ -37,6 +37,10 @@
 #include "../gpgpu-sim/shader.h"
 #include "ptx_sim.h"
 
+typedef unsigned u32;
+typedef unsigned int u32;
+typedef unsigned long long u64;
+
 class gpgpu_context;
 class memory_space;
 class function_info;

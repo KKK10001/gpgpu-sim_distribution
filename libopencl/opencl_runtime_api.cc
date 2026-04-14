@@ -294,13 +294,14 @@ cl_int _cl_kernel::bind_args( gpgpu_ptx_sim_arg_list_t &arg_list )
 
 size_t _cl_kernel::get_workgroup_size(cl_device_id device)
 {
-   unsigned nregs = ptx_kernel_nregs( m_kernel_impl );
-   unsigned result_regs = (unsigned)-1;
-   if( nregs > 0 )
-      result_regs = device->the_device()->num_registers_per_core() / ((nregs+3)&~3);
-   unsigned result = device->the_device()->threads_per_core();
-   result = min(result, result_regs);
-   return (size_t)result;
+  unsigned nregs = ptx_kernel_nregs( m_kernel_impl );
+  unsigned result_regs = (unsigned)-1;
+  if( nregs > 0 ) {
+    result_regs = device->the_device()->num_registers_per_core() / ((nregs+3)&~3);
+  }      
+  unsigned result = device->the_device()->threads_per_core();
+  result = min(result, result_regs);
+  return (size_t)result;
 }
 
 cl_mem _cl_mem::device_ptr()

@@ -2463,54 +2463,55 @@ unsigned max_cta(const struct gpgpu_ptx_sim_info *kernel_info,
                  unsigned int gpgpu_shmem_size,
                  unsigned int gpgpu_shader_registers,
                  unsigned int max_cta_per_core) {
-  unsigned int padded_cta_size = threads_per_cta;
-  if (padded_cta_size % warp_size) {
-    padded_cta_size = ((padded_cta_size / warp_size) + 1) * (warp_size);
-    printf("padded_cta_size:%u = ((threads_per_cta:%u / warp_size:%u) + 1) * warp_size:%u\n",
-      padded_cta_size, threads_per_cta, warp_size, warp_size);
-  } else {
-    printf("threads_per_cta:%u is warp_size aligned. no padding for CTA. "
-      "padded_cta_size = threads_per_cta = %u\n", threads_per_cta, padded_cta_size);
+  printf("--------------------------- max_cta ---------------------------\n");
+  u32 warp_aligned_n_cta = threads_per_cta;
+  if (warp_aligned_n_cta % warp_size) {
+    warp_aligned_n_cta = ((warp_aligned_n_cta / warp_size) + 1) * (warp_size);
   }
+  printf("warp_aligned_n_cta:%u. original threads_per_cta:%u\n", 
+    warp_aligned_n_cta, threads_per_cta);
 
-  unsigned int result_thread = n_thread_per_shader / padded_cta_size;
-  printf("result_thread:%u = n_thread_per_shader:%u / padded_cta_size:%u\n",
-    result_thread, n_thread_per_shader, padded_cta_size);
+  u32 threads_bounded_n_cta = n_thread_per_shader / warp_aligned_n_cta;
+  printf("threads_bounded_n_cta:%u = n_thread_per_shader:%u / warp_aligned_n_cta:%u\n",
+    threads_bounded_n_cta, n_thread_per_shader, warp_aligned_n_cta);
 
-  unsigned int result_shmem = (unsigned)-1;
+  u32 shmem_bounded_n_cta = (u32) - 1;
   if (kernel_info->smem > 0) {
-    result_shmem = gpgpu_shmem_size / kernel_info->smem;
-    printf("result_shmem:%u = gpgpu_shmem_size:%u / kernel_info->smem:%u\n", 
-      result_shmem, gpgpu_shmem_size, kernel_info->smem);
+    shmem_bounded_n_cta = gpgpu_shmem_size / kernel_info->smem;
+    printf("shmem_bounded_n_cta:%u = gpgpu_shmem_size:%u / kernel_info->smem:%u\n", 
+      shmem_bounded_n_cta, gpgpu_shmem_size, kernel_info->smem);
   }    
-  unsigned int result_regs = (unsigned)-1;
-  if (kernel_info->regs > 0) {
-    result_regs = gpgpu_shader_registers /
-                  (padded_cta_size * ((kernel_info->regs + 3) & ~3));
-    printf("result_regs:%u = gpgpu_shader_registers:%u / "
-      "(padded_cta_size:%u * ((kernel_info->regs:%u + 3) & ~3))\n",
-      result_regs, gpgpu_shader_registers, padded_cta_size, kernel_info->regs);
+  u32 regs_bounded_n_cta = (u32) - 1;
+  if (kernel_info->regs > 0) { // per thread allocated regs
+    u32 rounded_regs = (kernel_info->regs + 3) & ~3;
+    regs_bounded_n_cta = gpgpu_shader_registers / (warp_aligned_n_cta * rounded_regs);
+    printf("regs_bounded_n_cta:%u = "
+      "gpgpu_shader_registers:%u / (warp_aligned_n_cta:%u * rounded_regs:%u)\n",
+      regs_bounded_n_cta, gpgpu_shader_registers, warp_aligned_n_cta, rounded_regs);    
+    printf("\trounded_regs:%u = (kernel_info->regs:%u + 3) & ~3 "
+      "(GPGPU-SIM defined rounded up to nearest multiple of 4. "
+      "Nothing to do with NVIDIA GPU uArch)\n",
+      rounded_regs, kernel_info->regs);
   }
+  printf("max_cta_per_core:%u\n", max_cta_per_core);
+  
+  u32 result = threads_bounded_n_cta;
+  result = gs_min2(result, shmem_bounded_n_cta);
+  result = gs_min2(result, regs_bounded_n_cta);
+  result = gs_min2(result, max_cta_per_core);
 
-  printf("padded cta size is %d and %d and %d", padded_cta_size,
-         kernel_info->regs, ((kernel_info->regs + 3) & ~3));
-  // Limit by CTA
-  unsigned int result_cta = max_cta_per_core;
-
-  unsigned result = result_thread;
-  result = gs_min2(result, result_shmem);
-  result = gs_min2(result, result_regs);
-  result = gs_min2(result, result_cta);
+  std::string limit_cause;
+  limit_cause = 
+    result == threads_bounded_n_cta ? "threads" : 
+    result == shmem_bounded_n_cta ? "shmem" :
+    result == regs_bounded_n_cta ? "regs" :
+    result == max_cta_per_core ? "cta_limit" : "unknown";
 
   printf("GPGPU-Sim uArch: CTA/core = %u = "
-    "min(threads:%u, shmem:%u, regs:%u, cta_limit:%u). limited by:", 
-    result, result_thread, result_shmem, result_regs, result_cta);
-
-  if (result == result_thread) printf(" threads");
-  if (result == result_shmem) printf(" shmem");
-  if (result == result_regs) printf(" regs");
-  if (result == result_cta) printf(" cta_limit");
-  printf("\n");
+    "min(threads:%u, shmem:%u, regs:%u, cta_limit:%u). limited by:%s\n", 
+    result, 
+    threads_bounded_n_cta, shmem_bounded_n_cta, regs_bounded_n_cta, max_cta_per_core, 
+    limit_cause.c_str());
 
   return result;
 }

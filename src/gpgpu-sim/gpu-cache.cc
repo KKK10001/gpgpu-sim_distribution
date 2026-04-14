@@ -2780,7 +2780,9 @@ unsigned long long cache_stats::operator()(
     } else {
       return it->second[l2_sub];
     }
-  } 
+  } else {
+    // nothing at present
+  }
 }
 
 u32 cache_stats::getU32(u64 streamID, u32 kernel, const char* tgt_name) const {
