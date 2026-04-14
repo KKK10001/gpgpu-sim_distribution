@@ -665,7 +665,7 @@ class gpgpu_sim : public gpgpu_t {
   int shared_mem_per_block() const;
   int compute_capability_major() const;
   int compute_capability_minor() const;
-  int num_registers_per_core() const;
+  int num_registers_per_core() const;  
   int num_registers_per_block() const;
   int wrp_size() const;
   int shader_clock() const;

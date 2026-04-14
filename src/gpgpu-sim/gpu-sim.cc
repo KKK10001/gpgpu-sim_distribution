@@ -513,7 +513,7 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          &gpgpu_ignore_resources_limitation,
                          "gpgpu_ignore_resources_limitation (default 0)", "0");
   option_parser_register(
-      opp, "-gpgpu_shader_cta", OPT_UINT32, &max_cta_per_core,
+      opp, "-gpgpu_ctas_per_shader", OPT_UINT32, &max_cta_per_core,
       "Maximum number of concurrent CTAs in shader (default 32)", "32");
   option_parser_register(
       opp, "-gpgpu_num_cta_barriers", OPT_UINT32, &max_barriers_per_cta,
@@ -1168,8 +1168,7 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
 
   m_running_kernels.resize(config.max_concurrent_kernel, NULL);
   m_last_issued_kernel = 0;
-  m_last_cluster_issue = m_shader_config->n_simt_clusters -
-                         1;  // this causes first launch to use simt cluster 0
+  m_last_cluster_issue = m_shader_config->n_simt_clusters - 1; // 1st launch use cluster 0
   *average_pipeline_duty_cycle = 0;
   *active_sms = 0;
 
@@ -2977,10 +2976,12 @@ void gpgpu_sim::cycle() {
     int all_threads_complete = 1;
     if (m_config.gpgpu_flush_l1_cache) {
       for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
-        if (m_cluster[i]->get_not_completed() == 0)
+        if (m_cluster[i]->get_not_completed() == 0) {
           m_cluster[i]->cache_invalidate();
-        else
+        }          
+        else {
           all_threads_complete = 0;
+        }          
       }
     }
     if (DTRACE(L1D_ACCESS)) {

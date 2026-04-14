@@ -5602,8 +5602,9 @@ unsigned simt_core_cluster::max_cta(const kernel_info_t &kernel) {
 
 unsigned simt_core_cluster::get_not_completed() const {
   unsigned not_completed = 0;
-  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++)
+  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++) {
     not_completed += m_core[i]->get_not_completed();
+  }    
   return not_completed;
 }
 
@@ -5696,8 +5697,9 @@ void simt_core_cluster::cache_flush() {
 }
 
 void simt_core_cluster::cache_invalidate() {
-  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++)
+  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++) {
     m_core[i]->cache_invalidate();
+  }
 }
 
 bool simt_core_cluster::icnt_injection_buffer_full(unsigned size, bool write) {

@@ -167,8 +167,10 @@ void *gpgpu_sim_thread_concurrent(void *ctx_ptr) {
       active = ctx->the_gpgpusim->g_the_gpu->active(active_type) ||
                !(ctx->the_gpgpusim->g_stream_manager->empty_protected());
 
-      printf("active = %u !ctx->the_gpgpusim->g_sim_done = %u\n", 
-        active, !ctx->the_gpgpusim->g_sim_done);
+      if (DTRACE(SIM_TOP)) {
+        fprintf(Trace::out, "active = %u !ctx->the_gpgpusim->g_sim_done = %u\n", 
+          active, !ctx->the_gpgpusim->g_sim_done);
+      }
 
     } while (active && !ctx->the_gpgpusim->g_sim_done);
 

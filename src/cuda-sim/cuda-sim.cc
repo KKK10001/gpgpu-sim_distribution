@@ -2468,7 +2468,11 @@ unsigned max_cta(const struct gpgpu_ptx_sim_info *kernel_info,
     padded_cta_size = ((padded_cta_size / warp_size) + 1) * (warp_size);
     printf("padded_cta_size:%u = ((threads_per_cta:%u / warp_size:%u) + 1) * warp_size:%u\n",
       padded_cta_size, threads_per_cta, warp_size, warp_size);
+  } else {
+    printf("threads_per_cta:%u is warp_size aligned. no padding for CTA. "
+      "padded_cta_size = threads_per_cta = %u\n", threads_per_cta, padded_cta_size);
   }
+
   unsigned int result_thread = n_thread_per_shader / padded_cta_size;
   printf("result_thread:%u = n_thread_per_shader:%u / padded_cta_size:%u\n",
     result_thread, n_thread_per_shader, padded_cta_size);
@@ -2544,14 +2548,10 @@ void cuda_sim::gpgpu_cuda_ptx_sim_main_func(kernel_info_t &kernel,
   unsigned max_cta_tot = max_cta(
       kernel_info, kernel.threads_per_cta(),
       gpgpu_ctx->the_gpgpusim->g_the_gpu->getShaderCoreConfig()->warp_size,
-      gpgpu_ctx->the_gpgpusim->g_the_gpu->getShaderCoreConfig()
-          ->n_thread_per_shader,
-      gpgpu_ctx->the_gpgpusim->g_the_gpu->getShaderCoreConfig()
-          ->gpgpu_shmem_size,
-      gpgpu_ctx->the_gpgpusim->g_the_gpu->getShaderCoreConfig()
-          ->gpgpu_shader_registers,
-      gpgpu_ctx->the_gpgpusim->g_the_gpu->getShaderCoreConfig()
-          ->max_cta_per_core);
+      gpgpu_ctx->the_gpgpusim->g_the_gpu->getShaderCoreConfig()->n_thread_per_shader,
+      gpgpu_ctx->the_gpgpusim->g_the_gpu->getShaderCoreConfig()->gpgpu_shmem_size,
+      gpgpu_ctx->the_gpgpusim->g_the_gpu->getShaderCoreConfig()->gpgpu_shader_registers,
+      gpgpu_ctx->the_gpgpusim->g_the_gpu->getShaderCoreConfig()->max_cta_per_core);
   printf("Max CTA : %d\n", max_cta_tot);
 
   int cp_op = gpgpu_ctx->the_gpgpusim->g_the_gpu->checkpoint_option;
