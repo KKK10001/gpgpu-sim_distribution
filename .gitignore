@@ -70,3 +70,11 @@ setup
 .DS_Store
 .DS_store
 __pycache__/
+
+checkout_tmp_modifications.sh
+cp_files.sh
+git_commit_4_16_follow_isa
+log_build
+setup_environment.bak
+src/gpgpu-sim/debug_files/
+tmp_files_tune_vb/
