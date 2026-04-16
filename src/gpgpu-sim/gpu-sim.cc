@@ -571,11 +571,6 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(
       opp, "-gpgpu_mem_unit_ports", OPT_INT32, &mem_unit_ports,
       "The number of memory transactions allowed per core cycle", "1");
-  option_parser_register(opp, "-gpgpu_shmem_warp_parts", OPT_INT32,
-                         &mem_warp_parts,
-                         "Number of portions a warp is divided into for shared "
-                         "memory bank conflict check ",
-                         "2");
   option_parser_register(
       opp, "-gpgpu_warpdistro_shader", OPT_INT32, &gpgpu_warpdistro_shader,
       "Specify which shader core to collect the warp size distribution from",

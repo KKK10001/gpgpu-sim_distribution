@@ -1199,8 +1199,11 @@ class warp_inst_t : public inst_t {
     active_mask_t active;  // threads in this transaction
 
     bool test_bytes(unsigned start_bit, unsigned end_bit) {
-      for (unsigned i = start_bit; i <= end_bit; i++)
-        if (bytes.test(i)) return true;
+      for (unsigned i = start_bit; i <= end_bit; i++) {
+        if (bytes.test(i)) {
+          return true;
+        }
+      }
       return false;
     }
   };
@@ -1223,7 +1226,9 @@ class warp_inst_t : public inst_t {
     if (!m_per_scalar_thread_valid) {
       m_per_scalar_thread.resize(m_config->warp_size);
       m_per_scalar_thread_valid = true;
-      if (atomic) m_isatomic = true;
+      if (atomic) {
+        m_isatomic = true;
+      }
     }
     m_per_scalar_thread[lane_id].callback.function = function;
     m_per_scalar_thread[lane_id].callback.instruction = inst;
@@ -1321,12 +1326,9 @@ class warp_inst_t : public inst_t {
         memreqaddr[i] = 0;
     }
     dram_callback_t callback;
-    new_addr_type
-        memreqaddr[MAX_ACCESSES_PER_INSN_PER_THREAD];  // effective address,
-                                                       // upto 8 different
-                                                       // requests (to support
-                                                       // 32B access in 8 chunks
-                                                       // of 4B each)
+    // effective address, upto 8 different requests 
+    // (to support 32B access in 8 chunks of 4B each)    
+    new_addr_type memreqaddr[MAX_ACCESSES_PER_INSN_PER_THREAD];
   };
   bool m_per_scalar_thread_valid;
   std::vector<per_thread_info> m_per_scalar_thread;

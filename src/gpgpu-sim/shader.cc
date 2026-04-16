@@ -3739,8 +3739,6 @@ void ldst_unit::cycle() {
   m_L1T->cycle();
   m_L1C->cycle();
   if (m_L1D) {
-    // fprintf(Trace::out, "%llu Entering m_L1D->cycle() the %u times\n", time, m_cnt_l1d_run_cycles);
-    
     m_L1D->cycle(); // Send req to next-level cache
     if (m_config->m_L1D_config.l1_latency > 0) {
       L1_latency_queue_cycle(); // mem_fetch *mf_next = l1_latency_queue[bank_id][0];
