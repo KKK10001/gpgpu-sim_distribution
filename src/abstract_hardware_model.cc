@@ -43,27 +43,6 @@
 #include "gpgpusim_entrypoint.h"
 #include "option_parser.h"
 
-const char* memory_space_str(enum _memory_space_t type) {
-  static const char *static_memory_space_str[] = {
-    "undefined_space",
-    "reg_space",
-    "local_space",
-    "shared_space",
-    "sstarr_space",
-    "param_space_unclassified",
-    "param_space_kernel",
-    "param_space_local",
-    "const_space",
-    "tex_space",
-    "surf_space",
-    "global_space",
-    "generic_space",
-    "instruction_space"
-  };
-  assert(sizeof(static_memory_space_str) / sizeof(const char *) == NUM_MEMORY_SPACE);
-  return static_memory_space_str[type];
-}
-
 void mem_access_t::init(gpgpu_context *ctx) {
   gpgpu_ctx = ctx;
   m_uid = ++(gpgpu_ctx->sm_next_access_uid);
@@ -296,6 +275,59 @@ const char *mem_access_type_str(enum mem_access_type access_type) {
 // would waste space or require offset math, so we instead use a switch with a
 // macro to keep the code compact and consistent.
 // ---------------------------------------------------------------------------
+const char* cache_op_str(enum cache_operator_type cache_op) {
+  switch(cache_op) {
+#define CACHE_OP_TUP(X) case X: return #X;
+    CACHE_OP_TUP(CACHE_UNDEFINED)
+    CACHE_OP_TUP(CACHE_ALL)
+    CACHE_OP_TUP(CACHE_LAST_USE)
+    CACHE_OP_TUP(CACHE_VOLATILE)
+    CACHE_OP_TUP(CACHE_L1)
+    CACHE_OP_TUP(CACHE_STREAMING)
+    CACHE_OP_TUP(CACHE_GLOBAL)
+    CACHE_OP_TUP(CACHE_WRITE_BACK)
+    CACHE_OP_TUP(CACHE_WRITE_THROUGH)
+#undef CACHE_OP_TUP
+  default:
+    return "UNKNOWN_CACHE_OP";
+  }
+}
+
+const char *memory_op_str(enum _memory_op_t memory_op) {
+  switch(memory_op) {
+#define MEMORY_OP_TUP(X) case X: return #X;
+    MEMORY_OP_TUP(no_memory_op)
+    MEMORY_OP_TUP(memory_load)
+    MEMORY_OP_TUP(memory_store)
+#undef MEMORY_OP_TUP
+  default:
+    return "UNKNOWN_MEMORY_OP";
+  }
+}
+
+const char* memory_space_str(enum _memory_space_t m_type) {
+  switch(m_type) {
+#define MEMORY_SPACE_TUP(X) case X: return #X;
+    MEMORY_SPACE_TUP(undefined_space)
+    MEMORY_SPACE_TUP(reg_space)
+    MEMORY_SPACE_TUP(local_space)
+    MEMORY_SPACE_TUP(shared_space)
+    MEMORY_SPACE_TUP(sstarr_space)
+    MEMORY_SPACE_TUP(param_space_unclassified)
+    MEMORY_SPACE_TUP(param_space_kernel)
+    MEMORY_SPACE_TUP(param_space_local)
+    MEMORY_SPACE_TUP(const_space)
+    MEMORY_SPACE_TUP(tex_space)
+    MEMORY_SPACE_TUP(surf_space)
+    MEMORY_SPACE_TUP(global_space)
+    MEMORY_SPACE_TUP(generic_space)
+    MEMORY_SPACE_TUP(instruction_space)
+#undef MEMORY_SPACE_TUP
+  default:
+    return "UNKNOWN_MEMORY_SPACE";
+  }
+}
+
 const char *uarch_op_str(enum uarch_op_t op_type) {
   switch (op_type) {
 #define UARCH_TUP(X) case X: return #X;

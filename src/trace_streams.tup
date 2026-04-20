@@ -27,6 +27,9 @@
 
 TS_TUP_BEGIN( trace_streams_type )
     TS_TUP( SIM_TOP ),
+    TS_TUP( OP_CODE ),
+    TS_TUP( LOAD_DETAIL ),
+    TS_TUP( UOP_DETAIL ),
     TS_TUP( CTA ),
     TS_TUP( SIM_LOOP ),
     TS_TUP( CHECK_SIM_ACTIVE ),

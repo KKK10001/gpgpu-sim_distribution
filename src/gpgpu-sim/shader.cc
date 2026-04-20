@@ -2405,7 +2405,7 @@ void shader_core_ctx::warp_inst_complete(const warp_inst_t &inst) {
   if (DTRACE(SIM_INSNS)) {
     fprintf(Trace::out, "%s m_gpu->gpu_sim_insn:%llu += inst.active_count:%u\n",
       __func__, m_gpu->gpu_sim_insn, inst.active_count());
-  }
+  }  
   // Optional trace: report cumulative executed instruction count
   // Enabled by: -trace_enabled 1 -trace_components INSN_COUNT [and optional sampling]
   {
@@ -2602,8 +2602,7 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
     return result;
   }
 
-  unsigned long long time = 
-    m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle;
+  u64 time = m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle;
 
   if (m_config->m_L1D_config.l1_latency > 0) {
     for (unsigned int j = 0; j < m_config->m_L1D_config.l1_banks; j++) {  // We can handle at max l1_banks reqs per cycle
@@ -3020,7 +3019,7 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
       }
     }
   } // if (bypassL1D)  
-  else {
+  else {    
     assert(CACHE_UNDEFINED != inst.cache_op);
     stall_cond = process_memory_access_queue_l1cache(m_L1D, inst);
   }

@@ -113,7 +113,7 @@ typedef unsigned long long addr_t;
 #define SPEC_UNIT_START_ID 100
 
 enum uarch_op_t {
-  NO_OP = -1,
+  NO_OP = 0,
   ALU_OP = 1,
   SFU_OP,
   TENSOR_CORE_OP,
@@ -172,8 +172,8 @@ enum special_operations_t {
   TEX__OP
 };
 
-typedef enum special_operations_t
-    special_ops;  // Required to identify for the power model
+// Required to identify for the power model
+typedef enum special_operations_t special_ops;
 enum operation_pipeline_t {
   UNKOWN_OP,
   SP__OP,
@@ -817,6 +817,7 @@ MEM_ACCESS_TYPE_TUP_DEF
 const char *mem_access_type_str(enum mem_access_type access_type);
 
 const char *uarch_op_str(enum uarch_op_t op_type);
+const char *memory_op_str(enum _memory_op_t memory_op);
 
 enum cache_operator_type {
   CACHE_UNDEFINED,
@@ -835,6 +836,7 @@ enum cache_operator_type {
   CACHE_WRITE_BACK,    // .wb
   CACHE_WRITE_THROUGH  // .wt
 };
+const char* cache_op_str(enum cache_operator_type cache_op);
 
 class mem_access_t {
  public:

@@ -1572,8 +1572,11 @@ enum cache_request_status tag_array::probe(
                     cache->m_victim_buffer.insert(swap_out_addr);
                     if (DTRACE(L1D_VICTIM_BUFFER)) {
                       fprintf(Trace::out, "%llu TPC:%u SM:%u L1D VB missed in-coming addr:%#llx "
-                        "and inserted victim's swap_out_addr:%#llx (->size:%u). victim->is_modified_line:%u\n", 
-                        time, mf->get_tpc(), mf->get_sid(), addr, swap_out_addr, cache->m_victim_buffer.size(),
+                        "and inserted victim's swap_out_addr:%#llx (->size:%lu). "
+                        "victim->is_modified_line:%u\n", 
+                        time, mf->get_tpc(), mf->get_sid(), 
+                        addr, swap_out_addr, 
+                        cache->m_victim_buffer.size(),
                         victim->is_modified_line());
                     }
                   }     
