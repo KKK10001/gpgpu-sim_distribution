@@ -45,6 +45,10 @@ class gpgpu_context;
 #define MAX_INPUT_VALUES 24
 #define MAX_OUTPUT_VALUES 8
 
+typedef unsigned long long u64;
+typedef unsigned int u32;
+typedef unsigned u32;
+
 enum _memory_space_t {
   undefined_space = 0,
   reg_space,
@@ -103,10 +107,10 @@ enum AdaptiveCache { FIXED = 0, ADAPTIVE_CACHE = 1 };
 #include <set>
 #include <unordered_map>
 
-typedef unsigned long long new_addr_type;
-typedef unsigned long long cudaTextureObject_t;
-typedef unsigned long long address_type;
-typedef unsigned long long addr_t;
+typedef u64 new_addr_type;
+typedef u64 cudaTextureObject_t;
+typedef u64 address_type;
+typedef u64 addr_t;
 
 // the following are operations the timing model can see
 #define SPECIALIZED_UNIT_NUM 8
@@ -183,7 +187,7 @@ enum operation_pipeline_t {
   TENSOR_CORE__OP,
   MEM__OP,
   SPECIALIZED__OP,
-};
+}; // lat > 1
 typedef enum operation_pipeline_t operation_pipeline;
 enum mem_operation_t { NOT_TEX, TEX };
 typedef enum mem_operation_t mem_operation;
@@ -228,8 +232,7 @@ extern std::map<void *, size_t> pinned_memory_size;
 
 class kernel_info_t {
  public:
-  kernel_info_t(dim3 gridDim, dim3 blockDim, class function_info *entry,
-                unsigned long long streamID);
+  kernel_info_t(dim3 gridDim, dim3 blockDim, class function_info *entry, u64 streamID);
   kernel_info_t(
       dim3 gridDim, dim3 blockDim, class function_info *entry,
       std::map<std::string, const struct cudaArray *> nameToCudaArray,
@@ -266,7 +269,7 @@ class kernel_info_t {
     m_next_tid.z = 0;
   }
   dim3 get_next_cta_id() const { return m_next_cta; }
-  unsigned get_next_cta_id_single() const {
+  u32 get_next_cta_id_single() const {
     return m_next_cta.x + m_grid_dim.x * m_next_cta.y +
            m_grid_dim.x * m_grid_dim.y * m_next_cta.z;
   }
@@ -279,7 +282,7 @@ class kernel_info_t {
     increment_x_then_y_then_z(m_next_tid, m_block_dim);
   }
   dim3 get_next_thread_id_3d() const { return m_next_tid; }
-  unsigned get_next_thread_id() const {
+  u32 get_next_thread_id() const {
     return m_next_tid.x + m_block_dim.x * m_next_tid.y +
            m_block_dim.x * m_block_dim.y * m_next_tid.z;
   }
@@ -287,8 +290,8 @@ class kernel_info_t {
     return m_next_tid.z < m_block_dim.z && m_next_tid.y < m_block_dim.y &&
            m_next_tid.x < m_block_dim.x;
   }
-  unsigned get_uid() const { return m_uid; }
-  unsigned long long get_streamID() const { return m_streamID; }
+  u32 get_uid() const { return m_uid; }
+  u64 get_streamID() const { return m_streamID; }
   std::string get_name() const { return name(); }
   std::string name() const;
 
@@ -322,8 +325,8 @@ class kernel_info_t {
 
   class function_info *m_kernel_entry;
 
-  unsigned m_uid;  // Kernel ID
-  unsigned long long m_streamID;
+  u32 m_uid;  // Kernel ID
+  u64 m_streamID;
 
   // These maps contain the snapshot of the texture mappings at kernel launch
   std::map<std::string, const struct cudaArray *> m_NameToCudaArray;
@@ -334,7 +337,7 @@ class kernel_info_t {
   dim3 m_next_cta;
   dim3 m_next_tid;
 
-  unsigned m_num_cores_running;
+  u32 m_num_cores_running;
 
   std::list<class ptx_thread_info *> m_active_threads;
   class memory_space *m_param_mem;
@@ -364,16 +367,16 @@ class kernel_info_t {
 
   // Jin: kernel timing
  public:
-  unsigned allocated_ctas;
-  unsigned long long launch_cycle;
-  unsigned long long start_cycle;
-  unsigned long long end_cycle;
-  unsigned m_launch_latency;
+  u32 allocated_ctas;
+  u64 launch_cycle;
+  u64 start_cycle;
+  u64 end_cycle;
+  u32 m_launch_latency;
 
   mutable bool cache_config_set;
 
-  unsigned m_kernel_TB_latency;  // this used for any CPU-GPU kernel latency and
-                                 // counted in the gpu_cycle
+  // this used for any CPU-GPU kernel latency and counted in the gpu_cycle
+  u32 m_kernel_TB_latency;  
 };
 
 class core_config {
@@ -390,7 +393,7 @@ class core_config {
   virtual void init() = 0;
 
   bool m_valid;
-  unsigned warp_size;
+  u32 warp_size;
   // backward pointer
   class gpgpu_context *gpgpu_ctx;
 
@@ -400,25 +403,25 @@ class core_config {
   // shared memory bank conflict checking parameters
   bool shmem_limited_broadcast;
   static const address_type WORD_SIZE = 4;
-  unsigned num_shmem_bank;
-  unsigned shmem_bank_func(address_type addr) const {
+  u32 num_shmem_bank;
+  u32 shmem_bank_func(address_type addr) const {
     return ((addr / WORD_SIZE) % num_shmem_bank);
   }
-  unsigned mem_warp_parts;
-  mutable unsigned gpgpu_shmem_size;
+  u32 mem_warp_parts;
+  mutable u32 gpgpu_shmem_size;
   char *gpgpu_shmem_option;
   std::vector<unsigned> shmem_opt_list;
-  unsigned gpgpu_shmem_sizeDefault;
-  unsigned gpgpu_shmem_sizePrefL1;
-  unsigned gpgpu_shmem_sizePrefShared;
-  unsigned mem_unit_ports;
+  u32 gpgpu_shmem_sizeDefault;
+  u32 gpgpu_shmem_sizePrefL1;
+  u32 gpgpu_shmem_sizePrefShared;
+  u32 mem_unit_ports;
 
   // texture and constant cache line sizes (used to determine number of memory
   // accesses)
-  unsigned gpgpu_cache_texl1_linesize;
-  unsigned gpgpu_cache_constl1_linesize;
+  u32 gpgpu_cache_texl1_linesize;
+  u32 gpgpu_cache_constl1_linesize;
 
-  unsigned gpgpu_max_insn_issue_per_warp;
+  u32 gpgpu_max_insn_issue_per_warp;
   bool gmem_skip_L1D;  // on = global memory access always skip the L1 cache
 
   bool adaptive_cache_config;
@@ -426,7 +429,7 @@ class core_config {
 
 // bounded stack that implements simt reconvergence using pdom mechanism from
 // MICRO'07 paper
-const unsigned MAX_WARP_SIZE = 32;
+const u32 MAX_WARP_SIZE = 32;
 typedef std::bitset<MAX_WARP_SIZE> active_mask_t;
 #define MAX_WARP_SIZE_SIMT_STACK MAX_WARP_SIZE
 typedef std::bitset<MAX_WARP_SIZE_SIMT_STACK> simt_mask_t;
@@ -434,33 +437,33 @@ typedef std::vector<address_type> addr_vector_t;
 
 class simt_stack {
  public:
-  simt_stack(unsigned wid, unsigned warpSize, class gpgpu_sim *gpu);
+  simt_stack(u32 wid, u32 warpSize, class gpgpu_sim *gpu);
 
   void reset();
   void launch(address_type start_pc, const simt_mask_t &active_mask);
   void update(simt_mask_t &thread_done, addr_vector_t &next_pc,
               address_type recvg_pc, op_type next_inst_op,
-              unsigned next_inst_size, address_type next_inst_pc);
+              u32 next_inst_size, address_type next_inst_pc);
 
   const simt_mask_t &get_active_mask() const;
-  void get_pdom_stack_top_info(unsigned *pc, unsigned *rpc) const;
-  unsigned get_rp() const;
+  void get_pdom_stack_top_info(u32 *pc, u32 *rpc) const;
+  u32 get_rp() const;
   void print(FILE *fp) const;
   void resume(char *fname);
   void print_checkpoint(FILE *fout) const;
 
  protected:
-  unsigned m_warp_id;
-  unsigned m_warp_size;
+  u32 m_warp_id;
+  u32 m_warp_size;
 
   enum stack_entry_type { STACK_ENTRY_TYPE_NORMAL = 0, STACK_ENTRY_TYPE_CALL };
 
   struct simt_stack_entry {
     address_type m_pc;
-    unsigned int m_calldepth;
+    u32 m_calldepth;
     simt_mask_t m_active_mask;
     address_type m_recvg_pc;
-    unsigned long long m_branch_div_cycle;
+    u64 m_branch_div_cycle;
     stack_entry_type m_type;
     simt_stack_entry()
         : m_pc(-1),
@@ -479,28 +482,28 @@ class simt_stack {
 // Let's just upgrade to C++11 so we can use constexpr here...
 // start allocating from this address (lower values used for allocating globals
 // in .ptx file)
-const unsigned long long GLOBAL_HEAP_START = 0xC0000000;
+const u64 GLOBAL_HEAP_START = 0xC0000000;
 // Volta max shmem size is 96kB
-const unsigned long long SHARED_MEM_SIZE_MAX = 96 * (1 << 10);
+const u64 SHARED_MEM_SIZE_MAX = 96 * (1 << 10);
 // Volta max local mem is 16kB
-const unsigned long long LOCAL_MEM_SIZE_MAX = 1 << 14;
+const u64 LOCAL_MEM_SIZE_MAX = 1 << 14;
 // Volta Titan V has 80 SMs
-const unsigned MAX_STREAMING_MULTIPROCESSORS = 80;
+const u32 MAX_STREAMING_MULTIPROCESSORS = 80;
 // Max 2048 threads / SM
-const unsigned MAX_THREAD_PER_SM = 1 << 11;
+const u32 MAX_THREAD_PER_SM = 1 << 11;
 // MAX 64 warps / SM
-const unsigned MAX_WARP_PER_SM = 1 << 6;
-const unsigned long long TOTAL_LOCAL_MEM_PER_SM =
+const u32 MAX_WARP_PER_SM = 1 << 6;
+const u64 TOTAL_LOCAL_MEM_PER_SM =
     MAX_THREAD_PER_SM * LOCAL_MEM_SIZE_MAX;
-const unsigned long long TOTAL_SHARED_MEM =
+const u64 TOTAL_SHARED_MEM =
     MAX_STREAMING_MULTIPROCESSORS * SHARED_MEM_SIZE_MAX;
-const unsigned long long TOTAL_LOCAL_MEM =
+const u64 TOTAL_LOCAL_MEM =
     MAX_STREAMING_MULTIPROCESSORS * MAX_THREAD_PER_SM * LOCAL_MEM_SIZE_MAX;
-const unsigned long long SHARED_GENERIC_START =
+const u64 SHARED_GENERIC_START =
     GLOBAL_HEAP_START - TOTAL_SHARED_MEM;
-const unsigned long long LOCAL_GENERIC_START =
+const u64 LOCAL_GENERIC_START =
     SHARED_GENERIC_START - TOTAL_LOCAL_MEM;
-const unsigned long long STATIC_ALLOC_LIMIT =
+const u64 STATIC_ALLOC_LIMIT =
     GLOBAL_HEAP_START - (TOTAL_LOCAL_MEM + TOTAL_SHARED_MEM);
 
 #if !defined(__CUDA_RUNTIME_API_H__)
@@ -514,7 +517,7 @@ struct cudaArray {
   int width;
   int height;
   int size;  // in bytes
-  unsigned dimensions;
+  u32 dimensions;
 };
 
 #endif
@@ -535,9 +538,9 @@ class gpgpu_functional_sim_config {
  public:
   void reg_options(class OptionParser *opp);
 
-  void ptx_set_tex_cache_linesize(unsigned linesize);
+  void ptx_set_tex_cache_linesize(u32 linesize);
 
-  unsigned get_forced_max_capability() const {
+  u32 get_forced_max_capability() const {
     return m_ptx_force_max_capability;
   }
   bool convert_to_ptxplus() const { return m_ptx_convert_to_ptxplus; }
@@ -549,7 +552,7 @@ class gpgpu_functional_sim_config {
   int get_ptx_inst_debug_thread_uid() const {
     return g_ptx_inst_debug_thread_uid;
   }
-  unsigned get_texcache_linesize() const { return m_texcache_linesize; }
+  u32 get_texcache_linesize() const { return m_texcache_linesize; }
   int get_checkpoint_option() const { return checkpoint_option; }
   int get_checkpoint_kernel() const { return checkpoint_kernel; }
   int get_checkpoint_CTA() const { return checkpoint_CTA; }
@@ -564,20 +567,20 @@ class gpgpu_functional_sim_config {
   int m_ptx_convert_to_ptxplus;
   int m_ptx_use_cuobjdump;
   int m_experimental_lib_support;
-  unsigned m_ptx_force_max_capability;
+  u32 m_ptx_force_max_capability;
   int checkpoint_option;
   int checkpoint_kernel;
   int checkpoint_CTA;
-  unsigned resume_option;
-  unsigned resume_kernel;
-  unsigned resume_CTA;
-  unsigned checkpoint_CTA_t;
+  u32 resume_option;
+  u32 resume_kernel;
+  u32 resume_CTA;
+  u32 checkpoint_CTA_t;
   int checkpoint_insn_Y;
   int g_ptx_inst_debug_to_file;
   char *g_ptx_inst_debug_file;
   int g_ptx_inst_debug_thread_uid;
 
-  unsigned m_texcache_linesize;
+  u32 m_texcache_linesize;
 };
 
 class gpgpu_t {
@@ -588,34 +591,36 @@ class gpgpu_t {
   int checkpoint_option;
   int checkpoint_kernel;
   int checkpoint_CTA;
-  unsigned resume_option;
-  unsigned resume_kernel;
-  unsigned resume_CTA;
-  unsigned checkpoint_CTA_t;
+  u32 resume_option;
+  u32 resume_kernel;
+  u32 resume_CTA;
+  u32 checkpoint_CTA_t;
   int checkpoint_insn_Y;
 
+  u64 get_cycle() const;
+
   // Move some cycle core stats here instead of being global
-  unsigned long long gpu_sim_cycle;
-  unsigned long long gpu_tot_sim_cycle;
+  u64 gpu_sim_cycle;
+  u64 gpu_tot_sim_cycle;
 
-  unsigned long long tot_l1d_lat_from_sched_to_access;
-  unsigned long long tot_l1d_accesses;
+  u64 tot_l1d_lat_from_sched_to_access;
+  u64 tot_l1d_accesses;
   float avg_l1d_lat_from_sched_to_access;
-  unsigned long long tot_l1d_hits;
+  u64 tot_l1d_hits;
 
-  unsigned long long tot_l1d_wr_lat_from_sched;
-  unsigned long long tot_l1d_writes;
+  u64 tot_l1d_wr_lat_from_sched;
+  u64 tot_l1d_writes;
   float avg_l1d_wr_lat_from_sched;
-  unsigned long long tot_l1d_wr_hits;
+  u64 tot_l1d_wr_hits;
   float l1d_wr_hit_rate;
 
-  unsigned long long tot_l1d_rd_lat_from_sched;
-  unsigned long long tot_l1d_reads;  
+  u64 tot_l1d_rd_lat_from_sched;
+  u64 tot_l1d_reads;  
   float avg_l1d_rd_lat_from_sched;
-  unsigned long long tot_l1d_rd_hits;
+  u64 tot_l1d_rd_hits;
   float l1d_rd_hit_rate;
 
-  std::unordered_map<unsigned long long /* pc */, unsigned long long /* cycle */> sched_cycle;
+  std::unordered_map<u64 /* pc */, u64 /* cycle */> sched_cycle;
   float avg_alu_lat; // from scheduling to wb
 
   void *gpu_malloc(size_t size);
@@ -698,7 +703,7 @@ class gpgpu_t {
   class memory_space *m_tex_mem;
   class memory_space *m_surf_mem;
 
-  unsigned long long m_dev_malloc;
+  u64 m_dev_malloc;
   //  These maps contain the current texture mappings for the GPU at any given
   //  time.
   std::map<std::string, std::set<const struct textureReference *>> m_NameToTextureRef;
@@ -711,15 +716,15 @@ class gpgpu_t {
 struct gpgpu_ptx_sim_info {
   // Holds properties of the kernel (Kernel's resource use).
   // These will be set to zero if a ptxinfo file is not present.
-  unsigned lmem;
-  unsigned smem;
-  unsigned cmem;
-  unsigned gmem;
-  unsigned regs; // per thread allocated regs
-  unsigned barriers;
-  unsigned maxthreads;
-  unsigned ptx_version;
-  unsigned sm_target;
+  u32 lmem;
+  u32 smem;
+  u32 cmem;
+  u32 gmem;
+  u32 regs; // per thread allocated regs
+  u32 barriers;
+  u32 maxthreads;
+  u32 ptx_version;
+  u32 sm_target;
 };
 
 struct gpgpu_ptx_sim_arg {
@@ -761,8 +766,8 @@ class memory_space_t {
   }
   enum _memory_space_t get_type() const { return m_type; }
   void set_type(enum _memory_space_t t) { m_type = t; }
-  unsigned get_bank() const { return m_bank; }
-  void set_bank(unsigned b) { m_bank = b; }
+  u32 get_bank() const { return m_bank; }
+  void set_bank(u32 b) { m_bank = b; }
   bool is_const() const {
     return (m_type == const_space) || (m_type == param_space_kernel);
   }
@@ -773,47 +778,43 @@ class memory_space_t {
 
  private:
   enum _memory_space_t m_type;
-  unsigned m_bank;  // n in ".const[n]"; note .const == .const[0] (see PTX 2.1
+  u32 m_bank;  // n in ".const[n]"; note .const == .const[0] (see PTX 2.1
                     // manual, sec. 5.1.3)
 };
 
-// unsigned SECTOR_SIZE;
-// unsigned MAX_MEMORY_ACCESS_SIZE;
+// u32 SECTOR_SIZE;
+// u32 MAX_MEMORY_ACCESS_SIZE;
 
 // const char* arch_option = std::getenv("USE_ARISE_ARCH");
 // #ifdef ARISE2_L1P5
-// const unsigned SECTOR_SIZE = 64;        // sector is 64 bytes width
-// const unsigned MAX_MEMORY_ACCESS_SIZE = 256;
+// const u32 SECTOR_SIZE = 64;        // sector is 64 bytes width
+// const u32 MAX_MEMORY_ACCESS_SIZE = 256;
 // #else
-// const unsigned SECTOR_SIZE = 32;        // sector is 32 bytes width
-// const unsigned MAX_MEMORY_ACCESS_SIZE = 128;
+// const u32 SECTOR_SIZE = 32;        // sector is 32 bytes width
+// const u32 MAX_MEMORY_ACCESS_SIZE = 128;
 // #endif
 
-const unsigned SECTOR_SIZE = 32;        // sector is 32 bytes width
-const unsigned MAX_MEMORY_ACCESS_SIZE = 128;
+const u32 SECTOR_SIZE = 32;        // sector is 32 bytes width
+const u32 MAX_MEMORY_ACCESS_SIZE = 128;
 typedef std::bitset<MAX_MEMORY_ACCESS_SIZE> mem_access_byte_mask_t;
-const unsigned SECTOR_CHUNK_SIZE = 4;  // four sectors
+const u32 SECTOR_CHUNK_SIZE = 4;  // four sectors
 typedef std::bitset<SECTOR_CHUNK_SIZE> mem_access_sector_mask_t;
 #define NO_PARTIAL_WRITE (mem_access_byte_mask_t())
 
-#define MEM_ACCESS_TYPE_TUP_DEF                                         \
-  MA_TUP_BEGIN(mem_access_type)                                         \
-  MA_TUP(GLOBAL_ACC_R), MA_TUP(LOCAL_ACC_R), MA_TUP(CONST_ACC_R),       \
-      MA_TUP(TEXTURE_ACC_R), MA_TUP(GLOBAL_ACC_W), MA_TUP(LOCAL_ACC_W), \
-      MA_TUP(L1_WRBK_ACC), MA_TUP(L2_WRBK_ACC), MA_TUP(INST_ACC_R),     \
-      MA_TUP(L1_WR_ALLOC_R), MA_TUP(L2_WR_ALLOC_R),                     \
-      MA_TUP(NUM_MEM_ACCESS_TYPE) MA_TUP_END(mem_access_type)
-
-#define MA_TUP_BEGIN(X) enum X {
-#define MA_TUP(X) X
-#define MA_TUP_END(X) \
-  }                   \
-  ;
-MEM_ACCESS_TYPE_TUP_DEF
-#undef MA_TUP_BEGIN
-#undef MA_TUP
-#undef MA_TUP_END
-
+enum mem_access_type {
+  GLOBAL_ACC_R = 0,
+  LOCAL_ACC_R = 1,
+  CONST_ACC_R,
+  TEXTURE_ACC_R,
+  GLOBAL_ACC_W,
+  LOCAL_ACC_W,
+  L1_WRBK_ACC,
+  L2_WRBK_ACC,
+  INST_ACC_R,
+  L1_WR_ALLOC_R,
+  L2_WR_ALLOC_R,
+  NUM_MEM_ACCESS_TYPE
+};
 const char *mem_access_type_str(enum mem_access_type access_type);
 
 const char *uarch_op_str(enum uarch_op_t op_type);
@@ -836,12 +837,12 @@ enum cache_operator_type {
   CACHE_WRITE_BACK,    // .wb
   CACHE_WRITE_THROUGH  // .wt
 };
-const char* cache_op_str(enum cache_operator_type cache_op);
+const char *cache_op_str(enum cache_operator_type cache_op);
 
 class mem_access_t {
  public:
   mem_access_t(gpgpu_context *ctx) { init(ctx); }
-  mem_access_t(mem_access_type type, new_addr_type address, unsigned size,
+  mem_access_t(mem_access_type type, new_addr_type address, u32 size,
                bool wr, gpgpu_context *ctx) {
     init(ctx);
     m_type = type;
@@ -849,7 +850,7 @@ class mem_access_t {
     m_req_size = size;
     m_write = wr;
   }
-  mem_access_t(mem_access_type type, new_addr_type address, unsigned size,
+  mem_access_t(mem_access_type type, new_addr_type address, u32 size,
                bool wr, const active_mask_t &active_mask,
                const mem_access_byte_mask_t &byte_mask,
                const mem_access_sector_mask_t &sector_mask, gpgpu_context *ctx)
@@ -865,7 +866,7 @@ class mem_access_t {
 
   new_addr_type get_addr() const { return m_addr; }
   void set_addr(new_addr_type addr) { m_addr = addr; }
-  unsigned get_size() const { return m_req_size; }
+  u32 get_size() const { return m_req_size; }
   const active_mask_t &get_warp_mask() const { return m_warp_mask; }
   bool is_write() const { return m_write; }
   enum mem_access_type get_type() const { return m_type; }
@@ -914,10 +915,10 @@ class mem_access_t {
  private:
   void init(gpgpu_context *ctx);
 
-  unsigned m_uid;
+  u32 m_uid;
   new_addr_type m_addr;  // request address
   bool m_write;
-  unsigned m_req_size;  // bytes
+  u32 m_req_size;  // bytes
   mem_access_type m_type;
   active_mask_t m_warp_mask;
   mem_access_byte_mask_t m_byte_mask;
@@ -933,7 +934,7 @@ class mem_fetch_interface {
       m_if_name     = "mem_fetch_interface";
       m_push_q_name = "xxx";
     }
-    virtual bool full(unsigned size, bool write) const = 0;
+    virtual bool full(u32 size, bool write) const = 0;
     virtual void push(mem_fetch *mf) = 0;
     std::string get_if_name() { return m_if_name; }
     std::string get_push_q_name() { return m_push_q_name; }
@@ -949,19 +950,19 @@ class mem_fetch_interface {
 class mem_fetch_allocator {
  public:
   virtual mem_fetch *alloc(new_addr_type addr, mem_access_type type,
-                           unsigned size, bool wr, unsigned long long cycle,
-                           unsigned long long streamID) const = 0;
+                           u32 size, bool wr, u64 cycle,
+                           u64 streamID) const = 0;
   virtual mem_fetch *alloc(const class warp_inst_t &inst,
                            const mem_access_t &access,
-                           unsigned long long cycle) const = 0;
+                           u64 cycle) const = 0;
   virtual mem_fetch *alloc(new_addr_type addr, mem_access_type type,
                            const active_mask_t &active_mask,
                            const mem_access_byte_mask_t &byte_mask,
                            const mem_access_sector_mask_t &sector_mask,
-                           unsigned size, bool wr, unsigned long long cycle,
-                           unsigned wid, unsigned sid, unsigned tpc,
+                           u32 size, bool wr, u64 cycle,
+                           u32 wid, u32 sid, u32 tpc,
                            mem_fetch *original_mf,
-                           unsigned long long streamID) const = 0;
+                           u64 streamID) const = 0;
 };
 
 // the maximum number of destination, source, or address uarch operands in a
@@ -1006,7 +1007,7 @@ class inst_t {
     cache_op = CACHE_UNDEFINED;
     latency = 1;
     initiation_interval = 1;
-    for (unsigned i = 0; i < MAX_REG_OPERANDS; i++) {
+    for (u32 i = 0; i < MAX_REG_OPERANDS; i++) {
       arch_reg.src[i] = -1;
       arch_reg.dst[i] = -1;
     }
@@ -1042,8 +1043,8 @@ class inst_t {
   }
   bool is_alu() const { return (sp_op == INT__OP); }
 
-  unsigned get_num_operands() const { return num_operands; }
-  unsigned get_num_regs() const { return num_regs; }
+  u32 get_num_operands() const { return num_operands; }
+  u32 get_num_regs() const { return num_regs; }
 
   // never used member functions
   // 1. {num_regs, num_operands} are both set inside 
@@ -1051,20 +1052,20 @@ class inst_t {
   // 2. And "num_operands = num_regs", and hence 
   // loop upper-bound of "i < (cu->get_num_operands() - cu->get_num_regs())" 
   // is never met in opndcoll_rfu_t::dispatch_ready_cu()
-  void set_num_regs(unsigned num) { num_regs = num; }
-  void set_num_operands(unsigned num) { num_operands = num; }
+  void set_num_regs(u32 num) { num_regs = num; }
+  void set_num_operands(u32 num) { num_operands = num; }
 
-  void set_bar_id(unsigned id) { bar_id = id; }
-  void set_bar_count(unsigned count) { bar_count = count; }
+  void set_bar_id(u32 id) { bar_id = id; }
+  void set_bar_count(u32 count) { bar_count = count; }
 
   address_type pc;  // program counter address of instruction
-  unsigned isize;   // size of instruction in bytes
+  u32 isize;   // size of instruction in bytes
   op_type op;       // opcode (uarch visible)
 
   barrier_type bar_type;
   reduction_type red_type;
-  unsigned bar_id;
-  unsigned bar_count;
+  u32 bar_id;
+  u32 bar_count;
 
   types_of_operands oprnd_type;  // code (uarch visible) identify if the
                                  // operation is an interger or a floating point
@@ -1074,16 +1075,16 @@ class inst_t {
   mem_operation mem_op;        // code (uarch visible) identify memory type
   bool const_cache_operand;    // has a load from constant memory as an operand
   _memory_op_t memory_op;      // memory_op used by ptxplus
-  unsigned num_operands;
-  unsigned num_regs;  // count vector operand as one register operand
+  u32 num_operands;
+  u32 num_regs;  // count vector operand as one register operand
 
   address_type reconvergence_pc;  // -1 => not a branch, -2 => use function
                                   // return address
 
-  unsigned out[8];
-  unsigned outcount;
-  unsigned in[24];
-  unsigned incount;
+  u32 out[8];
+  u32 outcount;
+  u32 in[24];
+  u32 incount;
   unsigned char is_vectorin;
   unsigned char is_vectorout;
   int pred;  // predicate register number
@@ -1095,10 +1096,10 @@ class inst_t {
   } arch_reg;
   // int arch_reg[MAX_REG_OPERANDS]; // register number for bank conflict
   // evaluation
-  unsigned latency;  // operation latency
-  unsigned initiation_interval;
+  u32 latency;  // operation latency
+  u32 initiation_interval;
 
-  unsigned data_size;  // what is the size of the word being operated on?
+  u32 data_size;  // what is the size of the word being operated on?
   memory_space_t space;
   cache_operator_type cache_op;
 
@@ -1109,7 +1110,7 @@ class inst_t {
 
 enum divergence_support_t { POST_DOMINATOR = 1, NUM_SIMD_MODEL };
 
-const unsigned MAX_ACCESSES_PER_INSN_PER_THREAD = 8;
+const u32 MAX_ACCESSES_PER_INSN_PER_THREAD = 8;
 
 class warp_inst_t : public inst_t {
  public:
@@ -1117,7 +1118,7 @@ class warp_inst_t : public inst_t {
   // constructors
   warp_inst_t() {
     m_uid = 0;
-    m_streamID = (unsigned long long)-1;
+    m_streamID = (u64) - 1;
     m_empty = true;
     m_config = NULL;
 
@@ -1130,7 +1131,7 @@ class warp_inst_t : public inst_t {
   }
   warp_inst_t(const core_config *config) {
     m_uid = 0;
-    m_streamID = (unsigned long long)-1;
+    m_streamID = (u64) - 1;
     assert(config->warp_size <= MAX_WARP_SIZE);
     m_config = config;
     m_empty = true;
@@ -1157,28 +1158,28 @@ class warp_inst_t : public inst_t {
   void do_atomic(const active_mask_t &access_mask, bool forceDo = false);
   void clear() { m_empty = true; }
 
-  void issue(const active_mask_t &mask, unsigned warp_id,
-             unsigned long long cycle, int dynamic_warp_id, int sch_id,
-             unsigned long long streamID);
+  void issue(const active_mask_t &mask, u32 warp_id,
+             u64 cycle, int dynamic_warp_id, int sch_id,
+             u64 streamID);
 
   const active_mask_t &get_active_mask() const { return m_warp_active_mask; }
-  void completed(unsigned long long cycle)
+  void completed(u64 cycle)
       const;  // stat collection: called when the instruction is completed
 
-  void set_addr(unsigned n, new_addr_type addr) {
+  void set_addr(u32 n, new_addr_type addr) {
     if (!m_per_scalar_thread_valid) {
       m_per_scalar_thread.resize(m_config->warp_size);
       m_per_scalar_thread_valid = true;
     }
     m_per_scalar_thread[n].memreqaddr[0] = addr;
   }
-  void set_addr(unsigned n, new_addr_type *addr, unsigned num_addrs) {
+  void set_addr(u32 n, new_addr_type *addr, u32 num_addrs) {
     if (!m_per_scalar_thread_valid) {
       m_per_scalar_thread.resize(m_config->warp_size);
       m_per_scalar_thread_valid = true;
     }
     assert(num_addrs <= MAX_ACCESSES_PER_INSN_PER_THREAD);
-    for (unsigned i = 0; i < num_addrs; i++) {
+    for (u32 i = 0; i < num_addrs; i++) {
       m_per_scalar_thread[n].memreqaddr[i] = addr[i];
     }      
   }
@@ -1200,8 +1201,8 @@ class warp_inst_t : public inst_t {
     mem_access_byte_mask_t bytes;
     active_mask_t active;  // threads in this transaction
 
-    bool test_bytes(unsigned start_bit, unsigned end_bit) {
-      for (unsigned i = start_bit; i <= end_bit; i++) {
+    bool test_bytes(u32 start_bit, u32 end_bit) {
+      for (u32 i = start_bit; i <= end_bit; i++) {
         if (bytes.test(i)) {
           return true;
         }
@@ -1210,7 +1211,7 @@ class warp_inst_t : public inst_t {
     }
   };
 
-  void generate_mem_accesses();
+  void generate_mem_accesses(u64 cycle = (u64) - 1);
   void memory_coalescing_arch(bool is_write, mem_access_type access_type);
   void memory_coalescing_arch_atomic(bool is_write,
                                      mem_access_type access_type);
@@ -1218,9 +1219,9 @@ class warp_inst_t : public inst_t {
                                               mem_access_type access_type,
                                               const transaction_info &info,
                                               new_addr_type addr,
-                                              unsigned segment_size);
+                                              u32 segment_size);
 
-  void add_callback(unsigned lane_id,
+  void add_callback(u32 lane_id,
                     void (*function)(const class inst_t *,
                                      class ptx_thread_info *),
                     const inst_t *inst, class ptx_thread_info *thread,
@@ -1239,7 +1240,7 @@ class warp_inst_t : public inst_t {
   void set_active(const active_mask_t &active);
 
   void clear_active(const active_mask_t &inactive);
-  void set_not_active(unsigned lane_id);
+  void set_not_active(u32 lane_id);
 
   // accessors
   virtual void print_insn(FILE *fp) const {
@@ -1247,40 +1248,40 @@ class warp_inst_t : public inst_t {
     for (int i = (int)m_config->warp_size - 1; i >= 0; i--)
       fprintf(fp, "%c", ((m_warp_active_mask[i]) ? '1' : '0'));
   }
-  bool active(unsigned thread) const { return m_warp_active_mask.test(thread); }
-  unsigned active_count() const { return m_warp_active_mask.count(); }
-  unsigned issued_count() const {
+  bool active(u32 thread) const { return m_warp_active_mask.test(thread); }
+  u32 active_count() const { return m_warp_active_mask.count(); }
+  u32 issued_count() const {
     assert(m_empty == false);
     return m_warp_issued_mask.count();
   }  // for instruction counting
   bool empty() const { return m_empty; }
-  unsigned warp_id() const {
+  u32 warp_id() const {
     assert(!m_empty);
     return m_warp_id;
   }
-  unsigned warp_id_func() const  // to be used in functional simulations only
+  u32 warp_id_func() const  // to be used in functional simulations only
   {
     return m_warp_id;
   }
-  unsigned dynamic_warp_id() const {
+  u32 dynamic_warp_id() const {
     assert(!m_empty);
     return m_dynamic_warp_id;
   }
-  bool has_callback(unsigned n) const {
+  bool has_callback(u32 n) const {
     return m_warp_active_mask[n] && m_per_scalar_thread_valid &&
            (m_per_scalar_thread[n].callback.function != NULL);
   }
-  new_addr_type get_addr(unsigned n) const {
+  new_addr_type get_addr(u32 n) const {
     assert(m_per_scalar_thread_valid);
     return m_per_scalar_thread[n].memreqaddr[0];
   }
 
   bool isatomic() const { return m_isatomic; }
 
-  unsigned warp_size() const { return m_config->warp_size; }
+  u32 warp_size() const { return m_config->warp_size; }
 
   bool accessq_empty() const { return m_accessq.empty(); }
-  unsigned accessq_count() const { return m_accessq.size(); }
+  u32 accessq_count() const { return m_accessq.size(); }
   const mem_access_t &accessq_back() { return m_accessq.back(); }
   void accessq_pop_back() { m_accessq.pop_back(); }
 
@@ -1292,9 +1293,9 @@ class warp_inst_t : public inst_t {
   bool has_dispatch_delay() { return cycles > 0; }
 
   void print(FILE *fout) const;
-  unsigned get_uid() const { return m_uid; }
-  unsigned long long get_streamID() const { return m_streamID; }
-  unsigned get_schd_id() const { return m_scheduler_id; }
+  u32 get_uid() const { return m_uid; }
+  u64 get_streamID() const { return m_streamID; }
+  u32 get_schd_id() const { return m_scheduler_id; }
   active_mask_t get_warp_active_mask() const { return m_warp_active_mask; }
 
   const core_config* get_config() const {
@@ -1302,17 +1303,17 @@ class warp_inst_t : public inst_t {
   }
 
  protected:
-  unsigned m_uid;
-  unsigned long long m_streamID;
+  u32 m_uid;
+  u64 m_streamID;
   bool m_empty;
   bool m_cache_hit;
-  unsigned long long issue_cycle;
-  unsigned cycles;  // used for implementing initiation interval delay
+  u64 issue_cycle;
+  u32 cycles;  // used for implementing initiation interval delay
   bool m_isatomic;
   bool should_do_atomic;
   bool m_is_printf;
-  unsigned m_warp_id;
-  unsigned m_dynamic_warp_id;
+  u32 m_warp_id;
+  u32 m_dynamic_warp_id;
   const core_config *m_config;
 
   // dynamic active mask for timing model (after predication)  
@@ -1324,7 +1325,7 @@ class warp_inst_t : public inst_t {
 
   struct per_thread_info {
     per_thread_info() {
-      for (unsigned i = 0; i < MAX_ACCESSES_PER_INSN_PER_THREAD; i++)
+      for (u32 i = 0; i < MAX_ACCESSES_PER_INSN_PER_THREAD; i++)
         memreqaddr[i] = 0;
     }
     dram_callback_t callback;
@@ -1337,7 +1338,7 @@ class warp_inst_t : public inst_t {
   bool m_mem_accesses_created;
   std::list<mem_access_t> m_accessq;
 
-  unsigned m_scheduler_id;  // the scheduler that issues this inst
+  u32 m_scheduler_id;  // the scheduler that issues this inst
 
   // Jin: cdp support
  public:
@@ -1347,7 +1348,7 @@ class warp_inst_t : public inst_t {
   bool m_is_ldgsts;
   bool m_is_ldgdepbar;
   bool m_is_depbar;
-  unsigned int m_depbar_group_no;
+  u32 m_depbar_group_no;
 
   std::list<mem_access_t> get_access_q() {
     return m_accessq;
@@ -1364,7 +1365,7 @@ class checkpoint {
 
   void load_global_mem(class memory_space *temp_mem, char *f1name);
   void store_global_mem(class memory_space *mem, char *fname, char *format);
-  unsigned radnom;
+  u32 radnom;
 };
 /*
  * This abstract class used as a base for functional and performance and
@@ -1373,8 +1374,8 @@ class checkpoint {
  */
 class core_t {
  public:
-  core_t(gpgpu_sim *gpu, kernel_info_t *kernel, unsigned warp_size,
-         unsigned threads_per_shader)
+  core_t(gpgpu_sim *gpu, kernel_info_t *kernel, u32 warp_size,
+         u32 threads_per_shader)
       : m_gpu(gpu),
         m_kernel(kernel),
         m_simt_stack(NULL),
@@ -1391,43 +1392,43 @@ class core_t {
                                           sizeof(ptx_thread_info *));
     initilizeSIMTStack(m_warp_count, m_warp_size);
 
-    for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++) {
-      for (unsigned j = 0; j < MAX_BARRIERS_PER_CTA; j++) {
+    for (u32 i = 0; i < MAX_CTA_PER_SHADER; i++) {
+      for (u32 j = 0; j < MAX_BARRIERS_PER_CTA; j++) {
         reduction_storage[i][j] = 0;
       }
     }
   }
   virtual ~core_t() { free(m_thread); }
-  virtual void warp_exit(unsigned warp_id) = 0;
-  virtual bool warp_waiting_at_barrier(unsigned warp_id) const = 0;
-  virtual void checkExecutionStatusAndUpdate(warp_inst_t &inst, unsigned t,
-                                             unsigned tid) = 0;
+  virtual void warp_exit(u32 warp_id) = 0;
+  virtual bool warp_waiting_at_barrier(u32 warp_id) const = 0;
+  virtual void checkExecutionStatusAndUpdate(warp_inst_t &inst, u32 t,
+                                             u32 tid) = 0;
   class gpgpu_sim *get_gpu() {
     return m_gpu;
   }
-  void execute_warp_inst_t(warp_inst_t &inst, unsigned warpId = (unsigned)-1);
-  bool ptx_thread_done(unsigned hw_thread_id) const;
-  virtual void updateSIMTStack(unsigned warpId, warp_inst_t *inst);
-  void initilizeSIMTStack(unsigned warp_count, unsigned warps_size);
+  void execute_warp_inst_t(warp_inst_t &inst, u32 warpId = (unsigned)-1);
+  bool ptx_thread_done(u32 hw_thread_id) const;
+  virtual void updateSIMTStack(u32 warpId, warp_inst_t *inst);
+  void initilizeSIMTStack(u32 warp_count, u32 warps_size);
   void deleteSIMTStack();
-  warp_inst_t getExecuteWarp(unsigned warpId);
-  void get_pdom_stack_top_info(unsigned warpId, unsigned *pc,
-                               unsigned *rpc) const;
+  warp_inst_t getExecuteWarp(u32 warpId);
+  void get_pdom_stack_top_info(u32 warpId, u32 *pc,
+                               u32 *rpc) const;
   kernel_info_t *get_kernel_info() { return m_kernel; }
   class ptx_thread_info **get_thread_info() {
     return m_thread;
   }
-  unsigned get_warp_size() const { return m_warp_size; }
-  void and_reduction(unsigned ctaid, unsigned barid, bool value) {
+  u32 get_warp_size() const { return m_warp_size; }
+  void and_reduction(u32 ctaid, u32 barid, bool value) {
     reduction_storage[ctaid][barid] &= value;
   }
-  void or_reduction(unsigned ctaid, unsigned barid, bool value) {
+  void or_reduction(u32 ctaid, u32 barid, bool value) {
     reduction_storage[ctaid][barid] |= value;
   }
-  void popc_reduction(unsigned ctaid, unsigned barid, bool value) {
+  void popc_reduction(u32 ctaid, u32 barid, bool value) {
     reduction_storage[ctaid][barid] += value;
   }
-  unsigned get_reduction_value(unsigned ctaid, unsigned barid) {
+  u32 get_reduction_value(u32 ctaid, u32 barid) {
     return reduction_storage[ctaid][barid];
   }
 
@@ -1436,31 +1437,31 @@ class core_t {
   kernel_info_t *m_kernel;
   simt_stack **m_simt_stack;  // pdom based reconvergence context for each warp
   class ptx_thread_info **m_thread;
-  unsigned m_warp_size;
-  unsigned m_warp_count;
-  unsigned reduction_storage[MAX_CTA_PER_SHADER][MAX_BARRIERS_PER_CTA];
+  u32 m_warp_size;
+  u32 m_warp_count;
+  u32 reduction_storage[MAX_CTA_PER_SHADER][MAX_BARRIERS_PER_CTA];
 };
 
 // register that can hold multiple instructions.
 class register_set {
  public:
-  register_set(unsigned num, const char *name) {
-    for (unsigned i = 0; i < num; i++) {
+  register_set(u32 num, const char *name) {
+    for (u32 i = 0; i < num; i++) {
       regs.push_back(new warp_inst_t());
     }
     m_name = name;
   }
-  unsigned regs_size() { return regs.size(); }
+  u32 regs_size() { return regs.size(); }
   const char *get_name() { return m_name; }
   bool has_free() {
-    for (unsigned i = 0; i < regs.size(); i++) {
+    for (u32 i = 0; i < regs.size(); i++) {
       if (regs[i]->empty()) {
         return true;
       }
     }
     return false;
   }
-  bool has_free(bool sub_core_model, unsigned reg_id) {
+  bool has_free(bool sub_core_model, u32 reg_id) {
     // in subcore model, each sched has a one specific reg to use (based on
     // sched id)
     if (!sub_core_model) {
@@ -1475,27 +1476,27 @@ class register_set {
     return regs[reg_id]->empty();
   }
   bool has_ready() {
-    for (unsigned i = 0; i < regs.size(); i++) {
+    for (u32 i = 0; i < regs.size(); i++) {
       if (not regs[i]->empty()) {
         return true;
       }
     }
     return false;
   }
-  bool has_ready(bool sub_core_model, unsigned reg_id) {
+  bool has_ready(bool sub_core_model, u32 reg_id) {
     if (!sub_core_model) return has_ready();
     assert(reg_id < regs.size());
     return (not regs[reg_id]->empty());
   }
 
-  unsigned get_ready_reg_id() {
+  u32 get_ready_reg_id() {
     // for sub core model we need to figure which reg_id has the ready warp
     // this function should only be called if has_ready() was true
     assert(has_ready());
     warp_inst_t **ready;
     ready = NULL;
-    unsigned reg_id = 0;
-    for (unsigned i = 0; i < regs.size(); i++) {
+    u32 reg_id = 0;
+    for (u32 i = 0; i < regs.size(); i++) {
       if (not regs[i]->empty()) {
         if (ready and (*ready)->get_uid() < regs[i]->get_uid()) {
           // ready is oldest
@@ -1507,7 +1508,7 @@ class register_set {
     }
     return reg_id;
   }
-  unsigned get_schd_id(unsigned reg_id) {
+  u32 get_schd_id(u32 reg_id) {
     assert(not regs[reg_id]->empty());
     return regs[reg_id]->get_schd_id();
   }
@@ -1518,7 +1519,7 @@ class register_set {
   // void copy_in( warp_inst_t* src ){
   //   src->copy_contents_to(*get_free());
   //}
-  void move_in(bool sub_core_model, unsigned reg_id, warp_inst_t *&src) {
+  void move_in(bool sub_core_model, u32 reg_id, warp_inst_t *&src) {
     warp_inst_t **free;
     if (!sub_core_model) {
       free = get_free();
@@ -1533,7 +1534,7 @@ class register_set {
     warp_inst_t **ready = get_ready();
     move_warp(dest, *ready);
   }
-  void move_out_to(bool sub_core_model, unsigned reg_id, warp_inst_t *&dest) {
+  void move_out_to(bool sub_core_model, u32 reg_id, warp_inst_t *&dest) {
     if (!sub_core_model) {
       return move_out_to(dest);
     }
@@ -1545,7 +1546,7 @@ class register_set {
   warp_inst_t **get_ready() {
     warp_inst_t **ready;
     ready = NULL;
-    for (unsigned i = 0; i < regs.size(); i++) {
+    for (u32 i = 0; i < regs.size(); i++) {
       if (not regs[i]->empty()) {
         if (ready and (*ready)->get_uid() < regs[i]->get_uid()) {
           // ready is oldest
@@ -1556,7 +1557,7 @@ class register_set {
     }
     return ready;
   }
-  warp_inst_t **get_ready(bool sub_core_model, unsigned reg_id) {
+  warp_inst_t **get_ready(bool sub_core_model, u32 reg_id) {
     if (!sub_core_model) return get_ready();
     warp_inst_t **ready;
     ready = NULL;
@@ -1574,7 +1575,7 @@ class register_set {
 
   void print(FILE *fp) const {
     fprintf(fp, "%s : @%p\n", m_name, this);
-    for (unsigned i = 0; i < regs.size(); i++) {
+    for (u32 i = 0; i < regs.size(); i++) {
       fprintf(fp, "     ");
       regs[i]->print(fp);
       fprintf(fp, "\n");
@@ -1582,7 +1583,7 @@ class register_set {
   }
 
   warp_inst_t **get_free() {
-    for (unsigned i = 0; i < regs.size(); i++) {
+    for (u32 i = 0; i < regs.size(); i++) {
       if (regs[i]->empty()) {
         return &regs[i];
       }
@@ -1591,10 +1592,12 @@ class register_set {
     return NULL;
   }
 
-  warp_inst_t **get_free(bool sub_core_model, unsigned reg_id) {
+  warp_inst_t **get_free(bool sub_core_model, u32 reg_id) {
     // in subcore model, each sched has a one specific reg to use (based on
     // sched id)
-    if (!sub_core_model) return get_free();
+    if (!sub_core_model) {
+      return get_free();
+    }
 
     assert(reg_id < regs.size());
     if (regs[reg_id]->empty()) {
@@ -1604,7 +1607,7 @@ class register_set {
     return NULL;
   }
 
-  unsigned get_size() { return regs.size(); }
+  u32 get_size() { return regs.size(); }
 
  private:
   std::vector<warp_inst_t *> regs;

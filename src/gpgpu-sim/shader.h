@@ -62,6 +62,7 @@
 #define NO_OP_FLAG 0xFF
 typedef unsigned long long u64;
 typedef unsigned u32;
+typedef unsigned int u32;
 
 /* READ_PACKET_SIZE:
    bytes: 6 address (flit can specify chanel so this gives up to ~2GB/channel,
@@ -91,24 +92,23 @@ enum exec_unit_type_t {
 
 class thread_ctx_t {
  public:
-  unsigned m_cta_id;  // hardware CTA this thread belongs
+  u32 m_cta_id;  // hardware CTA this thread belongs
 
   // per thread stats (ac stands for accumulative).
-  unsigned n_insn;
-  unsigned n_insn_ac;
-  unsigned n_l1_mis_ac;
-  unsigned n_l1_mrghit_ac;
-  unsigned n_l1_access_ac;
+  u32 n_insn;
+  u32 n_insn_ac;
+  u32 n_l1_mis_ac;
+  u32 n_l1_mrghit_ac;
+  u32 n_l1_access_ac;
 
   bool m_active;
 };
 
 class shd_warp_t {
  public:
-  shd_warp_t(class shader_core_ctx *shader, unsigned warp_size)
+  shd_warp_t(class shader_core_ctx *shader, u32 warp_size)
       : m_shader(shader), m_warp_size(warp_size) {
     m_stores_outstanding = 0;
-    m_outstanding_store_has_decremented = false;
     m_inst_in_pipeline = 0;
     reset();
   }
@@ -116,15 +116,15 @@ class shd_warp_t {
     assert(m_stores_outstanding == 0);
     assert(m_inst_in_pipeline == 0);
     m_imiss_pending = false;
-    m_warp_id = (unsigned)-1;
-    m_dynamic_warp_id = (unsigned)-1;
+    m_warp_id = (u32) - 1;
+    m_dynamic_warp_id = (u32) - 1;
     n_completed = m_warp_size;
     m_n_atomic = 0;
     m_membar = false;
     m_done_exit = true;
     m_last_fetch = 0;
     m_next = 0;
-    m_streamID = (unsigned long long)-1;
+    m_streamID = (u64) - 1;
 
     // Jin: cdp support
     m_cdp_latency = 0;
@@ -139,14 +139,14 @@ class shd_warp_t {
     m_waiting_ldgsts = false;
 
     // Ni: Clear m_ldgdepbar_buf
-    for (unsigned i = 0; i < m_ldgdepbar_buf.size(); i++) {
+    for (u32 i = 0; i < m_ldgdepbar_buf.size(); i++) {
       m_ldgdepbar_buf[i].clear();
     }
     m_ldgdepbar_buf.clear();
   }
-  void init(unsigned long long time, address_type start_pc, unsigned cta_id, unsigned wid,
-            const std::bitset<MAX_WARP_SIZE> &active, unsigned dynamic_warp_id,
-            unsigned long long streamID) {
+  void init(u64 time, address_type start_pc, u32 cta_id, u32 wid,
+            const std::bitset<MAX_WARP_SIZE> &active, u32 dynamic_warp_id,
+            u64 streamID) {
     m_time = time;
     m_streamID = streamID;
     m_cta_id = cta_id;
@@ -176,7 +176,7 @@ class shd_warp_t {
     m_waiting_ldgsts = false;
 
     // Ni: Clear m_ldgdepbar_buf
-    for (unsigned i = 0; i < m_ldgdepbar_buf.size(); i++) {
+    for (u32 i = 0; i < m_ldgdepbar_buf.size(); i++) {
       m_ldgdepbar_buf[i].clear();
     }
     m_ldgdepbar_buf.clear();
@@ -192,21 +192,21 @@ class shd_warp_t {
   void print(FILE *fout) const;
   void print_ibuffer(FILE *fout) const;
 
-  unsigned get_n_completed() const { return n_completed; }
-  void set_completed(unsigned lane) {
+  u32 get_n_completed() const { return n_completed; }
+  void set_completed(u32 lane) {
     assert(m_active_threads.test(lane));
     m_active_threads.reset(lane);
     n_completed++;
   }
-  bool test_active(unsigned lane) { return m_active_threads.test(lane); }
+  bool test_active(u32 lane) { return m_active_threads.test(lane); }
 
-  void set_last_fetch(unsigned long long sim_cycle) {
+  void set_last_fetch(u64 sim_cycle) {
     m_last_fetch = sim_cycle;
   }
 
-  unsigned get_n_atomic() const { return m_n_atomic; }
+  u32 get_n_atomic() const { return m_n_atomic; }
   void inc_n_atomic() { m_n_atomic++; }
-  void dec_n_atomic(unsigned n) { m_n_atomic -= n; }
+  void dec_n_atomic(u32 n) { m_n_atomic -= n; }
 
   void set_membar() { m_membar = true; }
   void clear_membar() { m_membar = false; }
@@ -222,14 +222,14 @@ class shd_warp_t {
     return &m_inst_at_barrier;
   }
 
-  void ibuffer_fill(unsigned slot, const warp_inst_t *pI) {
+  void ibuffer_fill(u32 slot, const warp_inst_t *pI) {
     assert(slot < IBUFFER_SIZE);
     m_ibuffer[slot].m_inst = pI;
     m_ibuffer[slot].m_valid = true;
     m_next = 0;
   }
   bool ibuffer_empty() const {
-    for (unsigned i = 0; i < IBUFFER_SIZE; ++i) {
+    for (u32 i = 0; i < IBUFFER_SIZE; ++i) {
       if (m_ibuffer[i].m_valid) {
         return false;
       }
@@ -238,7 +238,7 @@ class shd_warp_t {
   }
 
   void ibuffer_flush() {
-    for (unsigned i = 0; i < IBUFFER_SIZE; i++) {
+    for (u32 i = 0; i < IBUFFER_SIZE; i++) {
       if (m_ibuffer[i].m_valid) dec_inst_in_pipeline();
       m_ibuffer[i].m_inst = NULL;
       m_ibuffer[i].m_valid = false;
@@ -257,29 +257,21 @@ class shd_warp_t {
   void clear_imiss_pending() { m_imiss_pending = false; }
 
   bool stores_done() const { return m_stores_outstanding == 0; }
-  bool outstanding_store_has_decremented() const { return m_outstanding_store_has_decremented; }
   void inc_store_req() { m_stores_outstanding++; }
   void dec_store_req() {
-    // if (m_outstanding_store_has_decremented) {
-    //   // nothing
-    // } else {
-    //   assert(m_stores_outstanding > 0);
-    //   m_stores_outstanding--;
-    //   m_outstanding_store_has_decremented = true;
-    // }
     assert(m_stores_outstanding > 0);
     m_stores_outstanding--;    
   }
 
-  unsigned num_inst_in_buffer() const {
-    unsigned count = 0;
-    for (unsigned i = 0; i < IBUFFER_SIZE; i++) {
+  u32 num_inst_in_buffer() const {
+    u32 count = 0;
+    for (u32 i = 0; i < IBUFFER_SIZE; i++) {
       if (m_ibuffer[i].m_valid) count++;
     }
     return count;
   }
-  unsigned num_inst_in_pipeline() const { return m_inst_in_pipeline; }
-  unsigned num_issued_inst_in_pipeline() const {
+  u32 num_inst_in_pipeline() const { return m_inst_in_pipeline; }
+  u32 num_issued_inst_in_pipeline() const {
     return (num_inst_in_pipeline() - num_inst_in_buffer());
   }
   bool inst_in_pipeline() const { return m_inst_in_pipeline > 0; }
@@ -289,31 +281,31 @@ class shd_warp_t {
     m_inst_in_pipeline--;
   }
 
-  unsigned long long get_streamID() const { return m_streamID; }
-  unsigned get_cta_id() const { return m_cta_id; }
+  u64 get_streamID() const { return m_streamID; }
+  u32 get_cta_id() const { return m_cta_id; }
 
-  unsigned get_dynamic_warp_id() const { return m_dynamic_warp_id; }
-  unsigned get_warp_id() const { return m_warp_id; }
+  u32 get_dynamic_warp_id() const { return m_dynamic_warp_id; }
+  u32 get_warp_id() const { return m_warp_id; }
 
   class shader_core_ctx *get_shader() {
     return m_shader;
   }
-  unsigned long long get_time() {
+  u64 get_time() {
     return m_time;
   }
 
  private:
-  static const unsigned IBUFFER_SIZE = 2;
+  static const u32 IBUFFER_SIZE = 2;
   class shader_core_ctx *m_shader;
-  unsigned long long m_time;
-  unsigned long long m_streamID;
-  unsigned m_cta_id;
-  unsigned m_warp_id;
-  unsigned m_warp_size;
-  unsigned m_dynamic_warp_id;
+  u64 m_time;
+  u64 m_streamID;
+  u32 m_cta_id;
+  u32 m_warp_id;
+  u32 m_warp_size;
+  u32 m_dynamic_warp_id;
 
   address_type m_next_pc;
-  unsigned n_completed;  // number of threads in warp completed
+  u32 n_completed;  // number of threads in warp completed
   std::bitset<MAX_WARP_SIZE> m_active_threads;
 
   bool m_imiss_pending;
@@ -329,48 +321,41 @@ class shd_warp_t {
 
   warp_inst_t m_inst_at_barrier;
   ibuffer_entry m_ibuffer[IBUFFER_SIZE];
-  unsigned m_next;
-
-  unsigned m_n_atomic;  // number of outstanding atomic operations
-  bool m_membar;        // if true, warp is waiting at memory barrier
-
-  bool m_done_exit;  // true once thread exit has been registered for threads in
-                     // this warp
-
-  unsigned long long m_last_fetch;  
-
-  unsigned m_stores_outstanding;  // number of store requests sent but not yet
-                                  // acknowledged
-  bool m_outstanding_store_has_decremented;
-  unsigned m_inst_in_pipeline;
+  u32 m_next;
+  u32 m_n_atomic;   // number of outstanding atomic operations
+  bool m_membar;    // if true, warp is waiting at memory barrier
+  bool m_done_exit; // true once thread exit has been registered for threads in this warp
+  u64 m_last_fetch; // last fetched cycle
+  u32 m_stores_outstanding; // number of store requests sent but not yet acknowledged
+  u32 m_inst_in_pipeline;
 
   // Jin: cdp support
  public:
-  unsigned int m_cdp_latency;
+  u32 m_cdp_latency;
   bool m_cdp_dummy;
 
   // Ni: LDGDEPBAR barrier support
  public:
-  unsigned int m_ldgdepbar_id;  // LDGDEPBAR barrier ID
+  u32 m_ldgdepbar_id;  // LDGDEPBAR barrier ID
   std::vector<std::vector<warp_inst_t>> m_ldgdepbar_buf; // LDGDEPBAR barrier buffer
-  unsigned int m_depbar_start_id;
-  unsigned int m_depbar_group;
+  u32 m_depbar_start_id;
+  u32 m_depbar_group;
   bool m_waiting_ldgsts;  // Ni: Whether the warp is waiting for the LDGSTS instrs to finish
 };
 
-inline unsigned hw_tid_from_wid(unsigned wid, unsigned warp_size, unsigned i) {
+inline u32 hw_tid_from_wid(u32 wid, u32 warp_size, u32 i) {
   return wid * warp_size + i;
 };
-inline unsigned wid_from_hw_tid(unsigned tid, unsigned warp_size) {
+inline u32 wid_from_hw_tid(u32 tid, u32 warp_size) {
   return tid / warp_size;
 };
 
-const unsigned WARP_PER_CTA_MAX = 64;
+const u32 WARP_PER_CTA_MAX = 64;
 typedef std::bitset<WARP_PER_CTA_MAX> warp_set_t;
 
-unsigned register_bank(int regnum, int wid, unsigned num_banks,
-                       bool sub_core_model, unsigned banks_per_sched,
-                       unsigned sched_id);
+u32 register_bank(int regnum, int wid, u32 num_banks,
+                       bool sub_core_model, u32 banks_per_sched,
+                       u32 sched_id);
 
 class shader_core_ctx;
 class shader_core_config;
@@ -443,13 +428,13 @@ class scheduler_unit {  // this can be copied freely, so can be used in std
       typename std::vector<T> &result_list,
       const typename std::vector<T> &input_list,
       const typename std::vector<T>::const_iterator &last_issued_from_input,
-      unsigned num_warps_to_add);
+      u32 num_warps_to_add);
   template <typename T>
   void order_rrr(
       typename std::vector<T> &result_list,
       const typename std::vector<T> &input_list,
       const typename std::vector<T>::const_iterator &last_issued_from_input,
-      unsigned num_warps_to_add);
+      u32 num_warps_to_add);
 
   enum OrderingType {
     // The item that issued last is prioritized first then the sorted result
@@ -464,7 +449,7 @@ class scheduler_unit {  // this can be copied freely, so can be used in std
   void order_by_priority(
       std::vector<U> &result_list, const typename std::vector<U> &input_list,
       const typename std::vector<U>::const_iterator &last_issued_from_input,
-      unsigned num_warps_to_add, OrderingType age_ordering,
+      u32 num_warps_to_add, OrderingType age_ordering,
       bool (*priority_func)(U lhs, U rhs));
   static bool sort_warps_by_oldest_dynamic_id(shd_warp_t *lhs, shd_warp_t *rhs);
 
@@ -476,7 +461,7 @@ class scheduler_unit {  // this can be copied freely, so can be used in std
 
  protected:
   virtual void do_on_warp_issued(
-      unsigned warp_id, unsigned num_issued,
+      u32 warp_id, u32 num_issued,
       const std::vector<shd_warp_t *>::const_iterator &prioritized_iter);
   inline int get_sid() const;
 
@@ -508,8 +493,8 @@ class scheduler_unit {  // this can be copied freely, so can be used in std
   register_set *m_tensor_core_out;
   register_set *m_mem_out;
   std::vector<register_set *> &m_spec_cores_out;
-  unsigned m_num_issued_last_cycle;
-  unsigned m_current_turn_warp;
+  u32 m_num_issued_last_cycle;
+  u32 m_current_turn_warp;
 
   int m_id;
 };
@@ -610,8 +595,8 @@ class two_level_active_scheduler : public scheduler_unit {
                        sfu_out, int_out, tensor_core_out, spec_cores_out,
                        mem_out, id),
         m_pending_warps() {
-    unsigned inner_level_readin;
-    unsigned outer_level_readin;
+    u32 inner_level_readin;
+    u32 outer_level_readin;
     int ret =
         sscanf(config_str, "two_level_active:%d:%d:%d", &m_max_active_warps,
                &inner_level_readin, &outer_level_readin);
@@ -636,14 +621,14 @@ class two_level_active_scheduler : public scheduler_unit {
 
  protected:
   virtual void do_on_warp_issued(
-      unsigned warp_id, unsigned num_issued,
+      u32 warp_id, u32 num_issued,
       const std::vector<shd_warp_t *>::const_iterator &prioritized_iter);
 
  private:
   std::deque<shd_warp_t *> m_pending_warps;
   scheduler_prioritization_type m_inner_level_prioritization;
   scheduler_prioritization_type m_outer_level_prioritization;
-  unsigned m_max_active_warps;
+  u32 m_max_active_warps;
 };
 
 // Static Warp Limiting Scheduler
@@ -664,7 +649,7 @@ class swl_scheduler : public scheduler_unit {
 
  protected:
   scheduler_prioritization_type m_prioritization;
-  unsigned m_num_warps_to_limit;
+  u32 m_num_warps_to_limit;
 };
 
 class opndcoll_rfu_t {  // operand collector based register file unit
@@ -675,12 +660,12 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     m_shader = NULL;
     m_initialized = false;
   }
-  void add_cu_set(unsigned cu_set, unsigned num_cu, unsigned num_dispatch);
+  void add_cu_set(u32 cu_set, u32 num_cu, u32 num_dispatch);
   typedef std::vector<register_set *> port_vector_t;
-  typedef std::vector<unsigned int> uint_vector_t;
+  typedef std::vector<u32> uint_vector_t;
   void add_port(port_vector_t &input, port_vector_t &ouput,
                 uint_vector_t cu_sets);
-  void init(unsigned num_banks, shader_core_ctx *shader);
+  void init(u32 num_banks, shader_core_ctx *shader);
 
   // modifiers
   bool writeback(warp_inst_t &warp);
@@ -688,7 +673,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
   void step() {
     dispatch_ready_cu();
     allocate_reads();
-    for (unsigned p = 0; p < m_in_ports.size(); p++) {
+    for (u32 p = 0; p < m_in_ports.size(); p++) {
       allocate_cu(p);
     }
     process_banks();
@@ -697,7 +682,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
   void dump(FILE *fp) const {
     fprintf(fp, "\n");
     fprintf(fp, "Operand Collector State:\n");
-    for (unsigned n = 0; n < m_cu.size(); n++) {
+    for (u32 n = 0; n < m_cu.size(); n++) {
       fprintf(fp, "   CU-%2u: ", n);
       m_cu[n]->dump(fp, m_shader);
     }
@@ -710,7 +695,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
   void process_banks() { m_arbiter.reset_alloction(); }
 
   void dispatch_ready_cu();
-  void allocate_cu(unsigned port);
+  void allocate_cu(u32 port);
   void allocate_reads();
 
   // types
@@ -722,8 +707,8 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     op_t() { 
       m_valid = false; 
     }
-    op_t(collector_unit_t *cu, unsigned op, unsigned reg, unsigned num_banks,
-         bool sub_core_model, unsigned banks_per_sched, unsigned sched_id) {
+    op_t(collector_unit_t *cu, u32 op, u32 reg, u32 num_banks,
+         bool sub_core_model, u32 banks_per_sched, u32 sched_id) {
       m_valid = true;
       m_warp = NULL;
       m_cu = cu;
@@ -733,8 +718,8 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       m_bank = register_bank(reg, cu->get_warp_id(), num_banks, sub_core_model,
                              banks_per_sched, sched_id);
     }
-    op_t(const warp_inst_t *warp, unsigned reg, unsigned num_banks,
-         bool sub_core_model, unsigned banks_per_sched, unsigned sched_id) {
+    op_t(const warp_inst_t *warp, u32 reg, u32 num_banks,
+         bool sub_core_model, u32 banks_per_sched, u32 sched_id) {
       m_valid = true;
       m_warp = warp;
       m_register = reg;
@@ -747,11 +732,11 @@ class opndcoll_rfu_t {  // operand collector based register file unit
 
     // accessors
     bool valid() const { return m_valid; }
-    unsigned get_reg() const {
+    u32 get_reg() const {
       assert(m_valid);
       return m_register;
     }
-    unsigned get_wid() const {
+    u32 get_wid() const {
       if (m_warp)
         return m_warp->warp_id();
       else if (m_cu)
@@ -759,8 +744,8 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       else
         abort();
     }
-    unsigned get_sid() const { return m_sched_id; }
-    unsigned get_active_count() const {
+    u32 get_sid() const { return m_sched_id; }
+    u32 get_active_count() const {
       if (m_warp)
         return m_warp->active_count();
       else if (m_cu)
@@ -776,7 +761,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       else
         abort();
     }
-    unsigned get_sp_op() const {
+    u32 get_sp_op() const {
       if (m_warp)
         return m_warp->sp_op;
       else if (m_cu)
@@ -784,9 +769,9 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       else
         abort();
     }
-    unsigned get_oc_id() const { return m_cu->get_id(); }
-    unsigned get_bank() const { return m_bank; }
-    unsigned get_operand() const { return m_operand; }
+    u32 get_oc_id() const { return m_cu->get_id(); }
+    u32 get_bank() const { return m_bank; }
+    u32 get_operand() const { return m_operand; }
     void dump(FILE *fp) const {
       if (m_cu)
         fprintf(fp, " <R%u, CU:%u, w:%02u> ", m_register, m_cu->get_id(),
@@ -807,11 +792,11 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     bool m_valid;
     collector_unit_t *m_cu;
     const warp_inst_t *m_warp;
-    unsigned m_operand;  // operand offset in instruction. e.g., add r1,r2,r3;
+    u32 m_operand;  // operand offset in instruction. e.g., add r1,r2,r3;
                          // r2 is oprd 0, r3 is 1 (r1 is dst)
-    unsigned m_register;
-    unsigned m_bank;
-    unsigned m_sched_id;  // scheduler id that has issued this inst
+    u32 m_register;
+    u32 m_bank;
+    u32 m_sched_id;  // scheduler id that has issued this inst
   };
 
   enum alloc_t {
@@ -888,7 +873,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       _request = NULL;
       m_last_cu = 0;
     }
-    void init(unsigned num_cu, unsigned num_banks) {
+    void init(u32 num_cu, u32 num_banks) {
       assert(num_cu > 0);
       assert(num_banks > 0);
       m_num_collectors = num_cu;
@@ -896,12 +881,12 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       _inmatch = new int[m_num_banks];
       _outmatch = new int[m_num_collectors];
       _request = new int *[m_num_banks];
-      for (unsigned i = 0; i < m_num_banks; i++)
+      for (u32 i = 0; i < m_num_banks; i++)
         _request[i] = new int[m_num_collectors];
       m_queue = new std::list<op_t>[num_banks];
       m_allocated_bank = new allocation_t[num_banks];
-      m_allocator_rr_head = new unsigned[num_cu];
-      for (unsigned n = 0; n < num_cu; n++)
+      m_allocator_rr_head = new u32[num_cu];
+      for (u32 n = 0; n < num_cu; n++)
         m_allocator_rr_head[n] = n % num_banks;
       reset_alloction();
     }
@@ -911,7 +896,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       fprintf(fp, "\n");
       fprintf(fp, "  Arbiter State:\n");
       fprintf(fp, "  requests:\n");
-      for (unsigned b = 0; b < m_num_banks; b++) {
+      for (u32 b = 0; b < m_num_banks; b++) {
         fprintf(fp, "    bank %u : ", b);
         std::list<op_t>::const_iterator o = m_queue[b].begin();
         for (; o != m_queue[b].end(); o++) {
@@ -920,7 +905,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
         fprintf(fp, "\n");
       }
       fprintf(fp, "  grants:\n");
-      for (unsigned b = 0; b < m_num_banks; b++) {
+      for (u32 b = 0; b < m_num_banks; b++) {
         fprintf(fp, "    bank %u : ", b);
         m_allocated_bank[b].dump(fp);
       }
@@ -929,50 +914,50 @@ class opndcoll_rfu_t {  // operand collector based register file unit
 
     // modifiers
     std::list<op_t> allocate_reads(
-      std::vector<unsigned>& raw_conflicts,
-      std::vector<unsigned>& rd_reg_reqs);
+      std::vector<u32>& raw_conflicts,
+      std::vector<u32>& rd_reg_reqs);
 
     void add_read_requests(collector_unit_t *cu) {
       const op_t *src = cu->get_operands();
-      for (unsigned i = 0; i < MAX_REG_OPERANDS * 2; i++) {
+      for (u32 i = 0; i < MAX_REG_OPERANDS * 2; i++) {
         const op_t &op = src[i];
         if (op.valid()) {
-          unsigned bank = op.get_bank();
+          u32 bank = op.get_bank();
           m_queue[bank].push_back(op);
         }
       }
     }
-    bool bank_idle(unsigned bank) const {
+    bool bank_idle(u32 bank) const {
       return m_allocated_bank[bank].is_free();
     }
-    void allocate_bank_for_write(unsigned bank, const op_t &op) {
+    void allocate_bank_for_write(u32 bank, const op_t &op) {
       assert(bank < m_num_banks);
       m_allocated_bank[bank].alloc_write(op);
     }
-    void allocate_for_read(unsigned bank, const op_t &op) {
+    void allocate_for_read(u32 bank, const op_t &op) {
       assert(bank < m_num_banks);
       m_allocated_bank[bank].alloc_read(op);
     }
     void reset_alloction() {
-      for (unsigned b = 0; b < m_num_banks; b++) m_allocated_bank[b].reset();
+      for (u32 b = 0; b < m_num_banks; b++) m_allocated_bank[b].reset();
     }
-    enum alloc_t bank_alloc_state(unsigned bank) const {
+    enum alloc_t bank_alloc_state(u32 bank) const {
       return m_allocated_bank[bank].alloc_state();
     } 
-    std::string bank_alloc_state_str(unsigned bank) const {
+    std::string bank_alloc_state_str(u32 bank) const {
       return m_allocated_bank[bank].alloc_state_str();
     } 
 
    private:
-    unsigned m_num_banks;
-    unsigned m_num_collectors;
+    u32 m_num_banks;
+    u32 m_num_collectors;
 
     allocation_t *m_allocated_bank;  // bank # -> register that wins
     std::list<op_t> *m_queue;
 
-    unsigned *
+    u32 *
         m_allocator_rr_head;  // cu # -> next bank to check for request (rr-arb)
-    unsigned m_last_cu;       // first cu to check while arb-ing banks (rr)
+    u32 m_last_cu;       // first cu to check while arb-ing banks (rr)
 
     int *_outmatch;
     int *_inmatch;
@@ -1009,41 +994,41 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     const op_t *get_operands() const { return m_src_op; }
     void dump(FILE *fp, const shader_core_ctx *shader) const;
 
-    unsigned get_warp_id() const { return m_warp_id; }
-    unsigned get_active_count() const { return m_warp->active_count(); }
+    u32 get_warp_id() const { return m_warp_id; }
+    u32 get_active_count() const { return m_warp->active_count(); }
     const active_mask_t &get_active_mask() const {
       return m_warp->get_active_mask();
     }
-    unsigned get_sp_op() const { return m_warp->sp_op; }
-    unsigned get_id() const { return m_cuid; }  // returns CU hw id
-    unsigned get_reg_id() const { return m_reg_id; }
+    u32 get_sp_op() const { return m_warp->sp_op; }
+    u32 get_id() const { return m_cuid; }  // returns CU hw id
+    u32 get_reg_id() const { return m_reg_id; }
 
     // modifiers
-    void init(unsigned n, unsigned num_banks, const core_config *config,
-              opndcoll_rfu_t *rfu, bool m_sub_core_model, unsigned reg_id,
-              unsigned num_banks_per_sched);
-    bool allocate(unsigned cu_id, register_set *pipeline_reg, register_set *output_reg);
+    void init(u32 n, u32 num_banks, const core_config *config,
+              opndcoll_rfu_t *rfu, bool m_sub_core_model, u32 reg_id,
+              u32 num_banks_per_sched);
+    bool allocate(u32 cu_id, register_set *pipeline_reg, register_set *output_reg);
 
-    void collect_operand(unsigned op) { m_not_ready.reset(op); }
-    unsigned get_num_operands() const { return m_warp->get_num_operands(); }
-    unsigned get_num_regs() const { return m_warp->get_num_regs(); }
+    void collect_operand(u32 op) { m_not_ready.reset(op); }
+    u32 get_num_operands() const { return m_warp->get_num_operands(); }
+    u32 get_num_regs() const { return m_warp->get_num_regs(); }
     void dispatch();
     bool is_free() { return m_free; }
 
    private:
     bool m_free;
-    unsigned m_cuid;  // collector unit hw id
-    unsigned m_warp_id;
+    u32 m_cuid;  // collector unit hw id
+    u32 m_warp_id;
     warp_inst_t *m_warp;
     register_set *m_output_register;  // pipeline register to issue to when ready
     op_t *m_src_op;
     std::bitset<MAX_REG_OPERANDS * 2> m_not_ready;
-    unsigned m_num_banks;
+    u32 m_num_banks;
     opndcoll_rfu_t *m_rfu;
 
-    unsigned m_num_banks_per_sched;
+    u32 m_num_banks_per_sched;
     bool m_sub_core_model;
-    unsigned m_reg_id;  // if sub_core_model enabled, limit regs this cu can r/w
+    u32 m_reg_id;  // if sub_core_model enabled, limit regs this cu can r/w
   };
 
   class dispatch_unit_t {
@@ -1054,7 +1039,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       m_num_collectors = (*cus).size();
       m_next_cu = 0;
     }
-    void init(bool sub_core_model, unsigned num_warp_scheds) {
+    void init(bool sub_core_model, u32 num_warp_scheds) {
       m_sub_core_model = sub_core_model;
       m_num_warp_scheds = num_warp_scheds;
     }
@@ -1062,11 +1047,11 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     collector_unit_t *find_ready() {
       // With sub-core enabled round robin starts with the next cu assigned to a
       // different sub-core than the one that dispatched last
-      unsigned cusPerSched = m_num_collectors / m_num_warp_scheds;
-      unsigned rr_increment =
+      u32 cusPerSched = m_num_collectors / m_num_warp_scheds;
+      u32 rr_increment =
           m_sub_core_model ? cusPerSched - (m_last_cu % cusPerSched) : 1;
-      for (unsigned n = 0; n < m_num_collectors; n++) {
-        unsigned c = (m_last_cu + n + rr_increment) % m_num_collectors;
+      for (u32 n = 0; n < m_num_collectors; n++) {
+        u32 c = (m_last_cu + n + rr_increment) % m_num_collectors;
 
         // CU[cand:2 = (m_last_cu:0 + loop_id:0 + rr_increment:2) mod num_collectors:8]
         // CU[cand:4 = (m_last_cu:2 + loop_id:0 + rr_increment:2) mod num_collectors:8]
@@ -1104,37 +1089,37 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     }
 
    private:
-    unsigned m_num_collectors;
+    u32 m_num_collectors;
     std::vector<collector_unit_t> *m_collector_units;
-    unsigned m_last_cu;  // dispatch ready cu's rr
-    unsigned m_next_cu;  // for initialization
+    u32 m_last_cu;  // dispatch ready cu's rr
+    u32 m_next_cu;  // for initialization
     bool m_sub_core_model;
-    unsigned m_num_warp_scheds;
+    u32 m_num_warp_scheds;
   };
 
   // opndcoll_rfu_t data members
   bool m_initialized;
 
-  unsigned m_num_collector_sets;
-  // unsigned m_num_collectors;
-  unsigned m_num_banks;
-  unsigned m_warp_size;
+  u32 m_num_collector_sets;
+  // u32 m_num_collectors;
+  u32 m_num_banks;
+  u32 m_warp_size;
   std::vector<collector_unit_t *> m_cu;
   arbiter_t m_arbiter;
 
-  unsigned m_num_banks_per_sched;
-  unsigned m_num_warp_scheds;
+  u32 m_num_banks_per_sched;
+  u32 m_num_warp_scheds;
   bool sub_core_model;
 
-  // unsigned m_num_ports;
+  // u32 m_num_ports;
   // std::vector<warp_inst_t**> m_input;
   // std::vector<warp_inst_t**> m_output;
-  // std::vector<unsigned> m_num_collector_units;
+  // std::vector<u32> m_num_collector_units;
   // warp_inst_t **m_alu_port;
 
   std::vector<input_port_t> m_in_ports;
   typedef std::map<
-    unsigned /* collector set */, 
+    u32 /* collector set */, 
     std::vector<collector_unit_t> /*collector sets*/> cu_sets_t;
 
   cu_sets_t m_cus;
@@ -1148,38 +1133,38 @@ class opndcoll_rfu_t {  // operand collector based register file unit
 
 class barrier_set_t {
  public:
-  barrier_set_t(shader_core_ctx *shader, unsigned max_warps_per_core,
-                unsigned max_cta_per_core, unsigned max_barriers_per_cta,
-                unsigned warp_size);
+  barrier_set_t(shader_core_ctx *shader, u32 max_warps_per_core,
+                u32 max_cta_per_core, u32 max_barriers_per_cta,
+                u32 warp_size);
 
   // during cta allocation
-  void allocate_barrier(unsigned cta_id, warp_set_t warps);
+  void allocate_barrier(u32 cta_id, warp_set_t warps);
 
   // during cta deallocation
-  void deallocate_barrier(unsigned cta_id);
+  void deallocate_barrier(u32 cta_id);
 
-  typedef std::map<unsigned, warp_set_t> cta_to_warp_t;
-  typedef std::map<unsigned, warp_set_t>
+  typedef std::map<u32, warp_set_t> cta_to_warp_t;
+  typedef std::map<u32, warp_set_t>
       bar_id_to_warp_t; /*set of warps reached a specific barrier id*/
 
   // individual warp hits barrier
-  void warp_reaches_barrier(unsigned cta_id, unsigned warp_id,
+  void warp_reaches_barrier(u32 cta_id, u32 warp_id,
                             warp_inst_t *inst);
 
   // warp reaches exit
-  void warp_exit(unsigned warp_id);
+  void warp_exit(u32 warp_id);
 
   // assertions
-  bool warp_waiting_at_barrier(unsigned warp_id) const;
+  bool warp_waiting_at_barrier(u32 warp_id) const;
 
   // debug
   void dump();
 
  private:
-  unsigned m_max_cta_per_core;
-  unsigned m_max_warps_per_core;
-  unsigned m_max_barriers_per_cta;
-  unsigned m_warp_size;
+  u32 m_max_cta_per_core;
+  u32 m_max_warps_per_core;
+  u32 m_max_barriers_per_cta;
+  u32 m_warp_size;
   cta_to_warp_t m_cta_to_warps;
   bar_id_to_warp_t m_bar_id_to_warps;
   warp_set_t m_warp_active;
@@ -1188,29 +1173,25 @@ class barrier_set_t {
 };
 
 struct insn_latency_info {
-  unsigned pc;
-  unsigned long latency;
+  u32 pc;
+  u32 long latency;
 };
 
 struct ifetch_buffer_t {
   ifetch_buffer_t() { m_valid = false; }
-
-  ifetch_buffer_t(unsigned long long time, address_type pc, unsigned nbytes, unsigned warp_id) {
+  ifetch_buffer_t(u64 time, address_type pc, u32 nbytes, u32 warp_id) {
     m_time = time;
     m_valid = true;
     m_pc = pc;
     m_nbytes = nbytes;
     m_warp_id = warp_id;
-    if (DTRACE(WARP_ID)) { // time is ok
-      fprintf(Trace::out, "%llu Init IBUF, m_warp_id = %u\n", m_time, m_warp_id);
-    }
   }
 
-  unsigned long long m_time;
+  u64 m_time;
   bool m_valid;
   address_type m_pc;
-  unsigned m_nbytes;
-  unsigned m_warp_id;
+  u32 m_nbytes;
+  u32 m_warp_id;
 };
 
 class shader_core_config;
@@ -1226,12 +1207,12 @@ class simd_function_unit {
   virtual void active_lanes_in_pipeline() = 0;
 
   // accessors
-  virtual unsigned clock_multiplier() const { return 1; }
+  virtual u32 clock_multiplier() const { return 1; }
   virtual bool can_issue(const warp_inst_t &inst) const {
     return m_dispatch_reg->empty() && !occupied.test(inst.latency);
   }
   virtual bool is_issue_partitioned() = 0;
-  virtual unsigned get_issue_reg_id() = 0;
+  virtual u32 get_issue_reg_id() = 0;
   virtual bool stallable() const = 0;
   virtual void print(FILE *fp) const {
     fprintf(fp, "%s dispatch= ", m_name.c_str());
@@ -1243,20 +1224,20 @@ class simd_function_unit {
   std::string m_name;
   const shader_core_config *m_config;
   warp_inst_t *m_dispatch_reg;
-  static const unsigned MAX_ALU_LATENCY = 512;
+  static const u32 MAX_ALU_LATENCY = 512;
   std::bitset<MAX_ALU_LATENCY> occupied;
 };
 
 class pipelined_simd_unit : public simd_function_unit {
  public:
   pipelined_simd_unit(register_set *result_port,
-                      const shader_core_config *config, unsigned max_latency,
-                      shader_core_ctx *core, unsigned issue_reg_id);
+                      const shader_core_config *config, u32 max_latency,
+                      shader_core_ctx *core, u32 issue_reg_id);
 
   // modifiers
   virtual void cycle();
   virtual void issue(register_set &source_reg);
-  virtual unsigned get_active_lanes_in_pipeline();
+  virtual u32 get_active_lanes_in_pipeline();
 
   virtual void active_lanes_in_pipeline() = 0;
   /*
@@ -1273,7 +1254,7 @@ class pipelined_simd_unit : public simd_function_unit {
     return simd_function_unit::can_issue(inst);
   }
   virtual bool is_issue_partitioned() = 0;
-  unsigned get_issue_reg_id() { return m_issue_reg_id; }
+  u32 get_issue_reg_id() { return m_issue_reg_id; }
   virtual void print(FILE *fp) const {
     simd_function_unit::print(fp);
     for (int s = m_pipeline_depth - 1; s >= 0; s--) {
@@ -1285,20 +1266,20 @@ class pipelined_simd_unit : public simd_function_unit {
   }
 
  protected:
-  unsigned m_pipeline_depth;
+  u32 m_pipeline_depth;
   warp_inst_t **m_pipeline_reg;
   register_set *m_result_port;
   class shader_core_ctx *m_core;
-  unsigned m_issue_reg_id;  // if sub_core_model is enabled we can only issue
+  u32 m_issue_reg_id;  // if sub_core_model is enabled we can only issue
                             // from a subset of operand collectors
 
-  unsigned active_insts_in_pipeline;
+  u32 active_insts_in_pipeline;
 };
 
 class sfu : public pipelined_simd_unit {
  public:
   sfu(register_set *result_port, const shader_core_config *config,
-      shader_core_ctx *core, unsigned issue_reg_id);
+      shader_core_ctx *core, u32 issue_reg_id);
   virtual bool can_issue(const warp_inst_t &inst) const {
     switch (inst.op) {
       case SFU_OP:
@@ -1320,7 +1301,7 @@ class sfu : public pipelined_simd_unit {
 class dp_unit : public pipelined_simd_unit {
  public:
   dp_unit(register_set *result_port, const shader_core_config *config,
-          shader_core_ctx *core, unsigned issue_reg_id);
+          shader_core_ctx *core, u32 issue_reg_id);
   virtual bool can_issue(const warp_inst_t &inst) const {
     switch (inst.op) {
       case DP_OP:
@@ -1338,7 +1319,7 @@ class dp_unit : public pipelined_simd_unit {
 class tensor_core : public pipelined_simd_unit {
  public:
   tensor_core(register_set *result_port, const shader_core_config *config,
-              shader_core_ctx *core, unsigned issue_reg_id);
+              shader_core_ctx *core, u32 issue_reg_id);
   virtual bool can_issue(const warp_inst_t &inst) const {
     switch (inst.op) {
       case TENSOR_CORE_OP:
@@ -1356,7 +1337,7 @@ class tensor_core : public pipelined_simd_unit {
 class int_unit : public pipelined_simd_unit {
  public:
   int_unit(register_set *result_port, const shader_core_config *config,
-           shader_core_ctx *core, unsigned issue_reg_id);
+           shader_core_ctx *core, u32 issue_reg_id);
   virtual bool can_issue(const warp_inst_t &inst) const {
     switch (inst.op) {
       case SFU_OP:
@@ -1388,7 +1369,7 @@ class int_unit : public pipelined_simd_unit {
 class sp_unit : public pipelined_simd_unit {
  public:
   sp_unit(register_set *result_port, const shader_core_config *config,
-          shader_core_ctx *core, unsigned issue_reg_id);
+          shader_core_ctx *core, u32 issue_reg_id);
   virtual bool can_issue(const warp_inst_t &inst) const {
     switch (inst.op) {
       case SFU_OP:
@@ -1419,7 +1400,7 @@ class specialized_unit : public pipelined_simd_unit {
  public:
   specialized_unit(register_set *result_port, const shader_core_config *config,
                    shader_core_ctx *core, int supported_op, char *unit_name,
-                   unsigned latency, unsigned issue_reg_id);
+                   u32 latency, u32 issue_reg_id);
   virtual bool can_issue(const warp_inst_t &inst) const {
     if (inst.op != m_supported_op) {
       return false;
@@ -1447,30 +1428,30 @@ class ldst_unit : public pipelined_simd_unit {
             shader_core_ctx *core, opndcoll_rfu_t *operand_collector,
             Scoreboard *scoreboard, const shader_core_config *config,
             const memory_config *mem_config, class shader_core_stats *stats,
-            unsigned sid, unsigned tpc, gpgpu_sim *gpu);
+            u32 sid, u32 tpc, gpgpu_sim *gpu);
 
   // Add a structure to record the LDGSTS instructions,
   // similar to m_pending_writes, but since LDGSTS does not have a output
   // register to write to, so a new structure needs to be added
-  /* A multi-level map: unsigned (warp_id) -> unsigned (pc) -> unsigned (addr)
-   * -> unsigned (count)
+  /* A multi-level map: u32 (warp_id) -> u32 (pc) -> u32 (addr)
+   * -> u32 (count)
    */
-  std::map<unsigned /*warp_id*/,
-           std::map<unsigned /*pc*/,
-                    std::map<unsigned /*addr*/, unsigned /*count*/>>>
+  std::map<u32 /*warp_id*/,
+           std::map<u32 /*pc*/,
+                    std::map<u32 /*addr*/, u32 /*count*/>>>
       m_pending_ldgsts;
   // modifiers
   virtual void issue(register_set &inst);
   bool is_issue_partitioned() { return false; }
   virtual void cycle();
 
-  void fill(mem_fetch *mf, unsigned cid = (unsigned) - 1);
+  void fill(mem_fetch *mf, u32 cid = (u32) - 1);
   void flush();
   void invalidate();
   void writeback();
 
   // accessors
-  virtual unsigned clock_multiplier() const;
+  virtual u32 clock_multiplier() const;
 
   virtual bool can_issue(const warp_inst_t &inst) const {
     switch (inst.op) {
@@ -1494,12 +1475,12 @@ class ldst_unit : public pipelined_simd_unit {
   virtual bool stallable() const { return true; }
   bool response_buffer_full() const;
   void print(FILE *fout) const;
-  void print_cache_stats(FILE *fp, unsigned &dl1_accesses,
-                         unsigned &dl1_misses);
-  void get_cache_stats(unsigned &read_accesses, unsigned &write_accesses,
-                       unsigned &read_misses, unsigned &write_misses,
-                       unsigned cache_type);
-  void get_cache_stats(cache_stats &cs, unsigned sm = 0);
+  void print_cache_stats(FILE *fp, u32 &dl1_accesses,
+                         u32 &dl1_misses);
+  void get_cache_stats(u32 &read_accesses, u32 &write_accesses,
+                       u32 &read_misses, u32 &write_misses,
+                       u32 cache_type);
+  void get_cache_stats(cache_stats &cs, u32 sm = 0);
 
   void get_L1D_sub_stats(struct cache_sub_stats &css) const;
   void get_L1C_sub_stats(struct cache_sub_stats &css) const;
@@ -1507,8 +1488,8 @@ class ldst_unit : public pipelined_simd_unit {
 
   // Expose a lightweight view of one pending memory-dependent longop
   // (used for diagnostic trace when globally blocked). Returns true if found.
-  bool get_any_pending_longop_detail(unsigned &warp, int &reg, unsigned &pc,
-                                     unsigned long long &addr) const;
+  bool get_any_pending_longop_detail(u32 &warp, int &reg, u32 &pc,
+                                     u64 &addr) const;
   
   l1_cache* get_l1d_ptr() { return m_L1D; }
 
@@ -1518,13 +1499,13 @@ class ldst_unit : public pipelined_simd_unit {
             shader_core_ctx *core, opndcoll_rfu_t *operand_collector,
             Scoreboard *scoreboard, const shader_core_config *config,
             const memory_config *mem_config, shader_core_stats *stats,
-            unsigned sid, unsigned tpc, l1_cache *new_l1d_cache);
+            u32 sid, u32 tpc, l1_cache *new_l1d_cache);
   void init(mem_fetch_interface *icnt,
             shader_core_mem_fetch_allocator *mf_allocator,
             shader_core_ctx *core, opndcoll_rfu_t *operand_collector,
             Scoreboard *scoreboard, const shader_core_config *config,
             const memory_config *mem_config, shader_core_stats *stats,
-            unsigned sid, unsigned tpc);
+            u32 sid, u32 tpc);
 
  protected:
   bool shared_cycle(warp_inst_t &inst, mem_stage_stall_type &rc_fail,
@@ -1550,46 +1531,46 @@ class ldst_unit : public pipelined_simd_unit {
   class mem_fetch_interface *m_icnt;
   shader_core_mem_fetch_allocator *m_mf_allocator;
   class shader_core_ctx *m_core;
-  unsigned m_sid;
-  unsigned m_tpc;
+  u32 m_sid;
+  u32 m_tpc;
 
   tex_cache *m_L1T;        // texture cache
   read_only_cache *m_L1C;  // constant cache
   l1_cache *m_L1D;         // data cache  
-  std::map<unsigned /*warp_id*/,
-           std::map<unsigned /*regnum*/, unsigned /*count*/>>
+  std::map<u32 /*warp_id*/,
+           std::map<u32 /*regnum*/, u32 /*count*/>>
       m_pending_writes;
   std::list<mem_fetch *> m_response_fifo;
-  unsigned m_resp_fifo_inputs; // per SM based
+  u32 m_resp_fifo_inputs; // per SM based
   opndcoll_rfu_t *m_operand_collector;
   Scoreboard *m_scoreboard;
 
   mem_fetch *m_next_global;
   warp_inst_t m_next_wb;
-  unsigned m_writeback_arb;  // round-robin arbiter for writeback contention
+  u32 m_writeback_arb;  // round-robin arbiter for writeback contention
                              // between L1T, L1C, shared
-  unsigned m_num_writeback_clients;
+  u32 m_num_writeback_clients;
 
   enum mem_stage_stall_type m_mem_rc;
 
   shader_core_stats *m_stats;
 
   // for debugging
-  unsigned long long m_last_inst_gpu_sim_cycle;
-  unsigned long long m_last_inst_gpu_tot_sim_cycle;
-  std::unordered_map<unsigned long long /* pc */, unsigned long long /* cycle */> m_last_inst_sched_cycle;
+  u64 m_last_inst_gpu_sim_cycle;
+  u64 m_last_inst_gpu_tot_sim_cycle;
+  std::unordered_map<u64 /* pc */, u64 /* cycle */> m_last_inst_sched_cycle;
 
   std::vector<std::deque<mem_fetch *>> l1_latency_queue;
   void L1_latency_queue_cycle();
   void set_reply_and_ack_for_miss(
     mem_fetch* mf_next, bool was_wr_alloc_sent, bool write_sent, bool read_sent);
-  unsigned int m_cnt_l1d_run_cycles;
+  u32 m_cnt_l1d_run_cycles;
 
   // Track last-seen address and PC for pending long-latency load by (warp,reg)
-  std::map<std::pair<unsigned,int>, std::pair<unsigned long long, unsigned>>
+  std::map<std::pair<u32,int>, std::pair<u64, u32>>
       m_pending_longop_detail;
   // Track a simple causal chain string for the pending longop (warp,reg)
-  std::map<std::pair<unsigned,int>, std::string> m_pending_longop_chain;
+  std::map<std::pair<u32,int>, std::string> m_pending_longop_chain;
   // Track source for next writeback (to tag unblock cause)
   std::string m_next_wb_source;
 };
@@ -1618,13 +1599,13 @@ const char *const pipeline_stage_name_decode[] = {
     "OC_EX_TENSOR_CORE", "N_PIPELINE_STAGES"};
 
 struct specialized_unit_params {
-  unsigned latency;
-  unsigned num_units;
-  unsigned id_oc_spec_reg_width;
-  unsigned oc_ex_spec_reg_width;
+  u32 latency;
+  u32 num_units;
+  u32 id_oc_spec_reg_width;
+  u32 oc_ex_spec_reg_width;
   char name[20];
-  unsigned ID_OC_SPEC_ID;
-  unsigned OC_EX_SPEC_ID;
+  u32 ID_OC_SPEC_ID;
+  u32 OC_EX_SPEC_ID;
 };
 
 class shader_core_config : public core_config {
@@ -1702,8 +1683,8 @@ class shader_core_config : public core_config {
 
     m_specialized_unit_num = 0;
     // parse the specialized units
-    for (unsigned i = 0; i < SPECIALIZED_UNIT_NUM; ++i) {
-      unsigned enabled;
+    for (u32 i = 0; i < SPECIALIZED_UNIT_NUM; ++i) {
+      u32 enabled;
       specialized_unit_params sparam;
       sscanf(specialized_unit_string[i], "%u,%u,%u,%u,%u,%s", &enabled,
              &sparam.num_units, &sparam.latency, &sparam.id_oc_spec_reg_width,
@@ -1724,23 +1705,23 @@ class shader_core_config : public core_config {
       while (ss.good()) {
         std::string option;
         std::getline(ss, option, ',');
-        shmem_opt_list.push_back((unsigned)std::stoi(option) * 1024);
+        shmem_opt_list.push_back((u32)std::stoi(option) * 1024);
       }
       std::sort(shmem_opt_list.begin(), shmem_opt_list.end());
     }
   }
   void reg_options(class OptionParser *opp);
-  unsigned max_cta(const kernel_info_t &k) const;
-  unsigned num_shader() const {
+  u32 max_cta(const kernel_info_t &k) const;
+  u32 num_shader() const {
     return n_simt_clusters * n_simt_cores_per_cluster;
   }
-  unsigned sid_to_cluster(unsigned sid) const {
+  u32 sid_to_cluster(u32 sid) const {
     return sid / n_simt_cores_per_cluster;
   }
-  unsigned sid_to_cid(unsigned sid) const {
+  u32 sid_to_cid(u32 sid) const {
     return sid % n_simt_cores_per_cluster;
   }
-  unsigned cid_to_sid(unsigned cid, unsigned cluster_id) const {
+  u32 cid_to_sid(u32 cid, u32 cluster_id) const {
     return cluster_id * n_simt_cores_per_cluster + cid; // cid: core_id per cluster
   }
   void set_pipeline_latency();
@@ -1753,15 +1734,15 @@ class shader_core_config : public core_config {
   bool gpgpu_clock_gated_reg_file;
   bool gpgpu_clock_gated_lanes;
   enum divergence_support_t model;
-  unsigned n_thread_per_shader;
-  unsigned n_regfile_gating_group;
-  unsigned max_warps_per_shader;
-  unsigned
+  u32 n_thread_per_shader;
+  u32 n_regfile_gating_group;
+  u32 max_warps_per_shader;
+  u32
       max_cta_per_core;  // Limit on number of concurrent CTAs in shader core
-  unsigned max_barriers_per_cta;
+  u32 max_barriers_per_cta;
   char *gpgpu_scheduler_string;
-  unsigned gpgpu_shmem_per_block;
-  unsigned gpgpu_registers_per_block;
+  u32 gpgpu_shmem_per_block;
+  u32 gpgpu_registers_per_block;
   char *pipeline_widths_string;
   int pipe_widths[N_PIPELINE_STAGES];
 
@@ -1772,7 +1753,7 @@ class shader_core_config : public core_config {
 
   bool gpgpu_dwf_reg_bankconflict;
 
-  unsigned gpgpu_num_sched_per_core;
+  u32 gpgpu_num_sched_per_core;
   int gpgpu_max_insn_issue_per_warp;
   bool gpgpu_dual_issue_diff_exec_units;
 
@@ -1786,96 +1767,96 @@ class shader_core_config : public core_config {
   int gpgpu_operand_collector_num_units_gen;
   int gpgpu_operand_collector_num_units_int;
 
-  unsigned int gpgpu_operand_collector_num_in_ports_sp;
-  unsigned int gpgpu_operand_collector_num_in_ports_dp;
-  unsigned int gpgpu_operand_collector_num_in_ports_sfu;
-  unsigned int gpgpu_operand_collector_num_in_ports_tensor_core;
-  unsigned int gpgpu_operand_collector_num_in_ports_mem;
-  unsigned int gpgpu_operand_collector_num_in_ports_gen;
-  unsigned int gpgpu_operand_collector_num_in_ports_int;
+  u32 gpgpu_operand_collector_num_in_ports_sp;
+  u32 gpgpu_operand_collector_num_in_ports_dp;
+  u32 gpgpu_operand_collector_num_in_ports_sfu;
+  u32 gpgpu_operand_collector_num_in_ports_tensor_core;
+  u32 gpgpu_operand_collector_num_in_ports_mem;
+  u32 gpgpu_operand_collector_num_in_ports_gen;
+  u32 gpgpu_operand_collector_num_in_ports_int;
 
-  unsigned int gpgpu_operand_collector_num_out_ports_sp;
-  unsigned int gpgpu_operand_collector_num_out_ports_dp;
-  unsigned int gpgpu_operand_collector_num_out_ports_sfu;
-  unsigned int gpgpu_operand_collector_num_out_ports_tensor_core;
-  unsigned int gpgpu_operand_collector_num_out_ports_mem;
-  unsigned int gpgpu_operand_collector_num_out_ports_gen;
-  unsigned int gpgpu_operand_collector_num_out_ports_int;
+  u32 gpgpu_operand_collector_num_out_ports_sp;
+  u32 gpgpu_operand_collector_num_out_ports_dp;
+  u32 gpgpu_operand_collector_num_out_ports_sfu;
+  u32 gpgpu_operand_collector_num_out_ports_tensor_core;
+  u32 gpgpu_operand_collector_num_out_ports_mem;
+  u32 gpgpu_operand_collector_num_out_ports_gen;
+  u32 gpgpu_operand_collector_num_out_ports_int;
 
-  unsigned int gpgpu_num_sp_units;
-  unsigned int gpgpu_tensor_core_avail;
-  unsigned int gpgpu_num_dp_units;
-  unsigned int gpgpu_num_sfu_units;
-  unsigned int gpgpu_num_tensor_core_units;
-  unsigned int gpgpu_num_mem_units;
-  unsigned int gpgpu_num_int_units;
+  u32 gpgpu_num_sp_units;
+  u32 gpgpu_tensor_core_avail;
+  u32 gpgpu_num_dp_units;
+  u32 gpgpu_num_sfu_units;
+  u32 gpgpu_num_tensor_core_units;
+  u32 gpgpu_num_mem_units;
+  u32 gpgpu_num_int_units;
 
   // Shader core resources
-  unsigned gpgpu_shader_registers;
+  u32 gpgpu_shader_registers;
   int gpgpu_warpdistro_shader;
   int gpgpu_warp_issue_shader;
-  unsigned gpgpu_num_reg_banks;
+  u32 gpgpu_num_reg_banks;
   bool gpgpu_reg_bank_use_warp_id;
   bool gpgpu_local_mem_map;
   bool gpgpu_ignore_resources_limitation;
   bool sub_core_model;
 
-  unsigned max_sp_latency;
-  unsigned max_int_latency;
-  unsigned max_sfu_latency;
-  unsigned max_dp_latency;
-  unsigned max_tensor_core_latency;
+  u32 max_sp_latency;
+  u32 max_int_latency;
+  u32 max_sfu_latency;
+  u32 max_dp_latency;
+  u32 max_tensor_core_latency;
 
-  unsigned n_simt_cores_per_cluster;
-  unsigned n_simt_clusters;
-  unsigned n_simt_ejection_buffer_size;
-  unsigned ldst_unit_response_queue_size;
+  u32 n_simt_cores_per_cluster;
+  u32 n_simt_clusters;
+  u32 n_simt_ejection_buffer_size;
+  u32 ldst_unit_response_queue_size;
 
   int simt_core_sim_order;
 
-  unsigned smem_latency;
+  u32 smem_latency;
 
-  unsigned mem2device(unsigned memid) const { return memid + n_simt_clusters; }
+  u32 mem2device(u32 memid) const { return memid + n_simt_clusters; }
 
   // Jin: concurrent kernel on sm
   bool gpgpu_concurrent_kernel_sm;
 
   bool perfect_inst_const_cache;
-  unsigned inst_fetch_throughput;
-  unsigned reg_file_port_throughput;
+  u32 inst_fetch_throughput;
+  u32 reg_file_port_throughput;
 
   // specialized unit config strings
   char *specialized_unit_string[SPECIALIZED_UNIT_NUM];
   mutable std::vector<specialized_unit_params> m_specialized_unit;
-  unsigned m_specialized_unit_num;
+  u32 m_specialized_unit_num;
 };
 
 struct shader_core_stats_pod {
   void *
       shader_core_stats_pod_start[0];  // DO NOT MOVE FROM THE TOP - spaceless
                                        // pointer to the start of this structure
-  unsigned long long *shader_cycles;
-  // unsigned *m_unique_cachelines;
-  unsigned *m_raw_conflicts;
-  unsigned *m_rd_reg_reqs;
-  unsigned *m_wr_reg_bank_conflicts;
-  unsigned *m_rd_reg_bank_conflicts;
-  unsigned *m_wr_reg_bank_allocates;
-  unsigned *m_rd_reg_bank_allocates;
+  u64 *shader_cycles;
+  // u32 *m_unique_cachelines;
+  u32 *m_raw_conflicts;
+  u32 *m_rd_reg_reqs;
+  u32 *m_wr_reg_bank_conflicts;
+  u32 *m_rd_reg_bank_conflicts;
+  u32 *m_wr_reg_bank_allocates;
+  u32 *m_rd_reg_bank_allocates;
 
-  unsigned *m_num_sim_insn;   // number of scalar thread instructions committed
+  u32 *m_num_sim_insn;   // number of scalar thread instructions committed
                               // by this shader core
-  unsigned *m_num_sim_winsn;  // number of warp instructions committed by this
+  u32 *m_num_sim_winsn;  // number of warp instructions committed by this
                               // shader core
-  unsigned *m_last_num_sim_insn;
-  unsigned *m_last_num_sim_winsn;
-  unsigned *m_num_decoded_insn;  // number of instructions decoded by this shader core
+  u32 *m_last_num_sim_insn;
+  u32 *m_last_num_sim_winsn;
+  u32 *m_num_decoded_insn;  // number of instructions decoded by this shader core
   float *m_pipeline_duty_cycle;
-  unsigned *m_num_FPdecoded_insn;
-  unsigned *m_num_INTdecoded_insn;
-  unsigned *m_num_storequeued_insn;
-  unsigned *m_num_loadqueued_insn;
-  unsigned *m_num_tex_inst;
+  u32 *m_num_FPdecoded_insn;
+  u32 *m_num_INTdecoded_insn;
+  u32 *m_num_storequeued_insn;
+  u32 *m_num_loadqueued_insn;
+  u32 *m_num_tex_inst;
   double *m_num_ialu_acesses;
   double *m_num_fp_acesses;
   double *m_num_imul_acesses;
@@ -1895,68 +1876,68 @@ struct shader_core_stats_pod {
   double *m_num_sin_acesses;
   double *m_num_exp_acesses;
   double *m_num_mem_acesses;
-  unsigned *m_num_sp_committed;
-  unsigned *m_num_tlb_hits;
-  unsigned *m_num_tlb_accesses;
-  unsigned *m_num_sfu_committed;
-  unsigned *m_num_tensor_core_committed;
-  unsigned *m_num_mem_committed;
-  unsigned *m_read_regfile_accesses;
-  unsigned *m_write_regfile_accesses;
-  unsigned *m_non_rf_operands;
+  u32 *m_num_sp_committed;
+  u32 *m_num_tlb_hits;
+  u32 *m_num_tlb_accesses;
+  u32 *m_num_sfu_committed;
+  u32 *m_num_tensor_core_committed;
+  u32 *m_num_mem_committed;
+  u32 *m_read_regfile_accesses;
+  u32 *m_write_regfile_accesses;
+  u32 *m_non_rf_operands;
   double *m_num_imul24_acesses;
   double *m_num_imul32_acesses;
-  unsigned *m_active_sp_lanes;
-  unsigned *m_active_sfu_lanes;
-  unsigned *m_active_tensor_core_lanes;
-  unsigned *m_active_fu_lanes;
-  unsigned *m_active_fu_mem_lanes;
+  u32 *m_active_sp_lanes;
+  u32 *m_active_sfu_lanes;
+  u32 *m_active_tensor_core_lanes;
+  u32 *m_active_fu_lanes;
+  u32 *m_active_fu_mem_lanes;
   double *m_active_exu_threads;  // For power model
   double *m_active_exu_warps;    // For power model
-  unsigned *m_n_diverge;  // number of divergence occurring in this shader
-  unsigned gpgpu_n_load_insn;
-  unsigned gpgpu_n_store_insn;
-  unsigned gpgpu_n_shmem_insn;
-  unsigned gpgpu_n_sstarr_insn;
-  unsigned gpgpu_n_tex_insn;
-  unsigned gpgpu_n_const_insn;
-  unsigned gpgpu_n_param_insn;
-  unsigned gpgpu_n_shmem_bkconflict;
-  unsigned gpgpu_n_l1cache_bkconflict;
+  u32 *m_n_diverge;  // number of divergence occurring in this shader
+  u32 gpgpu_n_load_insn;
+  u32 gpgpu_n_store_insn;
+  u32 gpgpu_n_shmem_insn;
+  u32 gpgpu_n_sstarr_insn;
+  u32 gpgpu_n_tex_insn;
+  u32 gpgpu_n_const_insn;
+  u32 gpgpu_n_param_insn;
+  u32 gpgpu_n_shmem_bkconflict;
+  u32 gpgpu_n_l1cache_bkconflict;
   int gpgpu_n_intrawarp_mshr_merge;
-  unsigned gpgpu_n_cmem_portconflict;
-  unsigned gpu_stall_shd_mem_breakdown[N_MEM_STAGE_ACCESS_TYPE][N_MEM_STAGE_STALL_TYPE];
-  unsigned gpu_reg_bank_conflict_stalls;
-  unsigned *shader_cycle_distro;
-  unsigned *last_shader_cycle_distro;
-  unsigned *num_warps_issuable;
-  unsigned gpgpu_n_stall_shd_mem;
-  unsigned *single_issue_nums;
-  unsigned *dual_issue_nums;
-  unsigned **m_l1d_thrash;
-  unsigned *m_l1d_victims;
-  unsigned *m_l1d_max_evicts;
-  unsigned *m_l1d_avg_evicts;
-  unsigned *m_l1d_repl_cands;
-  unsigned *m_l1d_lines_recency;
-  unsigned *m_n_l1d_trashed_lines;
-  unsigned l2_victims;  
-  unsigned **issued_warp_insts;
-  unsigned **intra_warp_interfere;
-  unsigned ***inter_warp_interfere;  
+  u32 gpgpu_n_cmem_portconflict;
+  u32 gpu_stall_shd_mem_breakdown[N_MEM_STAGE_ACCESS_TYPE][N_MEM_STAGE_STALL_TYPE];
+  u32 gpu_reg_bank_conflict_stalls;
+  u32 *shader_cycle_distro;
+  u32 *last_shader_cycle_distro;
+  u32 *num_warps_issuable;
+  u32 gpgpu_n_stall_shd_mem;
+  u32 *single_issue_nums;
+  u32 *dual_issue_nums;
+  u32 **m_l1d_thrash;
+  u32 *m_l1d_victims;
+  u32 *m_l1d_max_evicts;
+  u32 *m_l1d_avg_evicts;
+  u32 *m_l1d_repl_cands;
+  u32 *m_l1d_lines_recency;
+  u32 *m_n_l1d_trashed_lines;
+  u32 l2_victims;  
+  u32 **issued_warp_insts;
+  u32 **intra_warp_interfere;
+  u32 ***inter_warp_interfere;  
   
-  unsigned **issue_fails_due_to_mem_resource;
-  unsigned **continuous_two_mem_issue_fails;
-  unsigned **issue_fails_due_to_int_pipe_inavailable;
-  unsigned **issue_fails_due_to_sp_pipe_inavailable;
-  unsigned **issue_fails_due_to_dp_pipe_inavailable;
-  unsigned **issue_fails_due_to_sfu_pipe_inavailable;
-  unsigned **issue_fails_due_to_tensorcore_pipe_inavailable;
-  unsigned **issue_fails_due_to_spec_pipe_inavailable;
-  unsigned *ibuf_insts;
-  unsigned *ibuf_valid_insts;
+  u32 **issue_fails_due_to_mem_resource;
+  u32 **continuous_two_mem_issue_fails;
+  u32 **issue_fails_due_to_int_pipe_inavailable;
+  u32 **issue_fails_due_to_sp_pipe_inavailable;
+  u32 **issue_fails_due_to_dp_pipe_inavailable;
+  u32 **issue_fails_due_to_sfu_pipe_inavailable;
+  u32 **issue_fails_due_to_tensorcore_pipe_inavailable;
+  u32 **issue_fails_due_to_spec_pipe_inavailable;
+  u32 *ibuf_insts;
+  u32 *ibuf_valid_insts;
 
-  unsigned ctas_completed;
+  u32 ctas_completed;
   // memory access classification
   int gpgpu_n_mem_read_local;
   int gpgpu_n_mem_write_local;
@@ -1970,10 +1951,10 @@ struct shader_core_stats_pod {
   int gpgpu_n_mem_l1_write_allocate;
   int gpgpu_n_mem_l2_write_allocate;
 
-  unsigned made_write_mfs;
-  unsigned made_read_mfs;
+  u32 made_write_mfs;
+  u32 made_read_mfs;
 
-  unsigned *gpgpu_n_shmem_bank_access;
+  u32 *gpgpu_n_shmem_bank_access;
   long *n_simt_to_mem;  // Interconnect power stats
   long *n_mem_to_simt;
 };
@@ -1986,41 +1967,41 @@ class shader_core_stats : public shader_core_stats_pod {
     shader_core_stats_pod *pod = reinterpret_cast<shader_core_stats_pod *>(
         this->shader_core_stats_pod_start);
     memset(pod, 0, sizeof(shader_core_stats_pod));
-    shader_cycles = (unsigned long long *)calloc(config->num_shader(), sizeof(unsigned long long));
-    // m_unique_cachelines = (unsigned*)calloc(config->num_shader(), sizeof(unsigned));
+    shader_cycles = (u64 *)calloc(config->num_shader(), sizeof(u64));
+    // m_unique_cachelines = (u32*)calloc(config->num_shader(), sizeof(u32));
 
-    m_raw_conflicts  = (unsigned *)calloc(m_config->gpgpu_num_reg_banks, sizeof(unsigned));
-    m_rd_reg_reqs = (unsigned *)calloc(m_config->gpgpu_num_reg_banks, sizeof(unsigned));
+    m_raw_conflicts  = (u32 *)calloc(m_config->gpgpu_num_reg_banks, sizeof(u32));
+    m_rd_reg_reqs = (u32 *)calloc(m_config->gpgpu_num_reg_banks, sizeof(u32));
     m_wr_reg_bank_conflicts = 
-      (unsigned *)calloc(m_config->gpgpu_num_reg_banks, sizeof(unsigned));
+      (u32 *)calloc(m_config->gpgpu_num_reg_banks, sizeof(u32));
     m_wr_reg_bank_allocates = 
-      (unsigned *)calloc(m_config->gpgpu_num_reg_banks, sizeof(unsigned));
+      (u32 *)calloc(m_config->gpgpu_num_reg_banks, sizeof(u32));
 
     m_rd_reg_bank_conflicts = 
-      (unsigned *)calloc(m_config->gpgpu_num_reg_banks, sizeof(unsigned));
+      (u32 *)calloc(m_config->gpgpu_num_reg_banks, sizeof(u32));
     m_rd_reg_bank_allocates = 
-      (unsigned *)calloc(m_config->gpgpu_num_reg_banks, sizeof(unsigned));
+      (u32 *)calloc(m_config->gpgpu_num_reg_banks, sizeof(u32));
 
-    m_num_sim_insn = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+    m_num_sim_insn = (u32 *)calloc(config->num_shader(), sizeof(u32));
     m_num_sim_winsn =
-        (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+        (u32 *)calloc(config->num_shader(), sizeof(u32));
     m_last_num_sim_winsn =
-        (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+        (u32 *)calloc(config->num_shader(), sizeof(u32));
     m_last_num_sim_insn =
-        (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+        (u32 *)calloc(config->num_shader(), sizeof(u32));
     m_pipeline_duty_cycle =
         (float *)calloc(config->num_shader(), sizeof(float));
     m_num_decoded_insn =
-        (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+        (u32 *)calloc(config->num_shader(), sizeof(u32));
     m_num_FPdecoded_insn =
-        (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+        (u32 *)calloc(config->num_shader(), sizeof(u32));
     m_num_storequeued_insn =
-        (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+        (u32 *)calloc(config->num_shader(), sizeof(u32));
     m_num_loadqueued_insn =
-        (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
-    m_num_tex_inst = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+        (u32 *)calloc(config->num_shader(), sizeof(u32));
+    m_num_tex_inst = (u32 *)calloc(config->num_shader(), sizeof(u32));
     m_num_INTdecoded_insn =
-        (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+        (u32 *)calloc(config->num_shader(), sizeof(u32));
     m_num_ialu_acesses = (double *)calloc(config->num_shader(), sizeof(double));
     m_num_fp_acesses = (double *)calloc(config->num_shader(), sizeof(double));
     m_num_imul_acesses = (double *)calloc(config->num_shader(), sizeof(double));
@@ -2051,86 +2032,86 @@ class shader_core_stats : public shader_core_stats_pod {
     m_num_exp_acesses = (double *)calloc(config->num_shader(), sizeof(double));
     m_num_mem_acesses = (double *)calloc(config->num_shader(), sizeof(double));
     m_num_sp_committed =
-        (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
-    m_num_tlb_hits = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+        (u32 *)calloc(config->num_shader(), sizeof(u32));
+    m_num_tlb_hits = (u32 *)calloc(config->num_shader(), sizeof(u32));
     m_num_tlb_accesses =
-        (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+        (u32 *)calloc(config->num_shader(), sizeof(u32));
     m_active_sp_lanes =
-        (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+        (u32 *)calloc(config->num_shader(), sizeof(u32));
     m_active_sfu_lanes =
-        (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+        (u32 *)calloc(config->num_shader(), sizeof(u32));
     m_active_tensor_core_lanes =
-        (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+        (u32 *)calloc(config->num_shader(), sizeof(u32));
     m_active_fu_lanes =
-        (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+        (u32 *)calloc(config->num_shader(), sizeof(u32));
     m_active_exu_threads =
         (double *)calloc(config->num_shader(), sizeof(double));
     m_active_exu_warps = (double *)calloc(config->num_shader(), sizeof(double));
     m_active_fu_mem_lanes =
-        (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+        (u32 *)calloc(config->num_shader(), sizeof(u32));
     m_num_sfu_committed =
-        (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+        (u32 *)calloc(config->num_shader(), sizeof(u32));
     m_num_tensor_core_committed =
-        (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+        (u32 *)calloc(config->num_shader(), sizeof(u32));
     m_num_mem_committed =
-        (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+        (u32 *)calloc(config->num_shader(), sizeof(u32));
     m_read_regfile_accesses =
-        (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+        (u32 *)calloc(config->num_shader(), sizeof(u32));
     m_write_regfile_accesses =
-        (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+        (u32 *)calloc(config->num_shader(), sizeof(u32));
     m_non_rf_operands =
-        (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
-    m_n_diverge = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+        (u32 *)calloc(config->num_shader(), sizeof(u32));
+    m_n_diverge = (u32 *)calloc(config->num_shader(), sizeof(u32));
     shader_cycle_distro =
-        (unsigned *)calloc(config->warp_size + 3, sizeof(unsigned));
+        (u32 *)calloc(config->warp_size + 3, sizeof(u32));
     last_shader_cycle_distro =
-        (unsigned *)calloc(m_config->warp_size + 3, sizeof(unsigned));
+        (u32 *)calloc(m_config->warp_size + 3, sizeof(u32));
     single_issue_nums =
-        (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+        (u32 *)calloc(config->gpgpu_num_sched_per_core, sizeof(u32));
     dual_issue_nums =
-        (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+        (u32 *)calloc(config->gpgpu_num_sched_per_core, sizeof(u32));
 
-    m_l1d_victims    = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
-    m_l1d_max_evicts = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
-    m_l1d_avg_evicts = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
-    m_l1d_repl_cands = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));    
-    m_n_l1d_trashed_lines = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+    m_l1d_victims    = (u32 *)calloc(config->num_shader(), sizeof(u32));
+    m_l1d_max_evicts = (u32 *)calloc(config->num_shader(), sizeof(u32));
+    m_l1d_avg_evicts = (u32 *)calloc(config->num_shader(), sizeof(u32));
+    m_l1d_repl_cands = (u32 *)calloc(config->num_shader(), sizeof(u32));    
+    m_n_l1d_trashed_lines = (u32 *)calloc(config->num_shader(), sizeof(u32));
 
-    m_l1d_thrash = (unsigned**)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned));
-    issued_warp_insts = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
+    m_l1d_thrash = (u32**)malloc(config->n_simt_cores_per_cluster * sizeof(u32));
+    issued_warp_insts = (u32 **)malloc(config->n_simt_cores_per_cluster * sizeof(u32 *));
 
-    intra_warp_interfere = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
-    inter_warp_interfere = (unsigned ***)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned **));
+    intra_warp_interfere = (u32 **)malloc(config->n_simt_cores_per_cluster * sizeof(u32 *));
+    inter_warp_interfere = (u32 ***)malloc(config->n_simt_cores_per_cluster * sizeof(u32 **));
 
-    issue_fails_due_to_mem_resource                = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
-    continuous_two_mem_issue_fails                 = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
-    issue_fails_due_to_int_pipe_inavailable        = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
-    issue_fails_due_to_sp_pipe_inavailable         = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
-    issue_fails_due_to_dp_pipe_inavailable         = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
-    issue_fails_due_to_sfu_pipe_inavailable        = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));    
-    issue_fails_due_to_spec_pipe_inavailable       = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));
-    issue_fails_due_to_tensorcore_pipe_inavailable = (unsigned **)malloc(config->n_simt_cores_per_cluster * sizeof(unsigned *));    
-    for (unsigned core = 0; core < config->n_simt_cores_per_cluster; core++) {      
-      m_l1d_thrash[core] = (unsigned *)calloc(2, sizeof(unsigned)); // {[0,100), [100, Inf)}
-      issued_warp_insts[core] = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));      
-      issue_fails_due_to_mem_resource[core]                = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
-      continuous_two_mem_issue_fails[core]                 = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
-      issue_fails_due_to_int_pipe_inavailable[core]        = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
-      issue_fails_due_to_sp_pipe_inavailable[core]         = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
-      issue_fails_due_to_dp_pipe_inavailable[core]         = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
-      issue_fails_due_to_sfu_pipe_inavailable[core]        = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
-      issue_fails_due_to_spec_pipe_inavailable[core]       = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
-      issue_fails_due_to_tensorcore_pipe_inavailable[core] = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+    issue_fails_due_to_mem_resource                = (u32 **)malloc(config->n_simt_cores_per_cluster * sizeof(u32 *));
+    continuous_two_mem_issue_fails                 = (u32 **)malloc(config->n_simt_cores_per_cluster * sizeof(u32 *));
+    issue_fails_due_to_int_pipe_inavailable        = (u32 **)malloc(config->n_simt_cores_per_cluster * sizeof(u32 *));
+    issue_fails_due_to_sp_pipe_inavailable         = (u32 **)malloc(config->n_simt_cores_per_cluster * sizeof(u32 *));
+    issue_fails_due_to_dp_pipe_inavailable         = (u32 **)malloc(config->n_simt_cores_per_cluster * sizeof(u32 *));
+    issue_fails_due_to_sfu_pipe_inavailable        = (u32 **)malloc(config->n_simt_cores_per_cluster * sizeof(u32 *));    
+    issue_fails_due_to_spec_pipe_inavailable       = (u32 **)malloc(config->n_simt_cores_per_cluster * sizeof(u32 *));
+    issue_fails_due_to_tensorcore_pipe_inavailable = (u32 **)malloc(config->n_simt_cores_per_cluster * sizeof(u32 *));    
+    for (u32 core = 0; core < config->n_simt_cores_per_cluster; core++) {      
+      m_l1d_thrash[core] = (u32 *)calloc(2, sizeof(u32)); // {[0,100), [100, Inf)}
+      issued_warp_insts[core] = (u32 *)calloc(config->gpgpu_num_sched_per_core, sizeof(u32));      
+      issue_fails_due_to_mem_resource[core]                = (u32 *)calloc(config->gpgpu_num_sched_per_core, sizeof(u32));
+      continuous_two_mem_issue_fails[core]                 = (u32 *)calloc(config->gpgpu_num_sched_per_core, sizeof(u32));
+      issue_fails_due_to_int_pipe_inavailable[core]        = (u32 *)calloc(config->gpgpu_num_sched_per_core, sizeof(u32));
+      issue_fails_due_to_sp_pipe_inavailable[core]         = (u32 *)calloc(config->gpgpu_num_sched_per_core, sizeof(u32));
+      issue_fails_due_to_dp_pipe_inavailable[core]         = (u32 *)calloc(config->gpgpu_num_sched_per_core, sizeof(u32));
+      issue_fails_due_to_sfu_pipe_inavailable[core]        = (u32 *)calloc(config->gpgpu_num_sched_per_core, sizeof(u32));
+      issue_fails_due_to_spec_pipe_inavailable[core]       = (u32 *)calloc(config->gpgpu_num_sched_per_core, sizeof(u32));
+      issue_fails_due_to_tensorcore_pipe_inavailable[core] = (u32 *)calloc(config->gpgpu_num_sched_per_core, sizeof(u32));
 
-      intra_warp_interfere[core] = (unsigned*)calloc(config->max_warps_per_shader, sizeof(unsigned));
-      inter_warp_interfere[core] = (unsigned **)malloc(config->max_warps_per_shader * sizeof(unsigned *));
-      for (unsigned interfered = 0; interfered < config->max_warps_per_shader; interfered++) {
-        inter_warp_interfere[core][interfered] = (unsigned *)calloc(config->max_warps_per_shader - 1, sizeof(unsigned));
+      intra_warp_interfere[core] = (u32*)calloc(config->max_warps_per_shader, sizeof(u32));
+      inter_warp_interfere[core] = (u32 **)malloc(config->max_warps_per_shader * sizeof(u32 *));
+      for (u32 interfered = 0; interfered < config->max_warps_per_shader; interfered++) {
+        inter_warp_interfere[core][interfered] = (u32 *)calloc(config->max_warps_per_shader - 1, sizeof(u32));
       }
     }
 
-    ibuf_insts       = (unsigned *)calloc(config->max_warps_per_shader, sizeof(unsigned));
-    ibuf_valid_insts = (unsigned *)calloc(config->max_warps_per_shader, sizeof(unsigned));
+    ibuf_insts       = (u32 *)calloc(config->max_warps_per_shader, sizeof(u32));
+    ibuf_valid_insts = (u32 *)calloc(config->max_warps_per_shader, sizeof(u32));
 
     ctas_completed = 0;
     n_simt_to_mem = (long *)calloc(config->num_shader(), sizeof(long));
@@ -2140,7 +2121,7 @@ class shader_core_stats : public shader_core_stats_pod {
     m_incoming_traffic_stats = new traffic_breakdown("memtocore");
 
     gpgpu_n_shmem_bank_access =
-        (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+        (u32 *)calloc(config->num_shader(), sizeof(u32));
 
     m_shader_dynamic_warp_issue_distro.resize(config->num_shader());
     m_shader_warp_slot_issue_distro.resize(config->num_shader());
@@ -2200,18 +2181,18 @@ class shader_core_stats : public shader_core_stats_pod {
 
   void new_grid() {}
 
-  void event_warp_issued(unsigned s_id, unsigned warp_id, unsigned num_issued,
-                         unsigned dynamic_warp_id);
+  void event_warp_issued(u32 s_id, u32 warp_id, u32 num_issued,
+                         u32 dynamic_warp_id);
 
   void visualizer_print(gzFile visualizer_file);
 
   void print(FILE *fout) const;
 
-  const std::vector<std::vector<unsigned>> &get_dynamic_warp_issue() const {
+  const std::vector<std::vector<u32>> &get_dynamic_warp_issue() const {
     return m_shader_dynamic_warp_issue_distro;
   }
 
-  const std::vector<std::vector<unsigned>> &get_warp_slot_issue() const {
+  const std::vector<std::vector<u32>> &get_warp_slot_issue() const {
     return m_shader_warp_slot_issue_distro;
   }
 
@@ -2222,10 +2203,10 @@ class shader_core_stats : public shader_core_stats_pod {
   traffic_breakdown *m_incoming_traffic_stats;  // memory partition to core
 
   // Counts the instructions issued for each dynamic warp.
-  std::vector<std::vector<unsigned>> m_shader_dynamic_warp_issue_distro;
-  std::vector<unsigned> m_last_shader_dynamic_warp_issue_distro;
-  std::vector<std::vector<unsigned>> m_shader_warp_slot_issue_distro;
-  std::vector<unsigned> m_last_shader_warp_slot_issue_distro;
+  std::vector<std::vector<u32>> m_shader_dynamic_warp_issue_distro;
+  std::vector<u32> m_last_shader_dynamic_warp_issue_distro;
+  std::vector<std::vector<u32>> m_shader_warp_slot_issue_distro;
+  std::vector<u32> m_last_shader_warp_slot_issue_distro;
 
   friend class power_stat_t;
   friend class shader_core_ctx;
@@ -2240,24 +2221,24 @@ class shader_core_stats : public shader_core_stats_pod {
 class memory_config;
 class shader_core_mem_fetch_allocator : public mem_fetch_allocator {
  public:
-  shader_core_mem_fetch_allocator(unsigned core_id, unsigned cluster_id,
+  shader_core_mem_fetch_allocator(u32 core_id, u32 cluster_id,
                                   const memory_config *config) {
     m_core_id = core_id;
     m_cluster_id = cluster_id;
     m_memory_config = config;
   }
-  mem_fetch *alloc(new_addr_type addr, mem_access_type type, unsigned size,
-                   bool wr, unsigned long long cycle,
-                   unsigned long long streamID) const;
+  mem_fetch *alloc(new_addr_type addr, mem_access_type type, u32 size,
+                   bool wr, u64 cycle,
+                   u64 streamID) const;
   mem_fetch *alloc(new_addr_type addr, mem_access_type type,
                    const active_mask_t &active_mask,
                    const mem_access_byte_mask_t &byte_mask,
-                   const mem_access_sector_mask_t &sector_mask, unsigned size,
-                   bool wr, unsigned long long cycle, unsigned wid,
-                   unsigned sid, unsigned tpc, mem_fetch *original_mf,
-                   unsigned long long streamID) const;
+                   const mem_access_sector_mask_t &sector_mask, u32 size,
+                   bool wr, u64 cycle, u32 wid,
+                   u32 sid, u32 tpc, mem_fetch *original_mf,
+                   u64 streamID) const;
   mem_fetch *alloc(const warp_inst_t &inst, const mem_access_t &access,
-                   unsigned long long cycle) const {
+                   u64 cycle) const {
     warp_inst_t inst_copy = inst;
     mem_fetch *mf = new mem_fetch(
         access, &inst_copy, inst.get_streamID(),
@@ -2268,41 +2249,42 @@ class shader_core_mem_fetch_allocator : public mem_fetch_allocator {
   }
 
  private:
-  unsigned m_core_id;
-  unsigned m_cluster_id;
+  u32 m_core_id;
+  u32 m_cluster_id;
   const memory_config *m_memory_config;
 };
 
 class shader_core_ctx : public core_t {
  public:
+  friend class trace_shader_core_ctx;
   static bool selSmallerWarpInterference(
-    const std::pair<unsigned, unsigned>& a, 
-    const std::pair<unsigned, unsigned>& b) {
+    const std::pair<u32, u32>& a, 
+    const std::pair<u32, u32>& b) {
     return a.second < b.second;
   }
 
   friend class opndcoll_rfu_t;
   // creator:
   shader_core_ctx(class gpgpu_sim *gpu, class simt_core_cluster *cluster,
-                  unsigned shader_id, unsigned tpc_id,
+                  u32 shader_id, u32 tpc_id,
                   const shader_core_config *config,
                   const memory_config *mem_config, shader_core_stats *stats);
 
   // used by simt_core_cluster:
   // modifiers
   void cycle();
-  unsigned long long get_time() {
+  u64 get_time() {
     return m_time; // m_time is assigned during ::shader_core_ctx(...)
   }
-  void reinit(unsigned start_thread, unsigned end_thread,
+  void reinit(u32 start_thread, u32 end_thread,
               bool reset_not_completed);
   void issue_block2core(class kernel_info_t &kernel);
 
   void cache_flush();
   void cache_invalidate();
   void accept_fetch_response(mem_fetch *mf);
-  void accept_ldst_unit_response(class mem_fetch *mf, unsigned cid = (unsigned) - 1);
-  void broadcast_barrier_reduction(unsigned cta_id, unsigned bar_id,
+  void accept_ldst_unit_response(class mem_fetch *mf, u32 cid = (u32) - 1);
+  void broadcast_barrier_reduction(u32 cta_id, u32 bar_id,
                                    warp_set_t warps);
   void set_kernel(kernel_info_t *k) {
     assert(k);
@@ -2315,53 +2297,54 @@ class shader_core_ctx : public core_t {
   // accessors
   bool fetch_unit_response_buffer_full() const;
   bool ldst_unit_response_buffer_full() const;
-  unsigned get_not_completed() const { return m_not_completed; }
-  unsigned get_n_active_cta() const { return m_n_active_cta; }
-  unsigned isactive() const {
-    if (m_n_active_cta > 0)
+  u32 get_not_completed() const { return m_not_completed; }
+  u32 get_n_active_cta() const { return m_n_active_cta; }
+  u32 isactive() const {
+    if (m_n_active_cta > 0) {
       return 1;
-    else
+    } else {
       return 0;
+    }      
   }
   kernel_info_t *get_kernel() { return m_kernel; }
-  unsigned get_sid() const { return m_sid; }
+  u32 get_sid() const { return m_sid; }
 
   // used by functional simulation:
   // modifiers
-  virtual void warp_exit(unsigned warp_id);
+  virtual void warp_exit(u32 warp_id);
 
   // Ni: Unset ldgdepbar
   void unset_depbar(const warp_inst_t &inst);
 
   // accessors
-  virtual bool warp_waiting_at_barrier(unsigned warp_id) const;
-  void get_pdom_stack_top_info(unsigned tid, unsigned *pc, unsigned *rpc) const;
-  float get_current_occupancy(unsigned long long &active,
-                              unsigned long long &total) const;
+  virtual bool warp_waiting_at_barrier(u32 warp_id) const;
+  void get_pdom_stack_top_info(u32 tid, u32 *pc, u32 *rpc) const;
+  float get_current_occupancy(u64 &active,
+                              u64 &total) const;
 
   // used by pipeline timing model components:
   // modifiers
   void mem_instruction_stats(const warp_inst_t &inst);
-  void decrement_atomic_count(unsigned wid, unsigned n);
-  void inc_store_req(unsigned warp_id) { m_warp[warp_id]->inc_store_req(); }
-  unsigned num_inst_in_pipeline(unsigned warp_id) {
+  void decrement_atomic_count(u32 wid, u32 n);
+  void inc_store_req(u32 warp_id) { m_warp[warp_id]->inc_store_req(); }
+  u32 num_inst_in_pipeline(u32 warp_id) {
     return m_warp[warp_id]->num_inst_in_pipeline();
   }
-  void dec_inst_in_pipeline(unsigned warp_id) {
+  void dec_inst_in_pipeline(u32 warp_id) {
     m_warp[warp_id]->dec_inst_in_pipeline();
   }  // also used in writeback()
   void store_ack(class mem_fetch *mf, std::string caller = nullptr);
-  bool warp_waiting_at_mem_barrier(unsigned warp_id);
+  bool warp_waiting_at_mem_barrier(u32 warp_id);
   void set_max_cta(const kernel_info_t &kernel);
   void warp_inst_complete(const warp_inst_t &inst);
 
   // accessors
-  std::list<unsigned> get_regs_written(const inst_t &fvt) const;
+  std::list<u32> get_regs_written(const inst_t &fvt) const;
   const shader_core_config *get_config() const { return m_config; }
-  void print_cache_stats(FILE *fp, unsigned &dl1_accesses,
-                         unsigned &dl1_misses);
+  void print_cache_stats(FILE *fp, u32 &dl1_accesses,
+                         u32 &dl1_misses);
 
-  void get_cache_stats(cache_stats &cs, unsigned sm = 0);
+  void get_cache_stats(cache_stats &cs, u32 sm = 0);
   void get_L1I_sub_stats(struct cache_sub_stats &css) const;
   void get_L1D_sub_stats(struct cache_sub_stats &css) const;
   void get_L1C_sub_stats(struct cache_sub_stats &css) const;
@@ -2375,7 +2358,7 @@ class shader_core_ctx : public core_t {
 
   void incload_stat() { m_stats->m_num_loadqueued_insn[m_sid]++; }
   void incstore_stat() { m_stats->m_num_storequeued_insn[m_sid]++; }
-  void incialu_stat(unsigned active_count, double latency) {
+  void incialu_stat(u32 active_count, double latency) {
     if (m_config->gpgpu_clock_gated_lanes == false) {
       m_stats->m_num_ialu_acesses[m_sid] =
           m_stats->m_num_ialu_acesses[m_sid] + (double)active_count * latency +
@@ -2387,7 +2370,7 @@ class shader_core_ctx : public core_t {
     m_stats->m_active_exu_threads[m_sid] += active_count;
     m_stats->m_active_exu_warps[m_sid]++;
   }
-  void incimul_stat(unsigned active_count, double latency) {
+  void incimul_stat(u32 active_count, double latency) {
     if (m_config->gpgpu_clock_gated_lanes == false) {
       m_stats->m_num_imul_acesses[m_sid] =
           m_stats->m_num_imul_acesses[m_sid] + (double)active_count * latency +
@@ -2399,7 +2382,7 @@ class shader_core_ctx : public core_t {
     m_stats->m_active_exu_threads[m_sid] += active_count;
     m_stats->m_active_exu_warps[m_sid]++;
   }
-  void incimul24_stat(unsigned active_count, double latency) {
+  void incimul24_stat(u32 active_count, double latency) {
     if (m_config->gpgpu_clock_gated_lanes == false) {
       m_stats->m_num_imul24_acesses[m_sid] =
           m_stats->m_num_imul24_acesses[m_sid] +
@@ -2412,7 +2395,7 @@ class shader_core_ctx : public core_t {
     m_stats->m_active_exu_threads[m_sid] += active_count;
     m_stats->m_active_exu_warps[m_sid]++;
   }
-  void incimul32_stat(unsigned active_count, double latency) {
+  void incimul32_stat(u32 active_count, double latency) {
     if (m_config->gpgpu_clock_gated_lanes == false) {
       m_stats->m_num_imul32_acesses[m_sid] =
           m_stats->m_num_imul32_acesses[m_sid] +
@@ -2425,7 +2408,7 @@ class shader_core_ctx : public core_t {
     m_stats->m_active_exu_threads[m_sid] += active_count;
     m_stats->m_active_exu_warps[m_sid]++;
   }
-  void incidiv_stat(unsigned active_count, double latency) {
+  void incidiv_stat(u32 active_count, double latency) {
     if (m_config->gpgpu_clock_gated_lanes == false) {
       m_stats->m_num_idiv_acesses[m_sid] =
           m_stats->m_num_idiv_acesses[m_sid] + (double)active_count * latency +
@@ -2437,7 +2420,7 @@ class shader_core_ctx : public core_t {
     m_stats->m_active_exu_threads[m_sid] += active_count;
     m_stats->m_active_exu_warps[m_sid]++;
   }
-  void incfpalu_stat(unsigned active_count, double latency) {
+  void incfpalu_stat(u32 active_count, double latency) {
     if (m_config->gpgpu_clock_gated_lanes == false) {
       m_stats->m_num_fp_acesses[m_sid] =
           m_stats->m_num_fp_acesses[m_sid] + (double)active_count * latency +
@@ -2449,7 +2432,7 @@ class shader_core_ctx : public core_t {
     m_stats->m_active_exu_threads[m_sid] += active_count;
     m_stats->m_active_exu_warps[m_sid]++;
   }
-  void incfpmul_stat(unsigned active_count, double latency) {
+  void incfpmul_stat(u32 active_count, double latency) {
     // printf("FP MUL stat increament\n");
     if (m_config->gpgpu_clock_gated_lanes == false) {
       m_stats->m_num_fpmul_acesses[m_sid] =
@@ -2462,7 +2445,7 @@ class shader_core_ctx : public core_t {
     m_stats->m_active_exu_threads[m_sid] += active_count;
     m_stats->m_active_exu_warps[m_sid]++;
   }
-  void incfpdiv_stat(unsigned active_count, double latency) {
+  void incfpdiv_stat(u32 active_count, double latency) {
     if (m_config->gpgpu_clock_gated_lanes == false) {
       m_stats->m_num_fpdiv_acesses[m_sid] =
           m_stats->m_num_fpdiv_acesses[m_sid] + (double)active_count * latency +
@@ -2474,7 +2457,7 @@ class shader_core_ctx : public core_t {
     m_stats->m_active_exu_threads[m_sid] += active_count;
     m_stats->m_active_exu_warps[m_sid]++;
   }
-  void incdpalu_stat(unsigned active_count, double latency) {
+  void incdpalu_stat(u32 active_count, double latency) {
     if (m_config->gpgpu_clock_gated_lanes == false) {
       m_stats->m_num_dp_acesses[m_sid] =
           m_stats->m_num_dp_acesses[m_sid] + (double)active_count * latency +
@@ -2486,7 +2469,7 @@ class shader_core_ctx : public core_t {
     m_stats->m_active_exu_threads[m_sid] += active_count;
     m_stats->m_active_exu_warps[m_sid]++;
   }
-  void incdpmul_stat(unsigned active_count, double latency) {
+  void incdpmul_stat(u32 active_count, double latency) {
     // printf("FP MUL stat increament\n");
     if (m_config->gpgpu_clock_gated_lanes == false) {
       m_stats->m_num_dpmul_acesses[m_sid] =
@@ -2499,7 +2482,7 @@ class shader_core_ctx : public core_t {
     m_stats->m_active_exu_threads[m_sid] += active_count;
     m_stats->m_active_exu_warps[m_sid]++;
   }
-  void incdpdiv_stat(unsigned active_count, double latency) {
+  void incdpdiv_stat(u32 active_count, double latency) {
     if (m_config->gpgpu_clock_gated_lanes == false) {
       m_stats->m_num_dpdiv_acesses[m_sid] =
           m_stats->m_num_dpdiv_acesses[m_sid] + (double)active_count * latency +
@@ -2512,7 +2495,7 @@ class shader_core_ctx : public core_t {
     m_stats->m_active_exu_warps[m_sid]++;
   }
 
-  void incsqrt_stat(unsigned active_count, double latency) {
+  void incsqrt_stat(u32 active_count, double latency) {
     if (m_config->gpgpu_clock_gated_lanes == false) {
       m_stats->m_num_sqrt_acesses[m_sid] =
           m_stats->m_num_sqrt_acesses[m_sid] + (double)active_count * latency +
@@ -2525,7 +2508,7 @@ class shader_core_ctx : public core_t {
     m_stats->m_active_exu_warps[m_sid]++;
   }
 
-  void inclog_stat(unsigned active_count, double latency) {
+  void inclog_stat(u32 active_count, double latency) {
     if (m_config->gpgpu_clock_gated_lanes == false) {
       m_stats->m_num_log_acesses[m_sid] =
           m_stats->m_num_log_acesses[m_sid] + (double)active_count * latency +
@@ -2538,7 +2521,7 @@ class shader_core_ctx : public core_t {
     m_stats->m_active_exu_warps[m_sid]++;
   }
 
-  void incexp_stat(unsigned active_count, double latency) {
+  void incexp_stat(u32 active_count, double latency) {
     if (m_config->gpgpu_clock_gated_lanes == false) {
       m_stats->m_num_exp_acesses[m_sid] =
           m_stats->m_num_exp_acesses[m_sid] + (double)active_count * latency +
@@ -2551,7 +2534,7 @@ class shader_core_ctx : public core_t {
     m_stats->m_active_exu_warps[m_sid]++;
   }
 
-  void incsin_stat(unsigned active_count, double latency) {
+  void incsin_stat(u32 active_count, double latency) {
     if (m_config->gpgpu_clock_gated_lanes == false) {
       m_stats->m_num_sin_acesses[m_sid] =
           m_stats->m_num_sin_acesses[m_sid] + (double)active_count * latency +
@@ -2564,7 +2547,7 @@ class shader_core_ctx : public core_t {
     m_stats->m_active_exu_warps[m_sid]++;
   }
 
-  void inctensor_stat(unsigned active_count, double latency) {
+  void inctensor_stat(u32 active_count, double latency) {
     if (m_config->gpgpu_clock_gated_lanes == false) {
       m_stats->m_num_tensor_core_acesses[m_sid] =
           m_stats->m_num_tensor_core_acesses[m_sid] +
@@ -2579,7 +2562,7 @@ class shader_core_ctx : public core_t {
     m_stats->m_active_exu_warps[m_sid]++;
   }
 
-  void inctex_stat(unsigned active_count, double latency) {
+  void inctex_stat(u32 active_count, double latency) {
     if (m_config->gpgpu_clock_gated_lanes == false) {
       m_stats->m_num_tex_acesses[m_sid] =
           m_stats->m_num_tex_acesses[m_sid] + (double)active_count * latency +
@@ -2592,20 +2575,20 @@ class shader_core_ctx : public core_t {
     m_stats->m_active_exu_warps[m_sid]++;
   }
 
-  void inc_const_accesses(unsigned active_count) {
+  void inc_const_accesses(u32 active_count) {
     m_stats->m_num_const_acesses[m_sid] =
         m_stats->m_num_const_acesses[m_sid] + active_count;
   }
 
-  void incsfu_stat(unsigned active_count, double latency) {
+  void incsfu_stat(u32 active_count, double latency) {
     m_stats->m_num_sfu_acesses[m_sid] =
         m_stats->m_num_sfu_acesses[m_sid] + (double)active_count * latency;
   }
-  void incsp_stat(unsigned active_count, double latency) {
+  void incsp_stat(u32 active_count, double latency) {
     m_stats->m_num_sp_acesses[m_sid] =
         m_stats->m_num_sp_acesses[m_sid] + (double)active_count * latency;
   }
-  void incmem_stat(unsigned active_count, double latency) {
+  void incmem_stat(u32 active_count, double latency) {
     if (m_config->gpgpu_clock_gated_lanes == false) {
       m_stats->m_num_mem_acesses[m_sid] =
           m_stats->m_num_mem_acesses[m_sid] + (double)active_count * latency +
@@ -2617,15 +2600,15 @@ class shader_core_ctx : public core_t {
   }
   void incexecstat(warp_inst_t *&inst);
 
-  unsigned get_rd_crf_size() {
+  u32 get_rd_crf_size() {
     return m_stats->m_read_regfile_accesses[m_sid];
   }
-  unsigned get_wr_crf_size() {
+  u32 get_wr_crf_size() {
     return m_stats->m_write_regfile_accesses[m_sid];
   }
   void gather_raw_conflicts(
-    const std::vector<unsigned>& raw_conflicts,
-    const std::vector<unsigned>& rd_reg_reqs) {
+    const std::vector<u32>& raw_conflicts,
+    const std::vector<u32>& rd_reg_reqs) {
     assert(raw_conflicts.size() == rd_reg_reqs.size());
     for (size_t bank = 0; bank < raw_conflicts.size(); bank++)
     {
@@ -2633,61 +2616,61 @@ class shader_core_ctx : public core_t {
       m_stats->m_rd_reg_reqs[bank]   += rd_reg_reqs[bank];
     }
   }
-  void inc_wr_reg_bank_conflicts(unsigned bank) {
+  void inc_wr_reg_bank_conflicts(u32 bank) {
     m_stats->m_wr_reg_bank_conflicts[bank]++;
   }
-  void inc_wr_reg_bank_allocates(unsigned bank) {
+  void inc_wr_reg_bank_allocates(u32 bank) {
     m_stats->m_wr_reg_bank_allocates[bank]++;
   }  
-  void inc_rd_reg_bank_conflicts(unsigned bank) {
+  void inc_rd_reg_bank_conflicts(u32 bank) {
     m_stats->m_rd_reg_bank_conflicts[bank]++;
   }
-  void inc_rd_reg_bank_allocates(unsigned bank) {
+  void inc_rd_reg_bank_allocates(u32 bank) {
     m_stats->m_rd_reg_bank_allocates[bank]++;
   }    
 
-  void incregfile_reads(unsigned active_count) {
+  void incregfile_reads(u32 active_count) {
     m_stats->m_read_regfile_accesses[m_sid] =
         m_stats->m_read_regfile_accesses[m_sid] + active_count;
   }
-  void incregfile_writes(unsigned active_count) {
+  void incregfile_writes(u32 active_count) {
     m_stats->m_write_regfile_accesses[m_sid] =
         m_stats->m_write_regfile_accesses[m_sid] + active_count;
   }
-  void incnon_rf_operands(unsigned active_count) {
+  void incnon_rf_operands(u32 active_count) {
     m_stats->m_non_rf_operands[m_sid] =
         m_stats->m_non_rf_operands[m_sid] + active_count;
   }
 
-  void incspactivelanes_stat(unsigned active_count) {
+  void incspactivelanes_stat(u32 active_count) {
     m_stats->m_active_sp_lanes[m_sid] =
         m_stats->m_active_sp_lanes[m_sid] + active_count;
   }
-  void incsfuactivelanes_stat(unsigned active_count) {
+  void incsfuactivelanes_stat(u32 active_count) {
     m_stats->m_active_sfu_lanes[m_sid] =
         m_stats->m_active_sfu_lanes[m_sid] + active_count;
   }
-  void incfuactivelanes_stat(unsigned active_count) {
+  void incfuactivelanes_stat(u32 active_count) {
     m_stats->m_active_fu_lanes[m_sid] =
         m_stats->m_active_fu_lanes[m_sid] + active_count;
   }
-  void incfumemactivelanes_stat(unsigned active_count) {
+  void incfumemactivelanes_stat(u32 active_count) {
     m_stats->m_active_fu_mem_lanes[m_sid] =
         m_stats->m_active_fu_mem_lanes[m_sid] + active_count;
   }
 
-  void inc_simt_to_mem(unsigned n_flits) {
+  void inc_simt_to_mem(u32 n_flits) {
     m_stats->n_simt_to_mem[m_sid] += n_flits;
   }
   bool check_if_non_released_reduction_barrier(warp_inst_t &inst);
 
  protected:
-  unsigned inactive_lanes_accesses_sfu(unsigned active_count, double latency) {
+  u32 inactive_lanes_accesses_sfu(u32 active_count, double latency) {
     return (((32 - active_count) >> 1) * latency) +
            (((32 - active_count) >> 3) * latency) +
            (((32 - active_count) >> 3) * latency);
   }
-  unsigned inactive_lanes_accesses_nonsfu(unsigned active_count,
+  u32 inactive_lanes_accesses_nonsfu(u32 active_count,
                                           double latency) {
     return (((32 - active_count) >> 1) * latency);
   }
@@ -2695,7 +2678,7 @@ class shader_core_ctx : public core_t {
   int test_res_bus(int latency);
   address_type next_pc(int tid) const;
   void fetch();
-  void register_cta_thread_exit(unsigned cta_num, kernel_info_t *kernel);
+  void register_cta_thread_exit(u32 cta_num, kernel_info_t *kernel);
 
   void decode();
 
@@ -2704,41 +2687,42 @@ class shader_core_ctx : public core_t {
   friend class TwoLevelScheduler;
   friend class LooseRoundRobbinScheduler;
   virtual void issue_warp(register_set &warp, const warp_inst_t *pI,
-                          const active_mask_t &active_mask, unsigned warp_id,
-                          unsigned sch_id);
+                          const active_mask_t &active_mask, u32 warp_id,
+                          u32 sch_id);
 
   void create_front_pipeline();
-  void create_schedulers(unsigned sid);
+  void create_schedulers(u32 sid);
   void create_exec_pipeline();
 
   // pure virtual methods implemented based on the current execution mode
   // (execution-driven vs trace-driven)
-  virtual void init_warps(unsigned cta_id, unsigned start_thread,
-                          unsigned end_thread, unsigned ctaid, int cta_size,
+  virtual void init_warps(u32 cta_id, u32 start_thread,
+                          u32 end_thread, u32 ctaid, int cta_size,
                           kernel_info_t &kernel);
-  virtual void checkExecutionStatusAndUpdate(warp_inst_t &inst, unsigned t,
-                                             unsigned tid) = 0;
+  virtual void checkExecutionStatusAndUpdate(warp_inst_t &inst, u32 t,
+                                             u32 tid) = 0;
   virtual void func_exec_inst(warp_inst_t &inst) = 0;
 
-  virtual unsigned sim_init_thread(kernel_info_t &kernel,
+  virtual u32 sim_init_thread(kernel_info_t &kernel,
                                    ptx_thread_info **thread_info, int sid,
-                                   unsigned tid, unsigned threads_left,
-                                   unsigned num_threads, core_t *core,
-                                   unsigned hw_cta_id, unsigned hw_warp_id,
+                                   u32 tid, u32 threads_left,
+                                   u32 num_threads, core_t *core,
+                                   u32 hw_cta_id, u32 hw_warp_id,
                                    gpgpu_t *gpu) = 0;
 
   virtual void create_shd_warp() = 0;
 
-  virtual const warp_inst_t *get_next_inst(unsigned warp_id,
-                                           address_type pc) = 0;
-  virtual void get_pdom_stack_top_info(unsigned warp_id, const warp_inst_t *pI,
-                                       unsigned *pc, unsigned *rpc) = 0;
-  virtual const active_mask_t &get_active_mask(unsigned warp_id,
+  virtual const warp_inst_t *get_next_inst(
+    u32 warp_id, address_type pc, bool is_pI2 = false) = 0;
+
+  virtual void get_pdom_stack_top_info(u32 warp_id, const warp_inst_t *pI,
+                                       u32 *pc, u32 *rpc) = 0;
+  virtual const active_mask_t &get_active_mask(u32 warp_id,
                                                const warp_inst_t *pI) = 0;
 
   // Returns numbers of addresses in translated_addrs
-  unsigned translate_local_memaddr(address_type localaddr, unsigned tid,
-                                   unsigned num_shader, unsigned datasize,
+  u32 translate_local_memaddr(address_type localaddr, u32 tid,
+                                   u32 num_shader, u32 datasize,
                                    new_addr_type *translated_addrs);
 
   void read_operands();
@@ -2749,16 +2733,16 @@ class shader_core_ctx : public core_t {
 
   // used in display_pipeline():
   void dump_warp_state(FILE *fout) const;
-  void print_stage(unsigned int stage, FILE *fout) const;
+  void print_stage(u32 stage, FILE *fout) const;
 
-  unsigned long long m_last_inst_gpu_sim_cycle;
-  unsigned long long m_last_inst_gpu_tot_sim_cycle;
-  std::unordered_map<unsigned long long /* pc */, unsigned long long /* cycle */> m_last_inst_sched_cycle;
+  u64 m_last_inst_gpu_sim_cycle;
+  u64 m_last_inst_gpu_tot_sim_cycle;
+  std::unordered_map<u64 /* pc */, u64 /* cycle */> m_last_inst_sched_cycle;
 
   // general information
-  unsigned long long m_time;
-  unsigned m_sid;  // shader id
-  unsigned m_tpc;  // texture processor cluster id (aka, node id when using
+  u64 m_time;
+  u32 m_sid;  // shader id
+  u32 m_tpc;  // texture processor cluster id (aka, node id when using
                    // interconnect concentration)
   const shader_core_config *m_config;
   const memory_config *m_memory_config;
@@ -2768,11 +2752,11 @@ class shader_core_ctx : public core_t {
   shader_core_stats *m_stats;
 
   // CTA scheduling / hardware thread allocation
-  unsigned m_n_active_cta;  // number of Cooperative Thread Arrays (blocks)
-                            // currently running on this shader.
-  unsigned m_cta_status[MAX_CTA_PER_SHADER];  // CTAs status
-  unsigned m_not_completed;  // number of threads to be completed (==0 when all
-                             // thread on this core completed)
+  // number of Cooperative Thread Arrays (blocks) currently running on this shader.
+  u32 m_n_active_cta;
+  u32 m_cta_status[MAX_CTA_PER_SHADER]; // CTAs status
+  // number of threads to be completed (==0 when all thread on this core completed)
+  u32 m_not_completed; 
   std::bitset<MAX_THREAD_PER_SM> m_active_threads;
 
   // thread contexts
@@ -2800,31 +2784,31 @@ class shader_core_ctx : public core_t {
   std::vector<scheduler_unit *> schedulers;
 
   // issue
-  unsigned int Issue_Prio;
+  u32 Issue_Prio;
 
   // Per-cycle issue diagnostics (for targeted MEM_STALL tracing)
   // Reset at the beginning of issue(), updated by schedulers during the cycle
   bool m_any_issued_this_cycle = false;
-  unsigned m_mem_longop_fails_this_cycle = 0;
+  u32 m_mem_longop_fails_this_cycle = 0;
 
   // execute
-  unsigned m_num_function_units;
-  std::vector<unsigned> m_dispatch_port;
-  std::vector<unsigned> m_issue_port;
+  u32 m_num_function_units;
+  std::vector<u32> m_dispatch_port;
+  std::vector<u32> m_issue_port;
   std::vector<simd_function_unit *> m_fu; // stallable pipelines should be last in this array
   ldst_unit *m_ldst_unit;
-  static const unsigned MAX_ALU_LATENCY = 512;
-  unsigned num_result_bus;
+  static const u32 MAX_ALU_LATENCY = 512;
+  u32 num_result_bus;
   std::vector<std::bitset<MAX_ALU_LATENCY> *> m_result_bus;
 
   // used for local address mapping with single kernel launch
-  unsigned kernel_max_cta_per_shader;
-  unsigned kernel_padded_threads_per_cta;
+  u32 kernel_max_cta_per_shader;
+  u32 kernel_padded_threads_per_cta;
   // Used for handing out dynamic warp_ids to new warps.
   // the differnece between a warp_id and a dynamic_warp_id
   // is that the dynamic_warp_id is a running number unique to every warp
   // run on this shader, where the warp_id is the static warp slot.
-  unsigned m_dynamic_warp_id;
+  u32 m_dynamic_warp_id;
 
   // Jin: concurrent kernels on a sm
  public:
@@ -2833,22 +2817,23 @@ class shader_core_ctx : public core_t {
   // Accessor for diagnostics
   ldst_unit *get_ldst_unit() { return m_ldst_unit; }
   bool occupy_shader_resource_1block(kernel_info_t &kernel, bool occupy);
-  void release_shader_resource_1block(unsigned hw_ctaid, kernel_info_t &kernel);
-  int find_available_hwtid(unsigned int cta_size, bool occupy);
+  void release_shader_resource_1block(u32 hw_ctaid, kernel_info_t &kernel);
+  int find_available_hwtid(u32 cta_size, bool occupy);
 
- private:
-  unsigned int m_occupied_n_threads;
-  unsigned int m_occupied_shmem;
-  unsigned int m_occupied_regs;
-  unsigned int m_occupied_ctas;
-  std::bitset<MAX_THREAD_PER_SM> m_occupied_hwtid;
-  std::map<unsigned int, unsigned int> m_occupied_cta_to_hwtid;
+  private:
+    u32 m_fetch_slot;
+    u32 m_occupied_n_threads;
+    u32 m_occupied_shmem;
+    u32 m_occupied_regs;
+    u32 m_occupied_ctas;
+    std::bitset<MAX_THREAD_PER_SM> m_occupied_hwtid;
+    std::map<u32, u32> m_occupied_cta_to_hwtid;
 };
 
 class exec_shader_core_ctx : public shader_core_ctx {
  public:
   exec_shader_core_ctx(class gpgpu_sim *gpu, class simt_core_cluster *cluster,
-                       unsigned shader_id, unsigned tpc_id,
+                       u32 shader_id, u32 tpc_id,
                        const shader_core_config *config,
                        const memory_config *mem_config,
                        shader_core_stats *stats)
@@ -2860,26 +2845,26 @@ class exec_shader_core_ctx : public shader_core_ctx {
     create_exec_pipeline();
   }
 
-  virtual void checkExecutionStatusAndUpdate(warp_inst_t &inst, unsigned t,
-                                             unsigned tid);
+  virtual void checkExecutionStatusAndUpdate(warp_inst_t &inst, u32 t,
+                                             u32 tid);
   virtual void func_exec_inst(warp_inst_t &inst);
-  virtual unsigned sim_init_thread(kernel_info_t &kernel,
+  virtual u32 sim_init_thread(kernel_info_t &kernel,
                                    ptx_thread_info **thread_info, int sid,
-                                   unsigned tid, unsigned threads_left,
-                                   unsigned num_threads, core_t *core,
-                                   unsigned hw_cta_id, unsigned hw_warp_id,
+                                   u32 tid, u32 threads_left,
+                                   u32 num_threads, core_t *core,
+                                   u32 hw_cta_id, u32 hw_warp_id,
                                    gpgpu_t *gpu);
   virtual void create_shd_warp();
-  virtual const warp_inst_t *get_next_inst(unsigned warp_id, address_type pc);
-  virtual void get_pdom_stack_top_info(unsigned warp_id, const warp_inst_t *pI,
-                                       unsigned *pc, unsigned *rpc);
-  virtual const active_mask_t &get_active_mask(unsigned warp_id,
+  virtual const warp_inst_t *get_next_inst(u32 warp_id, address_type pc, bool is_pI2 = false);
+  virtual void get_pdom_stack_top_info(u32 warp_id, const warp_inst_t *pI,
+                                       u32 *pc, u32 *rpc);
+  virtual const active_mask_t &get_active_mask(u32 warp_id,
                                                const warp_inst_t *pI);
 };
 
 class simt_core_cluster {
  public:
-  simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
+  simt_core_cluster(class gpgpu_sim *gpu, u32 cluster_id,
                     const shader_core_config *config,
                     const memory_config *mem_config, shader_core_stats *stats,
                     memory_stats_t *mstats);
@@ -2888,10 +2873,10 @@ class simt_core_cluster {
   void icnt_cycle();
 
   void reinit();
-  unsigned issue_block2core();
+  u32 issue_block2core();
   void cache_flush();
   void cache_invalidate();
-  bool icnt_injection_buffer_full(unsigned size, bool write);
+  bool icnt_injection_buffer_full(u32 size, bool write);
   void icnt_inject_request_packet(class mem_fetch *mf);
   void update_icnt_stats(class mem_fetch *mf);
 
@@ -2903,18 +2888,18 @@ class simt_core_cluster {
     m_response_fifo.push_back(mf);
   }
 
-  void get_pdom_stack_top_info(unsigned sid, unsigned tid, unsigned *pc,
-                               unsigned *rpc) const;
-  unsigned max_cta(const kernel_info_t &kernel);
-  unsigned get_not_completed() const;
+  void get_pdom_stack_top_info(u32 sid, u32 tid, u32 *pc,
+                               u32 *rpc) const;
+  u32 max_cta(const kernel_info_t &kernel);
+  u32 get_not_completed() const;
   void print_not_completed(FILE *fp) const;
-  unsigned get_n_active_cta() const;
-  unsigned get_n_active_sms() const;
+  u32 get_n_active_cta() const;
+  u32 get_n_active_sms() const;
   gpgpu_sim *get_gpu() { return m_gpu; }
 
-  void display_pipeline(unsigned sid, FILE *fout, int print_mem, int mask);
-  void print_cache_stats(FILE *fp, unsigned &dl1_accesses,
-                         unsigned &dl1_misses) const;
+  void display_pipeline(u32 sid, FILE *fout, int print_mem, int mask);
+  void print_cache_stats(FILE *fp, u32 &dl1_accesses,
+                         u32 &dl1_misses) const;
 
   void get_cache_stats(cache_stats &cs) const;
   void get_L1I_sub_stats(struct cache_sub_stats &css) const;
@@ -2923,12 +2908,13 @@ class simt_core_cluster {
   void get_L1T_sub_stats(struct cache_sub_stats &css) const;
 
   void get_icnt_stats(long &n_simt_to_mem, long &n_mem_to_simt) const;
-  float get_current_occupancy(unsigned long long &active,
-                              unsigned long long &total) const;
+  float get_current_occupancy(u64 &active,
+                              u64 &total) const;
   virtual void create_shader_core_ctx() = 0;
 
  protected:
-  unsigned m_cluster_id;
+  u32 m_cluster_id;
+  u32 m_curr_core;
   gpgpu_sim *m_gpu;
   const shader_core_config *m_config;
   shader_core_stats *m_stats;
@@ -2936,16 +2922,16 @@ class simt_core_cluster {
   shader_core_ctx **m_core;
   const memory_config *m_mem_config;
 
-  unsigned m_cta_issue_next_core;
-  std::list<unsigned> m_core_sim_order;
+  u32 m_cta_issue_next_core;
+  std::list<u32> m_core_sim_order;
   std::list<mem_fetch *> m_response_fifo;
   // Assemble of that of per SM based "m_resp_fifo_inputs" in class ldst_unit
-  unsigned m_resp_fifo_inputs;
+  u32 m_resp_fifo_inputs;
 };
 
 class exec_simt_core_cluster : public simt_core_cluster {
  public:
-  exec_simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
+  exec_simt_core_cluster(class gpgpu_sim *gpu, u32 cluster_id,
                          const shader_core_config *config,
                          const memory_config *mem_config,
                          class shader_core_stats *stats,
@@ -2963,7 +2949,7 @@ class exec_simt_core_cluster : public simt_core_cluster {
  */
 class sst_simt_core_cluster : public exec_simt_core_cluster {
  public:
-  sst_simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
+  sst_simt_core_cluster(class gpgpu_sim *gpu, u32 cluster_id,
                         const shader_core_config *config,
                         const memory_config *mem_config,
                         class shader_core_stats *stats,
@@ -2983,7 +2969,7 @@ class sst_simt_core_cluster : public exec_simt_core_cluster {
    * @return true
    * @return false
    */
-  bool SST_injection_buffer_full(unsigned size, bool write,
+  bool SST_injection_buffer_full(u32 size, bool write,
                                  mem_access_type type);
 
   /**
@@ -3011,7 +2997,7 @@ class shader_memory_interface : public mem_fetch_interface {
       m_core = core;
       m_cluster = cluster;
     }
-    virtual bool full(unsigned size, bool write) const {
+    virtual bool full(u32 size, bool write) const {
       return m_cluster->icnt_injection_buffer_full(size, write);
     }
     virtual void push(mem_fetch *mf) {
@@ -3036,7 +3022,7 @@ class perfect_memory_interface : public mem_fetch_interface {
       m_core = core;
       m_cluster = cluster;
     }
-    virtual bool full(unsigned size, bool write) const {
+    virtual bool full(u32 size, bool write) const {
       return m_cluster->response_queue_full();
     }
     virtual void push(mem_fetch *mf) {
@@ -3075,7 +3061,7 @@ class sst_memory_interface : public mem_fetch_interface {
      * @return true
      * @return false
      */
-    virtual bool full(unsigned size, bool write) const {
+    virtual bool full(u32 size, bool write) const {
       assert(false && "Use the full() method with access type instead!");
       return true;
     }
@@ -3092,7 +3078,7 @@ class sst_memory_interface : public mem_fetch_interface {
      * @return true
      * @return false
      */
-    bool full(unsigned size, bool write, mem_access_type type) const {
+    bool full(u32 size, bool write, mem_access_type type) const {
       return m_cluster->SST_injection_buffer_full(size, write, type);
     }
 

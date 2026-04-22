@@ -27,11 +27,18 @@
 
 TS_TUP_BEGIN( trace_streams_type )
     TS_TUP( SIM_TOP ),
+    TS_TUP( INIT_KERNEL ),
+    TS_TUP( LAUNCH_KERNEL ),
+    TS_TUP( PICK_KERNEL),
+    TS_TUP( ISSUE_CTA ),
+    TS_TUP( IFETCH_BUFF),
+    TS_TUP( INST_TRACE ),
     TS_TUP( OP_CODE ),
     TS_TUP( LOAD_DETAIL ),
     TS_TUP( UOP_DETAIL ),
     TS_TUP( CTA ),
     TS_TUP( SIM_LOOP ),
+    TS_TUP( MEMORY_PIPE ),
     TS_TUP( CHECK_SIM_ACTIVE ),
     TS_TUP( MAIN_PIPE ),
     TS_TUP( FETCH ),

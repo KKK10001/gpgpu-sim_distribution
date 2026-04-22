@@ -549,7 +549,7 @@ enum cache_request_status tag_array::probe(
   new_addr_type raw_addr,
   new_addr_type addr /* block_addr */, unsigned &idx,
   mem_fetch *mf, bool is_write,
-  unsigned long long time,
+  u64 time,
   bool& inter_warp_has_interference, 
   WARP_INTERFERE_RECORD& inter_warp_interfere_record,
   bool probe_mode) {
@@ -575,7 +575,7 @@ enum cache_request_status tag_array::probe(
 }
 
 void tag_array::gather_rep_candidates(
-  unsigned long long time,
+  u64 time,
   mem_fetch *mf, cache_block_t* line, const unsigned& set_index, const unsigned& index,
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
@@ -619,7 +619,7 @@ void tag_array::gather_rep_candidates(
 }
 
 void tag_array::lru_pick(
-  cache_block_t* line, unsigned long long& valid_timestamp, 
+  cache_block_t* line, u64& valid_timestamp, 
   unsigned& valid_line, const unsigned& index, 
   unsigned& warp_id, unsigned& core_id,
   bool& lru_has_picked) {
@@ -633,7 +633,7 @@ void tag_array::lru_pick(
   }
 }
 void tag_array::fill_time_pick(
-  cache_block_t* line, unsigned long long& valid_timestamp, 
+  cache_block_t* line, u64& valid_timestamp, 
   unsigned& valid_line, const unsigned& index) {
 
   if (line->get_last_fill_time() < valid_timestamp) {
@@ -643,7 +643,7 @@ void tag_array::fill_time_pick(
 }
 
 void tag_array::warp_interfere_aware_pick(
-  unsigned long long time,
+  u64 time,
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates,
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
@@ -735,9 +735,9 @@ void tag_array::pick_with_lru(
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
   unsigned& valid_line,
   unsigned& warp_id, unsigned& core_id,
-  unsigned long long& smallest_access_time,
+  u64& smallest_access_time,
   unsigned& lru_picked_total_hits,
-  unsigned long long& lru_picked_avg_evict_interval) {
+  u64& lru_picked_avg_evict_interval) {
 
   if (m_config.m_mshr_corr_repl == 'T') {
     std::vector<std::pair<unsigned, LINE_RECENCY>> hybrid_rep_candidates_in_use;
@@ -836,7 +836,7 @@ void tag_array::fill_time_awared_modification_for_lru(
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_no_record_in_mshr,
   std::vector<std::pair<unsigned, LINE_RECENCY>>& hybrid_rep_candidates_recorded_in_mshr,
   unsigned& valid_line,
-  const unsigned long long& smallest_last_access_time) {
+  const u64& smallest_last_access_time) {
 
   if (m_config.m_mshr_corr_repl == 'T') {
     std::vector<std::pair<unsigned, LINE_RECENCY>> hybrid_rep_candidates_in_use;
@@ -896,7 +896,7 @@ enum cache_request_status tag_array::probe(
   new_addr_type addr /* block_addr*/, unsigned &idx,
   mem_access_sector_mask_t mask,
   bool is_write, 
-  unsigned long long time,
+  u64 time,
   bool probe_mode,
   bool& inter_warp_has_interference, 
   WARP_INTERFERE_RECORD& inter_warp_interfere_record,
@@ -928,9 +928,9 @@ enum cache_request_status tag_array::probe(
     }    
   }
 
-  unsigned long long tot_insns = m_gpu->gpu_tot_sim_insn + m_gpu->gpu_sim_insn;
+  u64 tot_insns = m_gpu->gpu_tot_sim_insn + m_gpu->gpu_sim_insn;
   [[maybe_unused]] float last_l1d_mpki = m_l1d_mpki;
-  [[maybe_unused]] m_l1d_mpki = 1000 * (total_css.misses / (float)tot_insns);
+  m_l1d_mpki = 1000 * (total_css.misses / (float)tot_insns);
   
   if (DTRACE(TAG_PROBE)) {
     fprintf(Trace::out, "%llu %s called tag_array::probe(3rd in-arg mask) addr:%#llx\n", 
@@ -1035,7 +1035,7 @@ enum cache_request_status tag_array::probe(
 
   unsigned invalid_line = (unsigned) - 1;
   unsigned valid_line = (unsigned) - 1;
-  unsigned long long valid_timestamp = (unsigned) - 1;
+  u64 valid_timestamp = (unsigned) - 1;
   
   bool srrip_has_picked = false;
 
@@ -1045,7 +1045,7 @@ enum cache_request_status tag_array::probe(
 
   bool lru_has_picked = false;
   unsigned lru_picked_total_hits = (unsigned) - 1;
-  unsigned long long lru_picked_avg_evict_interval = (unsigned long long) - 1;
+  u64 lru_picked_avg_evict_interval = (u64) - 1;
   unsigned last_warp_id = (unsigned) - 1;
   unsigned last_core_id = (unsigned) - 1;
 
@@ -1061,9 +1061,9 @@ enum cache_request_status tag_array::probe(
     for (auto& item : reref_gap_set) {
       if (item.first == addr) {
         if (item.second > 0) {
-          unsigned long long last_avg_reref_gap = m_avg_reref_gap[mf->get_sid()];
+          u64 last_avg_reref_gap = m_avg_reref_gap[mf->get_sid()];
           m_avg_reref_gap[mf->get_sid()] = (last_avg_reref_gap + item.second) / 2;
-          unsigned long long new_reref_gap = time - item.second;
+          u64 new_reref_gap = time - item.second;
           if (DTRACE(REREF_GAP)) {
             fprintf(Trace::out, "%llu %s "
               "Updated m_avg_reref_gap[sid:%u] = %llu = "
@@ -1732,7 +1732,7 @@ enum cache_request_status tag_array::access(
   baseline_cache *cache,
   new_addr_type raw_addr,
   new_addr_type addr /* block_addr */, 
-  unsigned long long time,
+  u64 time,
   unsigned &idx, mem_fetch *mf,
   bool bypass_2nd_probe) {
   bool wb = false;
@@ -1748,7 +1748,7 @@ enum cache_request_status tag_array::access(
   baseline_cache *cache,
   new_addr_type raw_addr,
   new_addr_type addr /* block_addr */, 
-  unsigned long long time,
+  u64 time,
   unsigned &idx, bool &wb,
   evicted_block_info &evicted,
   mem_fetch *mf,
@@ -1836,17 +1836,17 @@ enum cache_request_status tag_array::access(
 
 void tag_array::fill(
   baseline_cache *cache,
-  new_addr_type addr, unsigned long long time, mem_fetch *mf, bool is_write) {
+  new_addr_type addr, u64 time, mem_fetch *mf, bool is_write) {
   fill(cache, addr, time, mf->get_access_sector_mask(), mf->get_access_byte_mask(), is_write, mf);
 }
 
 // This function will be called in following two scenarios:
 // 1) m_config.m_alloc_policy == ON_FILL inside
-//    baseline_cache::fill(mem_fetch *mf, unsigned long long time)
+//    baseline_cache::fill(mem_fetch *mf, u64 time)
 // 2) L2 memcpy
 void tag_array::fill(
   baseline_cache *cache,
-  new_addr_type addr, unsigned long long time,
+  new_addr_type addr, u64 time,
   mem_access_sector_mask_t mask,
   mem_access_byte_mask_t byte_mask, bool is_write,
   mem_fetch *mf) {
@@ -1903,7 +1903,7 @@ void tag_array::fill(
 
 void tag_array::fill(
   baseline_cache *cache,
-  unsigned index, unsigned long long time, mem_fetch *mf) {
+  unsigned index, u64 time, mem_fetch *mf) {
 
   if (DTRACE(TAG_FILL)) {
     if (mf) {
@@ -2118,7 +2118,7 @@ bool mshr_table::is_read_after_write_pending(new_addr_type block_addr) {
 }
 
 /// Accept a new cache fill response: mark entry ready for processing
-void mshr_table::mark_ready(const char* cache_name, new_addr_type block_addr, bool &has_atomic, unsigned long long cycle) {
+void mshr_table::mark_ready(const char* cache_name, new_addr_type block_addr, bool &has_atomic, u64 cycle) {
   assert(!busy());
   table::iterator a = m_data.find(block_addr);
   assert(a != m_data.end());
@@ -2134,7 +2134,7 @@ void mshr_table::mark_ready(const char* cache_name, new_addr_type block_addr, bo
 }
 
 /// Returns next ready access
-mem_fetch* mshr_table::next_access(const char* cache_type, unsigned long long cycle) {
+mem_fetch* mshr_table::next_access(const char* cache_type, u64 cycle) {
   assert(access_ready());
 
   [[maybe_unused]] const unsigned last_occupied_entries = static_cast<unsigned>(m_data.size());
@@ -2151,7 +2151,7 @@ mem_fetch* mshr_table::next_access(const char* cache_type, unsigned long long cy
       "(occupied:%u free:%u occupancy:%f)\n",
       cycle, 
       result->get_tpc(), result->get_sid(), result->get_wid(),
-      cache_type, (unsigned long long)block_addr,
+      cache_type, (u64)block_addr,
       static_cast<unsigned>(m_data.size()),
       m_num_entries - static_cast<unsigned>(m_data.size()),
       m_data.size() / (float)m_num_entries
@@ -2198,7 +2198,7 @@ mem_fetch* mshr_table::next_access(const char* cache_type, unsigned long long cy
         cycle,
         result->get_tpc(), result->get_sid(), result->get_wid(),
         cache_type,
-        (unsigned long long)block_addr,
+        (u64)block_addr,
         static_cast<unsigned>(m_data.size()), 
         m_num_entries - static_cast<unsigned>(m_data.size()),
         static_cast<unsigned>(m_data.size()) / (float)m_num_entries
@@ -2212,7 +2212,7 @@ mem_fetch* mshr_table::next_access(const char* cache_type, unsigned long long cy
 void mshr_table::display(FILE *fp, const char* cache_type) const {
   fprintf(fp, "%s MSHR contents\n", cache_type);
   for (table::const_iterator e = m_data.begin(); e != m_data.end(); ++e) {
-    unsigned long long block_addr = e->first;
+    u64 block_addr = e->first;
     // fprintf(fp, "%s MSHR: tag:0x%06x, atomic:%d n_merged:%zu entries: ", 
     fprintf(fp, "%s MSHR: tag:%#llx, atomic:%d n_merged:%zu entries: ", 
       cache_type, block_addr, e->second.m_has_atomic, e->second.m_list.size());
@@ -2302,12 +2302,12 @@ void cache_stats::clear_pw() {
 }
 
 unsigned cache_stats::get_mshr_merge_dist_cnt(
-  unsigned long long streamID, unsigned sm_id, unsigned warp_id) {
+  u64 streamID, unsigned sm_id, unsigned warp_id) {
   return m_mshr_occupancy_stats[streamID][sm_id][warp_id];
 }
 
 void cache_stats::inc_mshr_stats(
-  unsigned long long streamID, unsigned sm_id, unsigned warp_id) {
+  u64 streamID, unsigned sm_id, unsigned warp_id) {
 
   const unsigned sms = 4; // gpgpu_n_cores_per_cluster
   const unsigned max_warps_per_sm = 64; // m_config.max_warps_per_sm
@@ -2318,74 +2318,74 @@ void cache_stats::inc_mshr_stats(
     for (unsigned sm = 0; sm < sms; ++sm) {
       new_val[sm].resize(max_warps_per_sm, 0);
     }
-    m_mshr_occupancy_stats.insert(std::pair<unsigned long long,
+    m_mshr_occupancy_stats.insert(std::pair<u64,
         std::vector<std::vector<unsigned>>>(streamID, new_val));
   }
   m_mshr_occupancy_stats.at(streamID)[sm_id][warp_id]++;
 }
 
 void cache_stats::inc_accu_l2_dram_queue_size(
-  unsigned long long streamID, unsigned l2_sub, unsigned size) {
+  u64 streamID, unsigned l2_sub, unsigned size) {
 
   if (m_accu_l2_dram_queue_size.find(streamID) == m_accu_l2_dram_queue_size.end()) {
     std::vector<unsigned> new_val;
     new_val.resize(get_sub_partitions());
-    m_accu_l2_dram_queue_size.insert(std::pair<unsigned long long,
+    m_accu_l2_dram_queue_size.insert(std::pair<u64,
         std::vector<unsigned>>(streamID, new_val));
   }
   m_accu_l2_dram_queue_size.at(streamID)[l2_sub] += size;
 }
 void cache_stats::inc_accu_l2_icnt_queue_size(
-  unsigned long long streamID, unsigned l2_sub, unsigned size) {
+  u64 streamID, unsigned l2_sub, unsigned size) {
 
   if (m_accu_l2_icnt_queue_size.find(streamID) == m_accu_l2_icnt_queue_size.end()) {
     std::vector<unsigned> new_val;
     new_val.resize(get_sub_partitions());
-    m_accu_l2_icnt_queue_size.insert(std::pair<unsigned long long,
+    m_accu_l2_icnt_queue_size.insert(std::pair<u64,
         std::vector<unsigned>>(streamID, new_val));
   }
   m_accu_l2_icnt_queue_size.at(streamID)[l2_sub] += size;
 }
-void cache_stats::inc_l2_dram_q_accesses(unsigned long long streamID, unsigned l2_sub) {
+void cache_stats::inc_l2_dram_q_accesses(u64 streamID, unsigned l2_sub) {
 
   if (m_l2_dram_q_accesses.find(streamID) == m_l2_dram_q_accesses.end()) {
     std::vector<unsigned> new_val;
     new_val.resize(get_sub_partitions());
-    m_l2_dram_q_accesses.insert(std::pair<unsigned long long,
+    m_l2_dram_q_accesses.insert(std::pair<u64,
         std::vector<unsigned>>(streamID, new_val));
   }
   m_l2_dram_q_accesses.at(streamID)[l2_sub]++;
 }
-void cache_stats::inc_l2_icnt_q_accesses(unsigned long long streamID, unsigned l2_sub) {
+void cache_stats::inc_l2_icnt_q_accesses(u64 streamID, unsigned l2_sub) {
 
   if (m_l2_icnt_q_accesses.find(streamID) == m_l2_icnt_q_accesses.end()) {
     std::vector<unsigned> new_val;
     new_val.resize(get_sub_partitions());
-    m_l2_icnt_q_accesses.insert(std::pair<unsigned long long,
+    m_l2_icnt_q_accesses.insert(std::pair<u64,
         std::vector<unsigned>>(streamID, new_val));
   }
   m_l2_icnt_q_accesses.at(streamID)[l2_sub]++;
 }
 
-void cache_stats::inc_l2_mshr_slots_fills(unsigned long long streamID, unsigned l2_sub) {
+void cache_stats::inc_l2_mshr_slots_fills(u64 streamID, unsigned l2_sub) {
 
   if (m_l2_mshr_slots_fills.find(streamID) == m_l2_mshr_slots_fills.end()) {
     std::vector<unsigned> new_val;
     new_val.resize(get_sub_partitions());
-    m_l2_mshr_slots_fills.insert(std::pair<unsigned long long,
+    m_l2_mshr_slots_fills.insert(std::pair<u64,
         std::vector<unsigned>>(streamID, new_val));
   }
   m_l2_mshr_slots_fills.at(streamID)[l2_sub]++;
 }
 
 void cache_stats::overall_average_l1d_rd_fill_to_evict_gap(
-  unsigned long long streamID, unsigned long long served_cycles) {
+  u64 streamID, u64 served_cycles) {
   if (m_overall_avg_l1d_rd_fill_to_evict_gap.find(streamID) == m_overall_avg_l1d_rd_fill_to_evict_gap.end()) {
-    unsigned long long new_val;
+    u64 new_val;
     m_overall_avg_l1d_rd_fill_to_evict_gap.insert(
-      std::pair<unsigned long long, unsigned long long>(streamID, new_val));    
+      std::pair<u64, u64>(streamID, new_val));    
   }
-  [[maybe_unused]] unsigned long long last_avg_gap = 
+  [[maybe_unused]] u64 last_avg_gap = 
     m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID); // for debug
 
   m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID) = 
@@ -2479,7 +2479,7 @@ void cache_stats::inc_l2_miss_q_pops() {
   m_l2_miss_q_pops++;
 }
 
-void cache_stats::gather_lines_stats(unsigned long long streamID, unsigned unfolded_index) {
+void cache_stats::gather_lines_stats(u64 streamID, unsigned unfolded_index) {
   if (m_lines_evictons.find(streamID) == m_lines_evictons.end()) {
     std::vector<unsigned> new_val;
     new_val.resize(1); 
@@ -2546,12 +2546,12 @@ void cache_stats::update_evict_stats(u64 streamID, u64 victim_avg_evict_interval
   (m_evict_stats.at(streamID) + victim_avg_evict_interval) >> 1;
 }
 // void cache_stats::update_bypass_stats(
-//     unsigned long long streamID, 
-//     unsigned long long new_bypass) {
+//     u64 streamID, 
+//     u64 new_bypass) {
   
 //   if (m_evict_stats.find(streamID) == m_evict_stats.end()) {
 //     unsigned new_val;
-//     m_evict_stats.insert(std::pair<unsigned long long, unsigned>(streamID, new_val));
+//     m_evict_stats.insert(std::pair<u64, unsigned>(streamID, new_val));
 //   }
 
 //   m_evict_stats.at(streamID) = 
@@ -2559,7 +2559,7 @@ void cache_stats::update_evict_stats(u64 streamID, u64 victim_avg_evict_interval
 // }
 
 void cache_stats::inc_stats_pw(int access_type, int access_outcome,
-                               unsigned long long streamID) {
+                               u64 streamID) {
   ///
   /// Increment the corresponding per-window cache stat
   ///
@@ -2567,13 +2567,13 @@ void cache_stats::inc_stats_pw(int access_type, int access_outcome,
     assert(0 && "Unknown cache access type or access outcome");
 
   if (m_stats_pw.find(streamID) == m_stats_pw.end()) {
-    std::vector<std::vector<unsigned long long>> new_val;
+    std::vector<std::vector<u64>> new_val;
     new_val.resize(NUM_MEM_ACCESS_TYPE);
     for (unsigned j = 0; j < NUM_MEM_ACCESS_TYPE; ++j) {
       new_val[j].resize(NUM_CACHE_REQUEST_STATUS, 0);
     }
-    m_stats_pw.insert(std::pair<unsigned long long,
-                                std::vector<std::vector<unsigned long long>>>(
+    m_stats_pw.insert(std::pair<u64,
+                                std::vector<std::vector<u64>>>(
         streamID, new_val));
   }
   m_stats_pw.at(streamID)[access_type][access_outcome]++;
@@ -2581,63 +2581,63 @@ void cache_stats::inc_stats_pw(int access_type, int access_outcome,
 
 void cache_stats::inc_fail_stats(
   int access_type, int fail_outcome, 
-  unsigned long long streamID, int fail_driver) {
+  u64 streamID, int fail_driver) {
 
   if (!check_fail_valid(access_type, fail_outcome))
     assert(0 && "Unknown cache access type or access fail");
 
   if (m_fail_stats.find(streamID) == m_fail_stats.end()) {
-    std::vector<std::vector<unsigned long long>> new_val;    
+    std::vector<std::vector<u64>> new_val;    
     new_val.resize(NUM_MEM_ACCESS_TYPE);
     for (unsigned j = 0; j < NUM_MEM_ACCESS_TYPE; ++j) {
       new_val[j].resize(NUM_CACHE_RESERVATION_FAIL_STATUS, 0);
     }
         
-    m_fail_stats.insert(std::pair<unsigned long long,
-                        std::vector<std::vector<unsigned long long>>>(
+    m_fail_stats.insert(std::pair<u64,
+                        std::vector<std::vector<u64>>>(
                         streamID, new_val));
     m_fail_stats_total.insert(
-      std::pair<unsigned long long, std::vector<unsigned long long>>(
-        streamID, std::vector<unsigned long long>(NUM_MEM_ACCESS_TYPE, 0)));
+      std::pair<u64, std::vector<u64>>(
+        streamID, std::vector<u64>(NUM_MEM_ACCESS_TYPE, 0)));
   } // if (m_fail_stats.find(streamID) == m_fail_stats.end()) { ---> Create new entry
   m_fail_stats.at(streamID)[access_type][fail_outcome]++;
   m_fail_stats_total.at(streamID)[access_type]++;
 
   if (m_line_alloc_fail.find(streamID) == m_line_alloc_fail.end()) {
-    std::vector<std::vector<unsigned long long>> new_line_alloc_fail_driver;
+    std::vector<std::vector<u64>> new_line_alloc_fail_driver;
     new_line_alloc_fail_driver.resize(NUM_MEM_ACCESS_TYPE);
     for (unsigned j = 0; j < NUM_MEM_ACCESS_TYPE; ++j) {
       new_line_alloc_fail_driver[j].resize(NUM_LINE_ALLOC_FAIL_DRIVER, 0);
     }    
-    m_line_alloc_fail.insert(std::pair<unsigned long long,
-      std::vector<std::vector<unsigned long long>>>(streamID, new_line_alloc_fail_driver));
+    m_line_alloc_fail.insert(std::pair<u64,
+      std::vector<std::vector<u64>>>(streamID, new_line_alloc_fail_driver));
   }
   if (m_mshr_entry_fail.find(streamID) == m_mshr_entry_fail.end()) {
-    std::vector<std::vector<unsigned long long>> new_mshr_entry_fail_driver;
+    std::vector<std::vector<u64>> new_mshr_entry_fail_driver;
     new_mshr_entry_fail_driver.resize(NUM_MEM_ACCESS_TYPE);
     for (unsigned j = 0; j < NUM_MEM_ACCESS_TYPE; ++j) {
       new_mshr_entry_fail_driver[j].resize(NUM_MSHR_ENTRY_FAIL_DRIVER, 0);
     }    
-    m_mshr_entry_fail.insert(std::pair<unsigned long long,
-      std::vector<std::vector<unsigned long long>>>(streamID, new_mshr_entry_fail_driver));
+    m_mshr_entry_fail.insert(std::pair<u64,
+      std::vector<std::vector<u64>>>(streamID, new_mshr_entry_fail_driver));
   }
   if (m_miss_q_full.find(streamID) == m_miss_q_full.end()) {
-    std::vector<std::vector<unsigned long long>> new_miss_q_full_driver;
+    std::vector<std::vector<u64>> new_miss_q_full_driver;
     new_miss_q_full_driver.resize(NUM_MEM_ACCESS_TYPE);
     for (unsigned j = 0; j < NUM_MEM_ACCESS_TYPE; ++j) {
       new_miss_q_full_driver[j].resize(NUM_MISS_QUEUE_FULL_DRIVER, 0);
     }    
-    m_miss_q_full.insert(std::pair<unsigned long long,
-      std::vector<std::vector<unsigned long long>>>(streamID, new_miss_q_full_driver));
+    m_miss_q_full.insert(std::pair<u64,
+      std::vector<std::vector<u64>>>(streamID, new_miss_q_full_driver));
   }
   if (m_mshr_merge_entry_fail.find(streamID) == m_mshr_merge_entry_fail.end()) {
-    std::vector<std::vector<unsigned long long>> new_mshr_merge_entry_fail_driver;
+    std::vector<std::vector<u64>> new_mshr_merge_entry_fail_driver;
     new_mshr_merge_entry_fail_driver.resize(NUM_MEM_ACCESS_TYPE);
     for (unsigned j = 0; j < NUM_MEM_ACCESS_TYPE; ++j) {
       new_mshr_merge_entry_fail_driver[j].resize(NUM_MSHR_MERGE_ENTRY_FAIL_DRIVER, 0);
     }    
-    m_mshr_merge_entry_fail.insert(std::pair<unsigned long long,
-      std::vector<std::vector<unsigned long long>>>(streamID, new_mshr_merge_entry_fail_driver));
+    m_mshr_merge_entry_fail.insert(std::pair<u64,
+      std::vector<std::vector<u64>>>(streamID, new_mshr_merge_entry_fail_driver));
   }    
 
   if (fail_driver != -1) {
@@ -2691,9 +2691,9 @@ enum cache_request_status cache_stats::select_stats_status(
   }    
 }
 
-unsigned long long &cache_stats::operator()(int access_type, int access_outcome,
+u64 &cache_stats::operator()(int access_type, int access_outcome,
                                             bool fail_outcome,
-                                            unsigned long long streamID) {
+                                            u64 streamID) {
   ///
   /// Simple method to read/modify the stat corresponding to (access_type,
   /// access_outcome) Used overloaded () to avoid the need for separate
@@ -2712,11 +2712,11 @@ unsigned long long &cache_stats::operator()(int access_type, int access_outcome,
   }
 }
 
-unsigned long long cache_stats::operator()(
+u64 cache_stats::operator()(
   int access_type, 
   int access_outcome,
   bool is_fail_outcome,  
-  int fail_driver, unsigned long long streamID) const {
+  int fail_driver, u64 streamID) const {
 
   assert(is_fail_outcome == true);
   if (static_cast<cache_reservation_fail_reason>(access_outcome) == LINE_ALLOC_FAIL) {
@@ -2729,13 +2729,13 @@ unsigned long long cache_stats::operator()(
     return m_mshr_merge_entry_fail.at(streamID)[access_type][fail_driver];
   } else {
     assert(0);
-    return (unsigned long long) - 1;
+    return (u64) - 1;
   }
 }
 
-unsigned long long cache_stats::operator()(int access_type, int access_outcome,
+u64 cache_stats::operator()(int access_type, int access_outcome,
                                            bool fail_outcome,
-                                           unsigned long long streamID) const {
+                                           u64 streamID) const {
   ///
   /// Const accessor into m_stats.
   ///
@@ -2752,8 +2752,8 @@ unsigned long long cache_stats::operator()(int access_type, int access_outcome,
   }
 }
 
-unsigned long long cache_stats::operator()(
-  unsigned sm, unsigned warp, unsigned long long streamID) const {
+u64 cache_stats::operator()(
+  unsigned sm, unsigned warp, u64 streamID) const {
   if (!check_valid(sm, warp)) {
     assert(0 && "Unknown sm_id or warp_id");
   }
@@ -2761,30 +2761,29 @@ unsigned long long cache_stats::operator()(
 }
 
 unsigned cache_stats::operator()(
-  unsigned l2_sub, unsigned long long streamID) const {
+  unsigned l2_sub, u64 streamID) const {
   auto it = m_accu_l2_dram_queue_size.find(streamID);
   if (it == m_accu_l2_dram_queue_size.end()) return 0;
   if (l2_sub >= it->second.size()) return 0;
   return it->second[l2_sub];
 }
-unsigned long long cache_stats::operator()(
-  unsigned l2_sub, unsigned long long streamID, const char* tgt_name) const {
+u64 cache_stats::operator()(
+  unsigned l2_sub, u64 streamID, const char* tgt_name) const {
   if (!strcmp(tgt_name, "m_l2_sub_miss_served_cycles")) {
     auto it = m_l2_sub_miss_served_cycles.find(streamID);
-    if (it == m_l2_sub_miss_served_cycles.end()) {
-      return 0;
-    } else {
+    if (it != m_l2_sub_miss_served_cycles.end()) {
       return it->second[l2_sub];
     }
+    return 0;
   } else if (!strcmp(tgt_name, "m_l2_sub_misses")) {
     auto it = m_l2_sub_misses.find(streamID);
-    if (it == m_l2_sub_misses.end()) {
-      return 0;
-    } else {
+    if (it != m_l2_sub_misses.end()) {
       return it->second[l2_sub];
-    }
+    } 
+    return 0;    
   } else {
-    // nothing at present
+    assert(0);
+    return (u64) - 1;
   }
 }
 
@@ -2907,6 +2906,8 @@ u64 cache_stats::operator()(u64 streamID, const char* tgt_name) const {
       return it->second;
     }
   }
+  assert(0);
+  return (u64) - 1;  
 }
 
 cache_stats cache_stats::operator+(const cache_stats &cs) {
@@ -3121,10 +3122,10 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
   }
 
   for (auto iter = cs.m_stats_pw.begin(); iter != cs.m_stats_pw.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (ret.m_stats_pw.find(streamID) == ret.m_stats_pw.end()) {
-      ret.m_stats_pw.insert(std::pair<unsigned long long,
-          std::vector<std::vector<unsigned long long>>>(streamID, cs.m_stats_pw.at(streamID)));
+      ret.m_stats_pw.insert(std::pair<u64,
+          std::vector<std::vector<u64>>>(streamID, cs.m_stats_pw.at(streamID)));
     } else {
       for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
         for (unsigned status = 0; status < NUM_CACHE_REQUEST_STATUS; ++status) {
@@ -3134,11 +3135,11 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
     }
   }
   for (auto iter = cs.m_fail_stats.begin(); iter != cs.m_fail_stats.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (ret.m_fail_stats.find(streamID) == ret.m_fail_stats.end()) {
       ret.m_fail_stats.insert(
-        std::pair<unsigned long long,
-            std::vector<std::vector<unsigned long long>>>(streamID, cs.m_fail_stats.at(streamID)));
+        std::pair<u64,
+            std::vector<std::vector<u64>>>(streamID, cs.m_fail_stats.at(streamID)));
     } else {
       for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
         for (unsigned status = 0; status < NUM_CACHE_RESERVATION_FAIL_STATUS; ++status) {
@@ -3149,10 +3150,10 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
     }
   }
   for (auto iter = cs.m_mshr_occupancy_stats.begin(); iter != cs.m_mshr_occupancy_stats.end(); ++iter) {  
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (ret.m_mshr_occupancy_stats.find(streamID) == ret.m_mshr_occupancy_stats.end()) {
       ret.m_mshr_occupancy_stats.insert(
-        std::pair<unsigned long long,
+        std::pair<u64,
         std::vector<std::vector<unsigned>>>(streamID, cs.m_mshr_occupancy_stats.at(streamID)));
     } else {
       const unsigned sms = 4; // gpgpu_n_cores_per_cluster
@@ -3166,11 +3167,11 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
   }
   for (auto iter = cs.m_overall_avg_l1d_rd_fill_to_evict_gap.begin(); 
     iter != cs.m_overall_avg_l1d_rd_fill_to_evict_gap.end(); ++iter) {  
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (ret.m_overall_avg_l1d_rd_fill_to_evict_gap.find(streamID) == 
       ret.m_overall_avg_l1d_rd_fill_to_evict_gap.end()) {
       ret.m_overall_avg_l1d_rd_fill_to_evict_gap.insert(
-        std::pair<unsigned long long, unsigned long long>(
+        std::pair<u64, u64>(
           streamID, cs.m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID)));
     } else {
         ret.m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID) += cs.m_overall_avg_l1d_rd_fill_to_evict_gap.at(streamID);
@@ -3178,11 +3179,11 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
   }   
   for (auto iter = cs.m_l1d_rd_miss_served_cycles.begin(); 
     iter != cs.m_l1d_rd_miss_served_cycles.end(); ++iter) {  
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (ret.m_l1d_rd_miss_served_cycles.find(streamID) == 
       ret.m_l1d_rd_miss_served_cycles.end()) {
       ret.m_l1d_rd_miss_served_cycles.insert(
-        std::pair<unsigned long long, unsigned long long>(
+        std::pair<u64, u64>(
           streamID, cs.m_l1d_rd_miss_served_cycles.at(streamID)));
     } else {
         ret.m_l1d_rd_miss_served_cycles.at(streamID) += cs.m_l1d_rd_miss_served_cycles.at(streamID);      
@@ -3190,7 +3191,7 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
   }  
   for (auto iter = cs.m_l1d_wr_miss_served_cycles.begin(); 
     iter != cs.m_l1d_wr_miss_served_cycles.end(); ++iter) {  
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (ret.m_l1d_wr_miss_served_cycles.find(streamID) == 
       ret.m_l1d_wr_miss_served_cycles.end()) {
       ret.m_l1d_wr_miss_served_cycles[streamID] = cs.m_l1d_wr_miss_served_cycles.at(streamID);
@@ -3322,7 +3323,7 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
     if (ret.m_l2_sub_miss_served_cycles.find(streamID) == 
       ret.m_l2_sub_miss_served_cycles.end()) {
       ret.m_l2_sub_miss_served_cycles.insert(
-        std::pair<unsigned long long, std::vector<unsigned long long>>(
+        std::pair<u64, std::vector<u64>>(
           streamID, cs.m_l2_sub_miss_served_cycles.at(streamID)));
     } else {
       for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); l2_sub++) {
@@ -3333,11 +3334,11 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
   }
   for (auto iter = cs.m_l2_sub_misses.begin(); 
     iter != cs.m_l2_sub_misses.end(); ++iter) {  
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (ret.m_l2_sub_misses.find(streamID) == 
       ret.m_l2_sub_misses.end()) {
       ret.m_l2_sub_misses.insert(
-        std::pair<unsigned long long, std::vector<unsigned>>(
+        std::pair<u64, std::vector<unsigned>>(
           streamID, cs.m_l2_sub_misses.at(streamID)));
     } else {
       for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); l2_sub++) {
@@ -3348,10 +3349,10 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
   }
 
   for (auto iter = cs.m_accu_l2_dram_queue_size.begin(); iter != cs.m_accu_l2_dram_queue_size.end(); ++iter) {  
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (ret.m_accu_l2_dram_queue_size.find(streamID) == ret.m_accu_l2_dram_queue_size.end()) {
       ret.m_accu_l2_dram_queue_size.insert(
-        std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_accu_l2_dram_queue_size.at(streamID)));
+        std::pair<u64, std::vector<unsigned>>(streamID, cs.m_accu_l2_dram_queue_size.at(streamID)));
     } else {
       for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); l2_sub++) {
         ret.m_accu_l2_dram_queue_size.at(streamID)[l2_sub] += cs.m_accu_l2_dram_queue_size.at(streamID)[l2_sub];
@@ -3359,10 +3360,10 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
     }
   }
   for (auto iter = cs.m_accu_l2_icnt_queue_size.begin(); iter != cs.m_accu_l2_icnt_queue_size.end(); ++iter) {  
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (ret.m_accu_l2_icnt_queue_size.find(streamID) == ret.m_accu_l2_icnt_queue_size.end()) {
       ret.m_accu_l2_icnt_queue_size.insert(
-        std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_accu_l2_icnt_queue_size.at(streamID)));
+        std::pair<u64, std::vector<unsigned>>(streamID, cs.m_accu_l2_icnt_queue_size.at(streamID)));
     } else {
       for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); l2_sub++) {
         ret.m_accu_l2_icnt_queue_size.at(streamID)[l2_sub] += cs.m_accu_l2_icnt_queue_size.at(streamID)[l2_sub];
@@ -3370,10 +3371,10 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
     }
   }
   for (auto iter = cs.m_l2_dram_q_accesses.begin(); iter != cs.m_l2_dram_q_accesses.end(); ++iter) {  
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (ret.m_l2_dram_q_accesses.find(streamID) == ret.m_l2_dram_q_accesses.end()) {
       ret.m_l2_dram_q_accesses.insert(
-        std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_l2_dram_q_accesses.at(streamID)));
+        std::pair<u64, std::vector<unsigned>>(streamID, cs.m_l2_dram_q_accesses.at(streamID)));
     } else {
       for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); l2_sub++) {
         ret.m_l2_dram_q_accesses.at(streamID)[l2_sub] += cs.m_l2_dram_q_accesses.at(streamID)[l2_sub];
@@ -3381,10 +3382,10 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
     }
   }
   for (auto iter = cs.m_l2_icnt_q_accesses.begin(); iter != cs.m_l2_icnt_q_accesses.end(); ++iter) {  
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (ret.m_l2_icnt_q_accesses.find(streamID) == ret.m_l2_icnt_q_accesses.end()) {
       ret.m_l2_icnt_q_accesses.insert(
-        std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_l2_icnt_q_accesses.at(streamID)));
+        std::pair<u64, std::vector<unsigned>>(streamID, cs.m_l2_icnt_q_accesses.at(streamID)));
     } else {
       for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); l2_sub++) {
         ret.m_l2_icnt_q_accesses.at(streamID)[l2_sub] += cs.m_l2_icnt_q_accesses.at(streamID)[l2_sub];
@@ -3392,10 +3393,10 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
     }
   }  
   for (auto iter = cs.m_l2_mshr_slots_fills.begin(); iter != cs.m_l2_mshr_slots_fills.end(); ++iter) {  
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (ret.m_l2_mshr_slots_fills.find(streamID) == ret.m_l2_mshr_slots_fills.end()) {
       ret.m_l2_mshr_slots_fills.insert(
-        std::pair<unsigned long long, std::vector<unsigned>>(streamID, cs.m_l2_mshr_slots_fills.at(streamID)));
+        std::pair<u64, std::vector<unsigned>>(streamID, cs.m_l2_mshr_slots_fills.at(streamID)));
     } else {
       for (unsigned l2_sub = 0; l2_sub < get_sub_partitions(); l2_sub++) {
         ret.m_l2_mshr_slots_fills.at(streamID)[l2_sub] += cs.m_l2_mshr_slots_fills.at(streamID)[l2_sub];
@@ -3404,10 +3405,10 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
   }
 
   for (auto iter = cs.m_line_alloc_fail.begin(); iter != cs.m_line_alloc_fail.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (ret.m_line_alloc_fail.find(streamID) == ret.m_line_alloc_fail.end()) {
-      ret.m_line_alloc_fail.insert(std::pair<unsigned long long,
-        std::vector<std::vector<unsigned long long>>>(streamID, cs.m_line_alloc_fail.at(streamID)));
+      ret.m_line_alloc_fail.insert(std::pair<u64,
+        std::vector<std::vector<u64>>>(streamID, cs.m_line_alloc_fail.at(streamID)));
     } else {
       for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
         for (unsigned driver = 0; driver < NUM_LINE_ALLOC_FAIL_DRIVER; ++driver) {
@@ -3418,10 +3419,10 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
     }
   }  
   for (auto iter = cs.m_mshr_entry_fail.begin(); iter != cs.m_mshr_entry_fail.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (ret.m_mshr_entry_fail.find(streamID) == ret.m_mshr_entry_fail.end()) {
-      ret.m_mshr_entry_fail.insert(std::pair<unsigned long long,
-        std::vector<std::vector<unsigned long long>>>(streamID, cs.m_mshr_entry_fail.at(streamID)));
+      ret.m_mshr_entry_fail.insert(std::pair<u64,
+        std::vector<std::vector<u64>>>(streamID, cs.m_mshr_entry_fail.at(streamID)));
     } else {
       for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
         for (unsigned driver = 0; driver < NUM_MSHR_ENTRY_FAIL_DRIVER; ++driver) {
@@ -3432,10 +3433,10 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
     }
   }  
   for (auto iter = cs.m_miss_q_full.begin(); iter != cs.m_miss_q_full.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (ret.m_miss_q_full.find(streamID) == ret.m_miss_q_full.end()) {
-      ret.m_miss_q_full.insert(std::pair<unsigned long long,
-        std::vector<std::vector<unsigned long long>>>(streamID, cs.m_miss_q_full.at(streamID)));
+      ret.m_miss_q_full.insert(std::pair<u64,
+        std::vector<std::vector<u64>>>(streamID, cs.m_miss_q_full.at(streamID)));
     } else {
       for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
         for (unsigned driver = 0; driver < NUM_MISS_QUEUE_FULL_DRIVER; ++driver) {
@@ -3446,10 +3447,10 @@ cache_stats cache_stats::operator+(const cache_stats &cs) {
     }
   }  
   for (auto iter = cs.m_mshr_merge_entry_fail.begin(); iter != cs.m_mshr_merge_entry_fail.end(); ++iter) {
-    unsigned long long streamID = iter->first;
+    u64 streamID = iter->first;
     if (ret.m_mshr_merge_entry_fail.find(streamID) == ret.m_mshr_merge_entry_fail.end()) {
-      ret.m_mshr_merge_entry_fail.insert(std::pair<unsigned long long,
-        std::vector<std::vector<unsigned long long>>>(streamID, cs.m_mshr_merge_entry_fail.at(streamID)));
+      ret.m_mshr_merge_entry_fail.insert(std::pair<u64,
+        std::vector<std::vector<u64>>>(streamID, cs.m_mshr_merge_entry_fail.at(streamID)));
     } else {
       for (unsigned type = 0; type < NUM_MEM_ACCESS_TYPE; ++type) {
         for (unsigned driver = 0; driver < NUM_MSHR_MERGE_ENTRY_FAIL_DRIVER; ++driver) {
@@ -4358,8 +4359,10 @@ u32 cache_stats::print_l1d_rd_misses(FILE* fout, u64 streamID, u32 kernel, u64 c
       fprintf(fout, "\tstreamID:%llu kernel:%u L1D_RD_MISSES = %u\n", 
         streamID, kernel, records[kernel]);
       return records[kernel];
-    }
+    } 
+    return 0;
   }
+  return 0;
 }
 u32 cache_stats::print_l1d_reads(FILE* fout, u64 streamID, u32 kernel, u64 cycles) const {
   auto it_stream = m_l1d_reads.find(streamID);
@@ -4371,7 +4374,9 @@ u32 cache_stats::print_l1d_reads(FILE* fout, u64 streamID, u32 kernel, u64 cycle
         streamID, kernel, records[kernel]);
       return records[kernel];
     }
+    return 0;
   }
+  return 0;
 }
 void cache_stats::print_l1d_rd_miss_rate(
   FILE* fout, u64 streamID, u32 kernel, u32 misses, u32 reads, u64 cycles) const {
@@ -4561,7 +4566,7 @@ u64 cache_stats::get_stats(
 }
 
 void cache_stats::get_sub_stats(
-  struct cache_sub_stats &css, const char* cache_name, unsigned long long time, unsigned kernel) const {
+  struct cache_sub_stats &css, const char* cache_name, u64 time, unsigned kernel) const {
   ///
   /// Overwrites "css" with the appropriate statistics from this cache.
   ///
@@ -4772,7 +4777,7 @@ void baseline_cache::dump_cache_access_info(
 
 void baseline_cache::dump_cache_fill_info(
   const char* caller,
-  new_addr_type addr, mem_fetch *mf, unsigned long long time, 
+  new_addr_type addr, mem_fetch *mf, u64 time, 
   bool dump_inst_str) {
 
   new_addr_type block_addr = m_config.block_addr(addr);
@@ -4781,13 +4786,13 @@ void baseline_cache::dump_cache_fill_info(
   fprintf(Trace::out,
       "%llu %s%s%s %s addr: %#llx block_addr: %#llx "
       "byte_mask: 0x%016lx%016lx\n",
-      (unsigned long long)time,
+      (u64)time,
       caller,
       dump_inst_str ? m_gpu->gpgpu_ctx->func_sim->ptx_get_insn_str(mf->get_inst().pc).c_str() : "",      
       m_is_l1d ? "L1D" : m_is_l2 ? "L2C" : "xx$",
       mf_request_type_str(mf->get_type()),
-      (unsigned long long)mf->get_addr(),
-      (unsigned long long)block_addr,
+      (u64)mf->get_addr(),
+      (u64)block_addr,
       byte_mask_hi_lo.first, byte_mask_hi_lo.second
     );
 }
@@ -4897,7 +4902,7 @@ void baseline_cache::cycle() {
 
 /// Interface for response from lower memory level (model bandwidth restictions
 /// in caller)
-void baseline_cache::fill(mem_fetch *mf, unsigned long long time) {
+void baseline_cache::fill(mem_fetch *mf, u64 time) {
   
   if (DTRACE(CACHELINE_FILL)) {
     if (mf) {
@@ -5118,7 +5123,7 @@ void baseline_cache::dumpCacheEvent(
 }
 
 void baseline_cache::dumpMSHREvent(
-  unsigned long long time, mem_fetch *mf, new_addr_type mshr_addr, bool is_new_entry) {
+  u64 time, mem_fetch *mf, new_addr_type mshr_addr, bool is_new_entry) {
 
   const char* cache_name = m_config.get_cache_name();
   std::string l2_prefix = "";
@@ -5144,7 +5149,7 @@ void baseline_cache::dumpMSHREvent(
   );
 }
 
-void baseline_cache::dumpMissQueue(unsigned long long time, const char* stage, const char* event, mem_fetch *mf) {
+void baseline_cache::dumpMissQueue(u64 time, const char* stage, const char* event, mem_fetch *mf) {
 
   const char* cache_name = m_config.get_cache_name();
   std::string l2_prefix = "";
@@ -5212,7 +5217,7 @@ void baseline_cache::inc_aggregated_stats_pw(cache_request_status status,
 /// Read miss handler without writeback
 void baseline_cache::send_read_request(new_addr_type raw_addr, new_addr_type block_addr,
                                        unsigned cache_index, mem_fetch *mf,
-                                       unsigned long long time, bool &do_miss,
+                                       u64 time, bool &do_miss,
                                        std::list<cache_event> &events,
                                        bool read_only, bool wa) {
   bool wb = false;
@@ -5225,7 +5230,7 @@ void baseline_cache::send_read_request(new_addr_type raw_addr, new_addr_type blo
 /// Read miss handler. Check MSHR hit or MSHR available
 void baseline_cache::send_read_request(new_addr_type raw_addr, new_addr_type block_addr,
                                        unsigned cache_index, mem_fetch *mf,
-                                       unsigned long long time, bool &do_miss, bool &wb,
+                                       u64 time, bool &do_miss, bool &wb,
                                        evicted_block_info &evicted,
                                        std::list<cache_event> &events,
                                        bool read_only, bool wa) {
@@ -5478,7 +5483,7 @@ void baseline_cache::send_read_request(new_addr_type raw_addr, new_addr_type blo
 /// Sends write request to lower level memory (write or writeback)
 void data_cache::send_write_request(
   std::string caller, mem_fetch *mf, cache_event request,
-  unsigned long long time, std::list<cache_event> &events) {
+  u64 time, std::list<cache_event> &events) {
   events.push_back(request);
   m_miss_queue.push_back(mf);
 
@@ -5525,7 +5530,7 @@ void data_cache::update_m_readable(mem_fetch *mf, unsigned cache_index) {
 /// Write-back hit: Mark block as modified
 cache_request_status data_cache::wr_hit_wb(new_addr_type addr,
                                            unsigned cache_index, mem_fetch *mf,
-                                           unsigned long long time,
+                                           u64 time,
                                            std::list<cache_event> &events,
                                            enum cache_request_status status) {
   new_addr_type block_addr = m_config.block_addr(addr);
@@ -5546,7 +5551,7 @@ cache_request_status data_cache::wr_hit_wb(new_addr_type addr,
 /// Write-through hit: Directly send request to lower level memory
 cache_request_status data_cache::wr_hit_wt(new_addr_type addr,
                                            unsigned cache_index, mem_fetch *mf,
-                                           unsigned long long time,
+                                           u64 time,
                                            std::list<cache_event> &events,
                                            enum cache_request_status status) {
   if (miss_queue_full(0, "data_cache::wr_hit_wt")) {
@@ -5590,7 +5595,7 @@ cache_request_status data_cache::wr_hit_wt(new_addr_type addr,
 /// corresponding block
 cache_request_status data_cache::wr_hit_we(new_addr_type addr,
                                            unsigned cache_index, mem_fetch *mf,
-                                           unsigned long long time,
+                                           u64 time,
                                            std::list<cache_event> &events,
                                            enum cache_request_status status) {
   if (miss_queue_full(0, "data_cache::wr_hit_we")) {
@@ -5628,7 +5633,7 @@ cache_request_status data_cache::wr_hit_we(new_addr_type addr,
 
 /// Global write-evict, local write-back: Useful for private caches
 enum cache_request_status data_cache::wr_hit_global_we_local_wb(
-    new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned long long time,
+    new_addr_type addr, unsigned cache_index, mem_fetch *mf, u64 time,
     std::list<cache_event> &events, enum cache_request_status status) {
   bool evict = (mf->get_access_type() ==
                 GLOBAL_ACC_W);  // evict a line that hits on global memory write
@@ -5645,7 +5650,7 @@ enum cache_request_status data_cache::wr_hit_global_we_local_wb(
 /// Write-allocate miss: Send write request to lower level memory
 // and send a read request for the same block
 enum cache_request_status data_cache::wr_miss_wa_naive(
-    new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned long long time,
+    new_addr_type addr, unsigned cache_index, mem_fetch *mf, u64 time,
     std::list<cache_event> &events, enum cache_request_status status) {
   new_addr_type block_addr = m_config.block_addr(addr);
   new_addr_type mshr_addr  = m_config.mshr_addr(mf->get_addr());
@@ -5750,7 +5755,7 @@ enum cache_request_status data_cache::wr_miss_wa_naive(
 }
 
 enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
-    new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned long long time,
+    new_addr_type addr, unsigned cache_index, mem_fetch *mf, u64 time,
     std::list<cache_event> &events, enum cache_request_status status) {
   new_addr_type block_addr = m_config.block_addr(addr);
   new_addr_type mshr_addr = m_config.mshr_addr(mf->get_addr());
@@ -5918,7 +5923,7 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
 }
 
 enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
-    new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned long long time,
+    new_addr_type addr, unsigned cache_index, mem_fetch *mf, u64 time,
     std::list<cache_event> &events, enum cache_request_status status) {
   new_addr_type block_addr = m_config.block_addr(addr);
 
@@ -6002,12 +6007,12 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
     fprintf(Trace::out,
             "%llu:%s%s %s %s addr:%#llx m_sector[sidx:%u] (%s->%s) "
             "dirty_byte_mask=0x%016lx%016lx is_readable=%u\n",
-            (unsigned long long)(m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle),
+            (u64)(m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle),
             m_gpu->gpgpu_ctx->func_sim->ptx_get_insn_str(mf->get_inst().pc).c_str(),
             m_is_l1d ? "L1D" : m_is_l2 ? "L2C" : "xx$",
             mf_request_type_str(mf->get_type()),
             cache_request_status_str(req_status),
-            (unsigned long long)block_addr, sidx,
+            (u64)block_addr, sidx,
             cache_block_state_str(prev_blk_state),
             cache_block_state_str(sector_status),
             byte_mask_hi_lo.first, byte_mask_hi_lo.second,
@@ -6044,8 +6049,8 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
     fprintf(Trace::out,
       "%llu: RESERVATION_FAIL on block_addr=%#llx sector_mask=%s "
       "byte_mask=%s\n",
-      (unsigned long long)(m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle),
-      (unsigned long long)block_addr,
+      (u64)(m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle),
+      (u64)block_addr,
       mf->get_access_sector_mask().to_string().c_str(),
       mf->get_access_byte_mask().to_string().c_str());
   }
@@ -6054,7 +6059,7 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
 
 /// No write-allocate miss: Simply send write request to lower level memory
 enum cache_request_status data_cache::wr_miss_no_wa(
-    new_addr_type addr, unsigned cache_index, mem_fetch *mf, unsigned long long time,
+    new_addr_type addr, unsigned cache_index, mem_fetch *mf, u64 time,
     std::list<cache_event> &events, enum cache_request_status status) {
   if (miss_queue_full(0, "data_cache::wr_miss_no_wa")) {
     if (DTRACE(MISS_QUEUE_FULL_DRIVER)) {      
@@ -6090,7 +6095,7 @@ enum cache_request_status data_cache::wr_miss_no_wa(
 // Special case for atomic instructions -> Mark block as modified
 enum cache_request_status data_cache::rd_hit_base(
     new_addr_type addr /* raw_addr */, 
-    unsigned cache_index, mem_fetch *mf, unsigned long long time, 
+    unsigned cache_index, mem_fetch *mf, u64 time, 
     std::list<cache_event> &events, enum cache_request_status status) {
 
   assert(addr == mf->get_addr());
@@ -6137,7 +6142,7 @@ enum cache_request_status data_cache::rd_hit_base(
 // perform write-back as necessary
 enum cache_request_status data_cache::rd_miss_base(
     new_addr_type addr /* raw_addr */, unsigned cache_index, mem_fetch *mf, 
-    unsigned long long time,
+    u64 time,
     std::list<cache_event> &events, enum cache_request_status status) {
 
   // "addr" is just used for generating "block_addr" in this function
@@ -6206,7 +6211,7 @@ enum cache_request_status data_cache::rd_miss_base(
 /// Access cache for read_only_cache: returns RESERVATION_FAIL if
 // request could not be accepted (for any reason)
 enum cache_request_status read_only_cache::access(
-  new_addr_type addr, mem_fetch *mf, unsigned long long time,
+  new_addr_type addr, mem_fetch *mf, u64 time,
   std::list<cache_event> &events) {
   assert(mf->get_data_size() <= m_config.get_atom_sz());
   assert(m_config.m_write_policy == READ_ONLY);
@@ -6270,7 +6275,7 @@ enum cache_request_status read_only_cache::access(
 enum cache_request_status data_cache::process_tag_probe(
     bool wr, enum cache_request_status probe_status, 
     new_addr_type addr /* raw_addr */,
-    unsigned cache_index, mem_fetch *mf, unsigned long long time,
+    unsigned cache_index, mem_fetch *mf, u64 time,
     std::list<cache_event> &events) {
   
   // Each function pointer ( m_[rd/wr]_[hit/miss] ) is set in the
@@ -6344,7 +6349,7 @@ enum cache_request_status data_cache::process_tag_probe(
 // Both the L1 and L2 override this function to provide a means of
 // performing actions specific to each cache when such actions are implemented.
 enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
-                                             unsigned long long time,
+                                             u64 time,
                                              std::list<cache_event> &events) {
   
   assert(mf->get_data_size() <= m_config.get_atom_sz());
@@ -6502,7 +6507,7 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
 /// granularity of individual blocks (Set by GPGPU-Sim configuration file)
 /// (the policy used in fermi according to the CUDA manual)
 enum cache_request_status l1_cache::access(new_addr_type addr, mem_fetch *mf,
-                                           unsigned long long time,
+                                           u64 time,
                                            std::list<cache_event> &events) {
   return data_cache::access(addr, mf, time, events);
 }
@@ -6511,7 +6516,7 @@ enum cache_request_status l1_cache::access(new_addr_type addr, mem_fetch *mf,
 // implementation.  When the L2 needs to diverge from L1, L2 specific
 // changes should be made here.
 enum cache_request_status l2_cache::access(
-  new_addr_type addr, mem_fetch *mf, unsigned long long time,
+  new_addr_type addr, mem_fetch *mf, u64 time,
   std::list<cache_event> &events) {
   return data_cache::access(addr, mf, time, events);
 }
@@ -6522,7 +6527,7 @@ enum cache_request_status l2_cache::access(
 /// since unlike a normal CPU cache, a "HIT" in texture cache does not
 /// mean the data is ready (still need to get through fragment fifo)
 enum cache_request_status tex_cache::access(new_addr_type addr, mem_fetch *mf,
-                                            unsigned long long time,
+                                            u64 time,
                                             std::list<cache_event> &events) {
   if (m_fragment_fifo.full() || m_request_fifo.full() || m_rob.full())
     return RESERVATION_FAIL;
