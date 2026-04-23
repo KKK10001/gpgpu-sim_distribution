@@ -56,7 +56,7 @@ void Scoreboard::printContents() const {
 }
 
 void Scoreboard::reserveRegister(unsigned wid, unsigned regnum) {
-  if (!(reg_table[wid].find(regnum) == reg_table[wid].end())) {
+  if (!(reg_table[wid].find(regnum) == reg_table[wid].end())) {  
     printf(
         "Error: trying to reserve an already reserved register (sid=%d, "
         "wid=%d, regnum=%d).",
@@ -98,6 +98,10 @@ void Scoreboard::reserveRegisters(const class warp_inst_t* inst) {
                           inst->space.get_type() == tex_space)) {
     for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
       if (inst->out[r] > 0) {
+        if (DTRACE(LOAD_SCB)) {
+          fprintf(Trace::out, "New longop load longopregs[warp:%u].insert(reg:%u)\n",
+            inst->warp_id(), inst->out[r]);
+        }
         SHADER_DPRINTF(SCOREBOARD, "New longopreg marked - warp:%d, reg: %d\n",
                        inst->warp_id(), inst->out[r]);
         longopregs[inst->warp_id()].insert(inst->out[r]);

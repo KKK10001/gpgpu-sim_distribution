@@ -239,7 +239,9 @@ class shd_warp_t {
 
   void ibuffer_flush() {
     for (u32 i = 0; i < IBUFFER_SIZE; i++) {
-      if (m_ibuffer[i].m_valid) dec_inst_in_pipeline();
+      if (m_ibuffer[i].m_valid) {
+        dec_inst_in_pipeline();
+      }
       m_ibuffer[i].m_inst = NULL;
       m_ibuffer[i].m_valid = false;
     }
@@ -1240,14 +1242,6 @@ class pipelined_simd_unit : public simd_function_unit {
   virtual u32 get_active_lanes_in_pipeline();
 
   virtual void active_lanes_in_pipeline() = 0;
-  /*
-      virtual void issue( register_set& source_reg )
-      {
-          //move_warp(m_dispatch_reg,source_reg);
-          //source_reg.move_out_to(m_dispatch_reg);
-          simd_function_unit::issue(source_reg);
-      }
-  */
   // accessors
   virtual bool stallable() const { return false; }
   virtual bool can_issue(const warp_inst_t &inst) const {

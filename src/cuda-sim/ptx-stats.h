@@ -36,6 +36,10 @@ class ptx_instruction;
 void ptx_file_line_stats_add_exec_count(const ptx_instruction* pInsn);
 #endif
 
+typedef unsigned long long u64;
+typedef unsigned int u32;
+typedef unsigned u32;
+
 // stat collection interface to gpgpu-sim
 
 void ptx_file_line_stats_create_exposed_latency_tracker(int n_shader_cores);

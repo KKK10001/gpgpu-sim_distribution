@@ -985,9 +985,10 @@ class inst_t {
  public:
   inst_t() {
     m_decoded = false;
-    pc = (address_type)-1;
-    reconvergence_pc = (address_type)-1;
-    op = NO_OP;
+    pc = (address_type) - 1;
+    trace_opcode = "xxxx";
+    reconvergence_pc = (address_type) - 1;
+    op = NO_OP;    
     bar_type = NOT_BAR;
     red_type = NOT_RED;
     bar_id = (unsigned)-1;
@@ -1059,8 +1060,9 @@ class inst_t {
   void set_bar_count(u32 count) { bar_count = count; }
 
   address_type pc;  // program counter address of instruction
-  u32 isize;   // size of instruction in bytes
-  op_type op;       // opcode (uarch visible)
+  std::string trace_opcode; // trace.opcode (e.g., "LDG.E.SYS")
+  u32 isize;  // size of instruction in bytes
+  op_type op; // opcode (uarch visible)
 
   barrier_type bar_type;
   reduction_type red_type;
@@ -1110,7 +1112,7 @@ class inst_t {
 
 enum divergence_support_t { POST_DOMINATOR = 1, NUM_SIMD_MODEL };
 
-const u32 MAX_ACCESSES_PER_INSN_PER_THREAD = 8;
+const u32 max_accesses_per_insn_per_tid = 8;
 
 class warp_inst_t : public inst_t {
  public:
@@ -1178,7 +1180,7 @@ class warp_inst_t : public inst_t {
       m_per_scalar_thread.resize(m_config->warp_size);
       m_per_scalar_thread_valid = true;
     }
-    assert(num_addrs <= MAX_ACCESSES_PER_INSN_PER_THREAD);
+    assert(num_addrs <= max_accesses_per_insn_per_tid);
     for (u32 i = 0; i < num_addrs; i++) {
       m_per_scalar_thread[n].memreqaddr[i] = addr[i];
     }      
@@ -1211,7 +1213,13 @@ class warp_inst_t : public inst_t {
     }
   };
 
+  void parse_mem_access_type(
+    const memory_space_t& space, const bool& is_write,
+    mem_access_type& access_type);
+
   void generate_mem_accesses(u64 cycle = (u64) - 1);
+  // "legacy" indicates arch before VOLTA
+  void modify_sector_size_for_legacy_arch(bool& sector_segment_size, u32& segment_size);
   void memory_coalescing_arch(bool is_write, mem_access_type access_type);
   void memory_coalescing_arch_atomic(bool is_write,
                                      mem_access_type access_type);
@@ -1325,13 +1333,14 @@ class warp_inst_t : public inst_t {
 
   struct per_thread_info {
     per_thread_info() {
-      for (u32 i = 0; i < MAX_ACCESSES_PER_INSN_PER_THREAD; i++)
+      for (u32 i = 0; i < max_accesses_per_insn_per_tid; i++) {
         memreqaddr[i] = 0;
+      }        
     }
     dram_callback_t callback;
     // effective address, upto 8 different requests 
     // (to support 32B access in 8 chunks of 4B each)    
-    new_addr_type memreqaddr[MAX_ACCESSES_PER_INSN_PER_THREAD];
+    new_addr_type memreqaddr[max_accesses_per_insn_per_tid];
   };
   bool m_per_scalar_thread_valid;
   std::vector<per_thread_info> m_per_scalar_thread;

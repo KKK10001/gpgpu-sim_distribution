@@ -40,8 +40,8 @@ class gpgpu_context {
   unsigned long long g_ptx_cta_info_uid;
   unsigned symbol_sm_next_uid;  // uid for symbol
   unsigned function_info_sm_next_uid;
-  std::vector<ptx_instruction *>
-      s_g_pc_to_insn;  // a direct mapping from PC to instruction
+  // a direct mapping from PC to instruction
+  std::vector<ptx_instruction *> s_g_pc_to_insn;
   bool debug_tensorcore;
 
   // SST related

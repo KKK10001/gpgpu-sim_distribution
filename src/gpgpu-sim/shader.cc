@@ -961,7 +961,6 @@ void shader_core_ctx::decode() {
           );
         }
       }
-
       m_stats->m_num_decoded_insn[m_sid]++;
       if ((pI1->oprnd_type == INT_OP) || (pI1->oprnd_type == UN_OP)) {  
         // these counters get added up in mcPat to compute scheduler power
@@ -1138,7 +1137,6 @@ void exec_shader_core_ctx::func_exec_inst(warp_inst_t &inst) {
   execute_warp_inst_t(inst);
   if (inst.is_load() || inst.is_store()) {
     inst.generate_mem_accesses();
-    // inst.print_m_accessq();
   }
 }
 
@@ -1161,7 +1159,7 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
 
   // Add LDGSTS instructions into a buffer
   u32 ldgdepbar_id = m_warp[warp_id]->m_ldgdepbar_id;
-  if (next_inst->m_is_ldgsts) {
+  if (next_inst->m_is_ldgsts) { // AMPERE specific instruction
     if (m_warp[warp_id]->m_ldgdepbar_buf.size() == ldgdepbar_id + 1) {
       m_warp[warp_id]->m_ldgdepbar_buf[ldgdepbar_id].push_back(*next_inst);
     } else {
@@ -1564,7 +1562,7 @@ void scheduler_unit::cycle() {
       bool valid = warp(warp_id).ibuffer_next_valid();
       bool warp_inst_issued = false;
       u32 pc, rpc;
-      m_shader->get_pdom_stack_top_info(warp_id, pI, &pc, &rpc);
+      m_shader->get_pdom_stack_top_info(warp_id, pI, &pc, &rpc); // *pc = *rpc = pI->pc
       cuda_sim *cuda_sim = m_shader->m_config->gpgpu_ctx->func_sim;
       SCHED_DPRINTF(
         "Warp (warp_id %u, dynamic_warp_id %u) has valid instruction (%s)\n",
@@ -1584,7 +1582,8 @@ void scheduler_unit::cycle() {
           // control hazard
           warp(warp_id).set_next_pc(pc);
           warp(warp_id).ibuffer_flush();
-        } else {
+        } 
+        else { // pc == pI->pc 
           valid_inst = true;
           if (!m_scoreboard->checkCollision(warp_id, pI)) { // no WAW/RAW collision
             SCHED_DPRINTF(
@@ -1625,9 +1624,10 @@ void scheduler_unit::cycle() {
                 } else if (diff_exec_units && 
                   previous_exec_type == exec_unit_type_t::MEM) {
                   m_stats->continuous_two_mem_issue_fails[m_shader->get_sid()][m_id]++;
-                }                
+                }
               }
-            } else {
+            } 
+            else { // !LOAD/STORE/MEM_BARRIER/TENSOR_OP
               // This code need to be refactored
               if (pI->op != TENSOR_CORE_OP && pI->op != SFU_OP &&
                   pI->op != DP_OP && !(pI->op >= SPEC_UNIT_START_ID)) {
@@ -1672,15 +1672,15 @@ void scheduler_unit::cycle() {
                     assert(warp(warp_id).m_cdp_latency == 0);
 
                     if (pI->m_is_cdp == 1) {
-                      warp(warp_id).m_cdp_latency = 
-                        m_shader->m_config->gpgpu_ctx->func_sim->cdp_latency[pI->m_is_cdp - 1];
+                      auto func_sim = m_shader->m_config->gpgpu_ctx->func_sim;
+                      warp(warp_id).m_cdp_latency = func_sim->cdp_latency[pI->m_is_cdp - 1];
                     }     
                     // cudaLaunchDeviceV2 and cudaGetParameterBufferV2                 
                     else {
-                      warp(warp_id).m_cdp_latency =
-                          m_shader->m_config->gpgpu_ctx->func_sim->cdp_latency[pI->m_is_cdp - 1] +
-                          m_shader->m_config->gpgpu_ctx->func_sim->cdp_latency[pI->m_is_cdp] * 
-                          active_mask.count();
+                      auto func_sim = m_shader->m_config->gpgpu_ctx->func_sim;
+                      warp(warp_id).m_cdp_latency = 
+                        func_sim->cdp_latency[pI->m_is_cdp - 1] + 
+                        func_sim->cdp_latency[pI->m_is_cdp] * active_mask.count();
                     }
                     warp(warp_id).m_cdp_dummy = true;
                     break;
@@ -1711,7 +1711,7 @@ void scheduler_unit::cycle() {
                     fprintf(Trace::out, 
                       "%llu execute_on_INT issued++ = %u\n", 
                       m_shader->get_gpu()->get_cycle(), issued);
-                  }                             
+                  }           
                 }
               } else if ((m_shader->m_config->gpgpu_num_dp_units > 0) &&
                          (pI->op == DP_OP) &&
@@ -1736,14 +1736,12 @@ void scheduler_unit::cycle() {
                 }
               }  // If the DP units = 0 (like in Fermi archi), then execute DP
                  // inst on SFU unit
-              else if (((m_shader->m_config->gpgpu_num_dp_units == 0 &&
-                         pI->op == DP_OP) ||
+              else if (((m_shader->m_config->gpgpu_num_dp_units == 0 && pI->op == DP_OP) ||
                         (pI->op == SFU_OP) || (pI->op == ALU_SFU_OP)) &&
-                       !(diff_exec_units && previous_exec_type ==
-                                                exec_unit_type_t::SFU)) {
+                       !(diff_exec_units && previous_exec_type == exec_unit_type_t::SFU)) {
                 bool sfu_pipe_avail =
-                    (m_shader->m_config->gpgpu_num_sfu_units > 0) &&
-                    m_sfu_out->has_free(m_shader->m_config->sub_core_model, m_id);
+                  (m_shader->m_config->gpgpu_num_sfu_units > 0) &&
+                  m_sfu_out->has_free(m_shader->m_config->sub_core_model, m_id);
 
                 if (sfu_pipe_avail) {
                   m_shader->issue_warp(*m_sfu_out, pI, active_mask, warp_id, m_id);
@@ -1753,8 +1751,7 @@ void scheduler_unit::cycle() {
                   previous_exec_type = exec_unit_type_t::SFU;
                   if (DTRACE(ISSUED_INSTS)) {
                     fprintf(Trace::out, 
-                      "%llu sfu_pipe_avail issued++ = %u\n", 
-                      m_shader->get_gpu()->get_cycle(), issued);
+                      "%llu sfu_pipe_avail issued++ = %u\n", m_shader->get_gpu()->get_cycle(), issued);
                   }                  
                 } else {
                   m_stats->issue_fails_due_to_sfu_pipe_inavailable[m_shader->get_sid()][m_id]++;
@@ -1767,8 +1764,7 @@ void scheduler_unit::cycle() {
                     m_tensor_core_out->has_free(m_shader->m_config->sub_core_model, m_id);
 
                 if (tensor_core_pipe_avail) {
-                  m_shader->issue_warp(*m_tensor_core_out, pI, active_mask,
-                                       warp_id, m_id);
+                  m_shader->issue_warp(*m_tensor_core_out, pI, active_mask, warp_id, m_id);
                   issued++;
                   issued_inst = true;
                   warp_inst_issued = true;
@@ -1782,16 +1778,14 @@ void scheduler_unit::cycle() {
                   m_stats->issue_fails_due_to_tensorcore_pipe_inavailable[m_shader->get_sid()][m_id]++;
                 }
               } else if ((pI->op >= SPEC_UNIT_START_ID) &&
-                         !(diff_exec_units &&
-                           previous_exec_type ==
-                               exec_unit_type_t::SPECIALIZED)) {
+                         !(diff_exec_units && 
+                          previous_exec_type == exec_unit_type_t::SPECIALIZED)) {
                 u32 spec_id = pI->op - SPEC_UNIT_START_ID;
                 assert(spec_id < m_shader->m_config->m_specialized_unit.size());
                 register_set *spec_reg_set = m_spec_cores_out[spec_id];
-                bool spec_pipe_avail =
-                    (m_shader->m_config->m_specialized_unit[spec_id].num_units >
-                     0) &&
-                    spec_reg_set->has_free(m_shader->m_config->sub_core_model, m_id);
+                bool spec_pipe_avail = 
+                  (m_shader->m_config->m_specialized_unit[spec_id].num_units > 0) &&
+                  spec_reg_set->has_free(m_shader->m_config->sub_core_model, m_id);
 
                 if (spec_pipe_avail) {
                   m_shader->issue_warp(*spec_reg_set, pI, active_mask, warp_id, m_id);
@@ -1808,7 +1802,6 @@ void scheduler_unit::cycle() {
                   m_stats->issue_fails_due_to_spec_pipe_inavailable[m_shader->get_sid()][m_id]++;
                 }
               }
-
             }  // end of else
           } else {
             // Scoreboard collision. Classify whether it is due to a long-latency
@@ -1837,20 +1830,21 @@ void scheduler_unit::cycle() {
                           (*iter)->get_dynamic_warp_id(), pI->pc);
                   fflush(Trace::out);
                   ++Trace::lines_emitted;
-                  if (Trace::max_lines > 0 &&
-                      Trace::lines_emitted >= Trace::max_lines)
+                  if (Trace::max_lines > 0 && Trace::lines_emitted >= Trace::max_lines) {
                     Trace::enabled = false;
+                  }                    
                 }
               }
-            } else {
+            } else { 
               // Keep existing scheduler trace for generic scoreboard fails
               SCHED_DPRINTF(
                   "Warp (warp_id %u, dynamic_warp_id %u) fails scoreboard\n",
                   (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
-            }
-          }
+            } // !mem_longop_wait
+          } // WAW/RAW collision
         } // pc == pI->pc (no control hazard)
-      } else if (valid) {
+      } // const warp_inst_t *pI != nullptr 
+      else if (valid) { 
         // this case can happen after a return instruction in diverged warp
         SCHED_DPRINTF(
             "Warp (warp_id %u, dynamic_warp_id %u) return from diverged warp "
@@ -1858,7 +1852,7 @@ void scheduler_unit::cycle() {
             (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
         warp(warp_id).set_next_pc(pc);
         warp(warp_id).ibuffer_flush();
-      }
+      } // bool valid = warp(warp_id).ibuffer_next_valid();
       if (warp_inst_issued) {
         SCHED_DPRINTF(
             "Warp (warp_id %u, dynamic_warp_id %u) issued %u instructions\n",
@@ -2147,7 +2141,7 @@ u32 shader_core_ctx::translate_local_memaddr(
     // >4B access, split into 4B chunks
     assert(datasize % 4 == 0);  // Must be a multiple of 4B
     num_accesses = datasize / 4;
-    assert(num_accesses <= MAX_ACCESSES_PER_INSN_PER_THREAD);  // max 32B
+    assert(num_accesses <= max_accesses_per_insn_per_tid);  // max 32B
 
     // Address must be 4B aligned - required if accessing 4B per
     // request, otherwise access will overflow into next thread's space
@@ -2214,9 +2208,9 @@ void shader_core_ctx::execute() {
         if (DTRACE(ISSUE)) {
           get_gpu()->sched_cycle[(*ready_reg)->pc] = get_gpu()->get_cycle();       
           cuda_sim* cuda_sim = m_config->gpgpu_ctx->func_sim;
-          fprintf(Trace::out, "%llu: Scheduled insn%s\n",
-            get_gpu()->get_cycle(),
-            cuda_sim->ptx_get_insn_str((*ready_reg)->pc).c_str());
+          fprintf(Trace::out, "%llu: Scheduled inst pc:%#llx %s\n",
+            get_gpu()->get_cycle(), 
+            (*ready_reg)->pc, (*ready_reg)->trace_opcode.c_str());
         }
         m_fu[n]->issue(issue_inst);
       } else {
@@ -2485,8 +2479,11 @@ mem_stage_stall_type ldst_unit::process_cache_access(
     inst.accessq_pop_back();
 
     if (inst.is_load()) {
-      for (u32 r = 0; r < MAX_OUTPUT_VALUES; r++)
-        if (inst.out[r] > 0) m_pending_writes[inst.warp_id()][inst.out[r]]--;
+      for (u32 r = 0; r < MAX_OUTPUT_VALUES; r++) {
+        if (inst.out[r] > 0) {
+          m_pending_writes[inst.warp_id()][inst.out[r]]--;
+        }
+      }
 
       // release LDGSTS
       if (inst.m_is_ldgsts) {
@@ -2520,9 +2517,7 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue(cache_t *cache,
   if (!cache->data_port_free()) return DATA_PORT_STALL;
 
   // const mem_access_t &access = inst.accessq_back();
-  mem_fetch *mf = m_mf_allocator->alloc(
-      inst, inst.accessq_back(),
-      m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle);
+  mem_fetch *mf = m_mf_allocator->alloc(inst, inst.accessq_back(), m_core->get_gpu()->get_cycle());
   std::list<cache_event> events;
   enum cache_request_status status = cache->access(
       mf->get_addr(), mf,
@@ -2534,7 +2529,7 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue(cache_t *cache,
       int reg_id = inst.out[r];
       if (reg_id > 0) {
         m_pending_longop_detail[std::make_pair(inst.warp_id(), reg_id)] =
-            std::make_pair((u64)mf->get_addr(), inst.pc);
+            std::make_pair(mf->get_addr(), inst.pc);
       }
     }
   }
@@ -2630,7 +2625,7 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
         int reg_id = inst.out[r];
         if (reg_id > 0) {
           m_pending_longop_detail[std::make_pair(inst.warp_id(), reg_id)] =
-              std::make_pair((u64)mf->get_addr(), inst.pc);
+              std::make_pair(mf->get_addr(), inst.pc);
         }
       }
     }
@@ -3036,8 +3031,7 @@ simd_function_unit::simd_function_unit(const shader_core_config *config) {
 
 void simd_function_unit::issue(register_set &source_reg) {
   bool partition_issue = m_config->sub_core_model && this->is_issue_partitioned();
-  source_reg.move_out_to(partition_issue, this->get_issue_reg_id(),
-                         m_dispatch_reg);
+  source_reg.move_out_to(partition_issue, this->get_issue_reg_id(), m_dispatch_reg);
   occupied.set(m_dispatch_reg->latency);
 }
 
@@ -3222,13 +3216,14 @@ void pipelined_simd_unit::cycle() {
     active_insts_in_pipeline--;
   }
   if (active_insts_in_pipeline) {
-    for (u32 stage = 0; (stage + 1) < m_pipeline_depth; stage++)
+    for (u32 stage = 0; (stage + 1) < m_pipeline_depth; stage++) {
       move_warp(m_pipeline_reg[stage], m_pipeline_reg[stage + 1]);
+    }
   }
   if (!m_dispatch_reg->empty()) {
     if (!m_dispatch_reg->dispatch_delay()) {
-      int start_stage =
-          m_dispatch_reg->latency - m_dispatch_reg->initiation_interval;
+      const u32 issue_gap = m_dispatch_reg->initiation_interval;
+      int start_stage = m_dispatch_reg->latency - issue_gap;
       if (m_pipeline_reg[start_stage]->empty()) {
         move_warp(m_pipeline_reg[start_stage], m_dispatch_reg);
         active_insts_in_pipeline++;
@@ -3243,18 +3238,8 @@ void pipelined_simd_unit::issue(register_set &source_reg) {
   bool partition_issue = m_config->sub_core_model && this->is_issue_partitioned();
   warp_inst_t **ready_reg = source_reg.get_ready(partition_issue, m_issue_reg_id);
   m_core->incexecstat((*ready_reg));
-  // source_reg.move_out_to(m_dispatch_reg);
   simd_function_unit::issue(source_reg);
 }
-
-/*
-    virtual void issue( register_set& source_reg )
-    {
-        //move_warp(m_dispatch_reg,source_reg);
-        //source_reg.move_out_to(m_dispatch_reg);
-        simd_function_unit::issue(source_reg);
-    }
-*/
 
 void ldst_unit::init(mem_fetch_interface *icnt,
                      shader_core_mem_fetch_allocator *mf_allocator,
@@ -3353,6 +3338,10 @@ void ldst_unit::issue(register_set &reg_set) {
       u32 reg_id = inst->out[r];
       if (reg_id > 0) {
         m_pending_writes[warp_id][reg_id] += n_accesses;
+        if (DTRACE(LSU_DETAIL)) {
+          fprintf(Trace::out, "%llu m_pending_writes[warp:%u][reg:%u] += %u\n",
+            m_core->get_gpu()->get_cycle(), warp_id, reg_id, n_accesses);
+        }
       }
     }
     if (inst->m_is_ldgsts) {
@@ -3397,8 +3386,7 @@ void ldst_unit::writeback() {
                 __last_unblock_cause__.reg = m_next_wb.out[r];
                 __last_unblock_cause__.pc = m_next_wb.pc;
                 __last_unblock_cause__.addr = (u64)m_next_wb.get_addr(0);
-                __last_unblock_cause__.cycle = (u64)(
-                  m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle);
+                __last_unblock_cause__.cycle = (u64)(m_core->get_gpu()->get_cycle());                  
                 __last_unblock_cause__.cause_tag = m_next_wb_source;
                 if (!__chain_before__.empty()) {
                   if (!m_next_wb_source.empty()) {
@@ -3519,28 +3507,7 @@ u32 ldst_unit::clock_multiplier() const {
   else
     return m_config->mem_warp_parts;
 }
-/*
-void ldst_unit::issue( register_set &reg_set )
-{
-        warp_inst_t* inst = *(reg_set.get_ready());
-   // stat collection
-   m_core->mem_instruction_stats(*inst);
 
-   // record how many pending register writes/memory accesses there are for this
-instruction assert(inst->empty() == false); if (inst->is_load() and
-inst->space.get_type() != shared_space) { u32 warp_id = inst->warp_id();
-      u32 n_accesses = inst->accessq_count();
-      for (u32 r = 0; r < MAX_OUTPUT_VALUES; r++) {
-         u32 reg_id = inst->out[r];
-         if (reg_id > 0) {
-            m_pending_writes[warp_id][reg_id] += n_accesses;
-         }
-      }
-   }
-
-   pipelined_simd_unit::issue(reg_set);
-}
-*/
 void ldst_unit::cycle() {
   writeback();
 
@@ -3627,7 +3594,11 @@ void ldst_unit::cycle() {
                 if (reg_id > 0) {
                   auto key = std::make_pair(mf->get_inst().warp_id(), reg_id);
                   std::string &ch = m_pending_longop_chain[key];
-                  if (ch.empty()) ch = "RET:ICNT"; else ch += "->RET:ICNT";
+                  if (ch.empty()) {
+                    ch = "RET:ICNT"; 
+                  } else {
+                    ch += "->RET:ICNT";
+                  }
                 }
               }
             }
@@ -3657,7 +3628,12 @@ void ldst_unit::cycle() {
                 if (reg_id > 0) {
                   auto key = std::make_pair(mf->get_inst().warp_id(), reg_id);
                   std::string &ch = m_pending_longop_chain[key];
-                  if (ch.empty()) ch = "RET:L1D"; else ch += "->RET:L1D";
+                  if (ch.empty()) {
+                    ch = "RET:L1D"; 
+                  }
+                  else {
+                    ch += "->RET:L1D";
+                  }
                 }
               }
             }
@@ -3711,7 +3687,7 @@ void ldst_unit::cycle() {
         for (u32 r = 0; r < MAX_OUTPUT_VALUES; r++) {
           u32 reg_id = pipe_reg.out[r];
           if (reg_id > 0) {
-            if (m_pending_writes[warp_id].find(reg_id) !=
+            if (m_pending_writes[warp_id].find(reg_id) != 
                 m_pending_writes[warp_id].end()) {
               if (m_pending_writes[warp_id][reg_id] > 0) {
                 pending_requests = true;
@@ -4249,13 +4225,13 @@ void ldst_unit::print(FILE *fout) const {
       m_last_inst_gpu_sim_cycle, m_last_inst_gpu_tot_sim_cycle);
   fprintf(fout, "Pending register writes:\n");
   std::map<u32 /*warp_id*/,
-           std::map<u32 /*regnum*/, u32 /*count*/> >::const_iterator
-      w;
+           std::map<u32 /*regnum*/, u32 /*count*/> >::const_iterator w;
   for (w = m_pending_writes.begin(); w != m_pending_writes.end(); w++) {
     u32 warp_id = w->first;
-    const std::map<u32 /*regnum*/, u32 /*count*/> &warp_info =
-        w->second;
-    if (warp_info.empty()) continue;
+    const std::map<u32 /*regnum*/, u32 /*count*/> &warp_info = w->second;
+    if (warp_info.empty()) {
+      continue;
+    }
     fprintf(fout, "  w%2u : ", warp_id);
     std::map<u32 /*regnum*/, u32 /*count*/>::const_iterator r;
     for (r = warp_info.begin(); r != warp_info.end(); ++r) {
@@ -4266,8 +4242,7 @@ void ldst_unit::print(FILE *fout) const {
   m_L1C->display_state(fout);
   m_L1T->display_state(fout);
   if (!m_config->m_L1D_config.disabled()) m_L1D->display_state(fout);
-  fprintf(fout, "LD/ST response FIFO (occupancy = %zu):\n",
-          m_response_fifo.size());
+  fprintf(fout, "LD/ST response FIFO (occupancy = %zu):\n", m_response_fifo.size());
   for (std::list<mem_fetch *>::const_iterator i = m_response_fifo.begin();
        i != m_response_fifo.end(); i++) {
     const mem_fetch *mf = *i;
@@ -6061,7 +6036,7 @@ void exec_shader_core_ctx::checkExecutionStatusAndUpdate(warp_inst_t &inst,
                                                          u32 tid) {
   if (inst.isatomic()) m_warp[inst.warp_id()]->inc_n_atomic();
   if (inst.space.is_local() && (inst.is_load() || inst.is_store())) {
-    new_addr_type localaddrs[MAX_ACCESSES_PER_INSN_PER_THREAD];
+    new_addr_type localaddrs[max_accesses_per_insn_per_tid];
     u32 num_addrs;
     num_addrs = translate_local_memaddr(
         inst.get_addr(t), tid,

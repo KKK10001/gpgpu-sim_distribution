@@ -295,8 +295,9 @@ void function_info::ptx_assemble() {
       gpgpu_ctx->func_sim->g_assemble_code_next_pc;  // globally unique address
                                                      // (across functions)
   // start function on an aligned address
-  for (unsigned i = 0; i < (PC % MAX_INST_SIZE); i++)
+  for (unsigned i = 0; i < (PC % MAX_INST_SIZE); i++) {
     gpgpu_ctx->s_g_pc_to_insn.push_back((ptx_instruction *)NULL);
+  }    
   PC += PC % MAX_INST_SIZE;
   m_start_PC = PC;
 
@@ -327,8 +328,8 @@ void function_info::ptx_assemble() {
     }
   }
   gpgpu_ctx->func_sim->g_assemble_code_next_pc = PC;
-  for (unsigned ii = 0; ii < n;
-       ii += m_instr_mem[ii]->inst_size()) {  // handle branch instructions
+  // handle branch instructions
+  for (unsigned ii = 0; ii < n; ii += m_instr_mem[ii]->inst_size()) {
     ptx_instruction *pI = m_instr_mem[ii];
     if (pI->get_opcode() == BRA_OP || pI->get_opcode() == BREAKADDR_OP ||
         pI->get_opcode() == CALLP_OP) {
@@ -2693,8 +2694,7 @@ void functionalCoreSim::createWarp(unsigned warpId) {
     unsigned pc, rpc;
     m_simt_stack[warpId]->resume(fname);
     m_simt_stack[warpId]->get_pdom_stack_top_info(&pc, &rpc);
-    for (int i = warpId * m_warp_size; i < warpId * m_warp_size + m_warp_size;
-         i++) {
+    for (int i = warpId * m_warp_size; i < warpId * m_warp_size + m_warp_size; i++) {
       m_thread[i]->set_npc(pc);
       m_thread[i]->update_pc();
     }

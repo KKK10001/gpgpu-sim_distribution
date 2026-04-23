@@ -3459,7 +3459,7 @@ void mma_st_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
     memory_space *mem = NULL;
     addr_t addr = addr_reg.u32;
 
-    new_addr_type mem_txn_addr[MAX_ACCESSES_PER_INSN_PER_THREAD];
+    new_addr_type mem_txn_addr[max_accesses_per_insn_per_tid];
     int num_mem_txn = 0;
 
     smid = thread->get_hw_sid();
@@ -3596,7 +3596,7 @@ void mma_ld_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
         addr + thread_group_offset(thrd, wmma_type, wmma_layout, type, stride) *
                    size / 8;
     addr_t fetch_addr;
-    new_addr_type mem_txn_addr[MAX_ACCESSES_PER_INSN_PER_THREAD];
+    new_addr_type mem_txn_addr[max_accesses_per_insn_per_tid];
     int num_mem_txn = 0;
 
     if (wmma_type == LOAD_A) {

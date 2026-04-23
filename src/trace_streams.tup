@@ -27,10 +27,12 @@
 
 TS_TUP_BEGIN( trace_streams_type )
     TS_TUP( SIM_TOP ),
+    TS_TUP( LSU_DETAIL ),
     TS_TUP( INIT_KERNEL ),
     TS_TUP( LAUNCH_KERNEL ),
     TS_TUP( PICK_KERNEL),
     TS_TUP( ISSUE_CTA ),
+    TS_TUP( LOAD_SCB ),
     TS_TUP( IFETCH_BUFF),
     TS_TUP( INST_TRACE ),
     TS_TUP( OP_CODE ),

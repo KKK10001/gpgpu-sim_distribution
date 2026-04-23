@@ -91,20 +91,20 @@ class ptx_file_line_stats {
         warp_divergence(0) {}
 
   unsigned long exec_count;
-  unsigned long long latency;
-  unsigned long long dram_traffic;
+  u64 latency;
+  u64 dram_traffic;
   // total number of banks accessed by this instruction
-  unsigned long long smem_n_way_bank_conflict_total;
+  u64 smem_n_way_bank_conflict_total;
   // number of warps accessing shared memory
   unsigned long smem_warp_count;
   // number of uncoalesced access in total from this instruction
-  unsigned long long gmem_n_access_total;
+  u64 gmem_n_access_total;
   // number of warps causing these uncoalesced access
   unsigned long gmem_warp_count;
   // latency exposed as pipeline bubbles (attributed to this instruction)
-  unsigned long long exposed_latency;
+  u64 exposed_latency;
   // number of warp divergence occured at this instruction 
-  unsigned long long warp_divergence;
+  u64 warp_divergence;
 };
 
 #if (tr1_hash_map_ismap == 1)
@@ -157,9 +157,9 @@ void ptx_stats::ptx_file_line_stats_write_file() {
 // attribute one more execution count to this ptx instruction
 // counting the number of threads (not warps) executing this instruction
 void ptx_file_line_stats_add_exec_count(const ptx_instruction *pInsn) {
-  ptx_file_line_stats_tracker[ptx_file_line(pInsn->source_file(),
-                                            pInsn->source_line())]
-      .exec_count += 1;
+  const char *src_file = pInsn->source_file();
+  const u32 src_ln = pInsn->source_line();
+  ptx_file_line_stats_tracker[ptx_file_line(src_file, src_ln)].exec_count += 1;
 }
 
 // attribute pipeline latency to this ptx instruction (specified by the pc)
@@ -167,11 +167,11 @@ void ptx_file_line_stats_add_exec_count(const ptx_instruction *pInsn) {
 // in the pipeline
 void ptx_stats::ptx_file_line_stats_add_latency(unsigned pc, unsigned latency) {
   const ptx_instruction *pInsn = gpgpu_ctx->pc_to_instruction(pc);
-
-  if (pInsn != NULL)
-    ptx_file_line_stats_tracker[ptx_file_line(pInsn->source_file(),
-                                              pInsn->source_line())]
-        .latency += latency;
+  if (pInsn != NULL) {
+    const char *src_file = pInsn->source_file();
+    const u32 src_ln = pInsn->source_line();
+    ptx_file_line_stats_tracker[ptx_file_line(src_file, src_ln)].latency += latency;
+  }
 }
 
 // attribute dram traffic to this ptx instruction (specified by the pc)
@@ -180,10 +180,11 @@ void ptx_stats::ptx_file_line_stats_add_dram_traffic(unsigned pc,
                                                      unsigned dram_traffic) {
   const ptx_instruction *pInsn = gpgpu_ctx->pc_to_instruction(pc);
 
-  if (pInsn != NULL)
-    ptx_file_line_stats_tracker[ptx_file_line(pInsn->source_file(),
-                                              pInsn->source_line())]
-        .dram_traffic += dram_traffic;
+  if (pInsn != NULL) {
+    const char *src_file = pInsn->source_file();
+    const u32 src_ln = pInsn->source_line();
+    ptx_file_line_stats_tracker[ptx_file_line(src_file, src_ln)].dram_traffic += dram_traffic;
+  }
 }
 
 // attribute the number of shared memory access cycles to a ptx instruction
@@ -194,21 +195,13 @@ void ptx_stats::ptx_file_line_stats_add_smem_bank_conflict(
   const ptx_instruction *pInsn = gpgpu_ctx->pc_to_instruction(pc);
 
   if (pInsn != NULL) {
-    ptx_file_line_stats &line_stats = ptx_file_line_stats_tracker[ptx_file_line(
-        pInsn->source_file(), pInsn->source_line())];
+    const char *src_file = pInsn->source_file();
+    const u32 src_ln = pInsn->source_line();    
+    ptx_file_line_stats &line_stats = 
+      ptx_file_line_stats_tracker[ptx_file_line(src_file, src_ln)];
+
     line_stats.smem_n_way_bank_conflict_total += n_way_bkconflict;
     line_stats.smem_warp_count += 1;
-    if (DTRACE(SM_PATH)) {
-      fprintf(Trace::out, 
-        "sm_bank_conflict:%llu += n_way_bkconflict:%u. "
-        "sm_warp_count++ = %lu pInsn->source_file = %s\n", 
-        line_stats.smem_n_way_bank_conflict_total, n_way_bkconflict,
-        line_stats.smem_warp_count, pInsn->source_file());
-    }
-  } else {
-    if (DTRACE(SM_PATH)) {
-      fprintf(Trace::out, "pc:%#x has no sm bank conflict\n", pc);
-    }
   }
 }
 
@@ -220,8 +213,11 @@ void ptx_stats::ptx_file_line_stats_add_uncoalesced_gmem(unsigned pc,
   const ptx_instruction *pInsn = gpgpu_ctx->pc_to_instruction(pc);
 
   if (pInsn != NULL) {
-    ptx_file_line_stats &line_stats = ptx_file_line_stats_tracker[ptx_file_line(
-        pInsn->source_file(), pInsn->source_line())];
+    const char *src_file = pInsn->source_file();
+    const u32 src_ln = pInsn->source_line();
+    ptx_file_line_stats &line_stats = 
+      ptx_file_line_stats_tracker[ptx_file_line(src_file, src_ln)];
+
     line_stats.gmem_n_access_total += n_access;
     line_stats.gmem_warp_count += 1;
   }
@@ -257,9 +253,13 @@ class ptx_inflight_memory_insn_tracker {
     i_exlatinsn = exlat_insnmap.begin();
     for (; i_exlatinsn != exlat_insnmap.end(); ++i_exlatinsn) {
       const ptx_instruction *pInsn = i_exlatinsn->first;
-      ptx_file_line_stats &line_stats =
-          ptx_file_line_stats_tracker[ptx_file_line(pInsn->source_file(),
-                                                    pInsn->source_line())];
+      assert(pInsn != NULL);
+      const char *src_file = pInsn->source_file();
+      const u32 src_ln = pInsn->source_line();
+
+      ptx_file_line_stats &line_stats = 
+        ptx_file_line_stats_tracker[ptx_file_line(src_file, src_ln)];
+
       line_stats.exposed_latency += count;
     }
   }
@@ -274,35 +274,33 @@ void ptx_file_line_stats_create_exposed_latency_tracker(int n_shader_cores) {
 }
 
 // add an inflight memory instruction
-void ptx_stats::ptx_file_line_stats_add_inflight_memory_insn(int sc_id,
-                                                             unsigned pc) {
+void ptx_stats::ptx_file_line_stats_add_inflight_memory_insn(int sc_id, u32 pc) {
   const ptx_instruction *pInsn = gpgpu_ctx->pc_to_instruction(pc);
-
   inflight_mem_tracker[sc_id].add_count(pInsn);
 }
 
 // remove an inflight memory instruction
-void ptx_stats::ptx_file_line_stats_sub_inflight_memory_insn(int sc_id,
-                                                             unsigned pc) {
+void ptx_stats::ptx_file_line_stats_sub_inflight_memory_insn(int sc_id, u32 pc) {
   const ptx_instruction *pInsn = gpgpu_ctx->pc_to_instruction(pc);
-
   inflight_mem_tracker[sc_id].sub_count(pInsn);
 }
 
 // attribute an empty cycle in the pipeline (exposed latency) to the ptx memory
 // instructions in flight
-void ptx_file_line_stats_commit_exposed_latency(int sc_id,
-                                                int exposed_latency) {
+void ptx_file_line_stats_commit_exposed_latency(int sc_id, int exposed_latency) {
   assert(exposed_latency > 0);
   inflight_mem_tracker[sc_id].attribute_exposed_latency(exposed_latency);
 }
 
 // attribute the number of warp divergence to a ptx instruction
-void ptx_stats::ptx_file_line_stats_add_warp_divergence(
-    unsigned pc, unsigned n_way_divergence) {
+void ptx_stats::ptx_file_line_stats_add_warp_divergence(u32 pc, u32 n_way_divergence) {
   const ptx_instruction *pInsn = gpgpu_ctx->pc_to_instruction(pc);
+  assert(pInsn != NULL);
+  const char *src_file = pInsn->source_file();
+  const u32 src_ln = pInsn->source_line();
 
-  ptx_file_line_stats &line_stats = ptx_file_line_stats_tracker[ptx_file_line(
-      pInsn->source_file(), pInsn->source_line())];
+  ptx_file_line_stats &line_stats = 
+    ptx_file_line_stats_tracker[ptx_file_line(src_file, src_ln)];
+    
   line_stats.warp_divergence += n_way_divergence;
 }
