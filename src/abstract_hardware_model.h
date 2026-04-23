@@ -106,6 +106,7 @@ enum AdaptiveCache { FIXED = 0, ADAPTIVE_CACHE = 1 };
 #include <string.h>
 #include <set>
 #include <unordered_map>
+#include <sstream>
 
 typedef u64 new_addr_type;
 typedef u64 cudaTextureObject_t;
@@ -1014,6 +1015,11 @@ class inst_t {
     }
     isize = 0;
   }
+  std::string get_inst_info() const {
+    std::stringstream ss;
+    ss << "pc:0x" << std::hex << pc << " " << trace_opcode; 
+    return ss.str();
+  }
   bool valid() const { return m_decoded; }
   virtual void print_insn(FILE *fp) const {
     fprintf(fp, " [inst @ pc=0x%04llx] ", pc);
@@ -1263,7 +1269,7 @@ class warp_inst_t : public inst_t {
     return m_warp_issued_mask.count();
   }  // for instruction counting
   bool empty() const { return m_empty; }
-  u32 warp_id() const {
+  u32 get_warp_id() const {
     assert(!m_empty);
     return m_warp_id;
   }

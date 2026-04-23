@@ -83,9 +83,9 @@ const bool Scoreboard::islongop(unsigned warp_id, unsigned regnum) {
 void Scoreboard::reserveRegisters(const class warp_inst_t* inst) {
   for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
     if (inst->out[r] > 0) {
-      reserveRegister(inst->warp_id(), inst->out[r]);
+      reserveRegister(inst->get_warp_id(), inst->out[r]);
       SHADER_DPRINTF(SCOREBOARD, "Reserved register - warp:%d, reg: %d\n",
-                     inst->warp_id(), inst->out[r]);
+                     inst->get_warp_id(), inst->out[r]);
     }
   }
 
@@ -100,11 +100,11 @@ void Scoreboard::reserveRegisters(const class warp_inst_t* inst) {
       if (inst->out[r] > 0) {
         if (DTRACE(LOAD_SCB)) {
           fprintf(Trace::out, "New longop load longopregs[warp:%u].insert(reg:%u)\n",
-            inst->warp_id(), inst->out[r]);
+            inst->get_warp_id(), inst->out[r]);
         }
         SHADER_DPRINTF(SCOREBOARD, "New longopreg marked - warp:%d, reg: %d\n",
-                       inst->warp_id(), inst->out[r]);
-        longopregs[inst->warp_id()].insert(inst->out[r]);
+                       inst->get_warp_id(), inst->out[r]);
+        longopregs[inst->get_warp_id()].insert(inst->out[r]);
       }
     }
   }
@@ -114,10 +114,17 @@ void Scoreboard::reserveRegisters(const class warp_inst_t* inst) {
 void Scoreboard::releaseRegisters(const class warp_inst_t* inst) {
   for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
     if (inst->out[r] > 0) {
-      SHADER_DPRINTF(SCOREBOARD, "Register Released - warp:%d, reg: %d\n",
-                     inst->warp_id(), inst->out[r]);
-      releaseRegister(inst->warp_id(), inst->out[r]);
-      longopregs[inst->warp_id()].erase(inst->out[r]);
+
+      if (DTRACE(SCOREBOARD)) {
+        fprintf(Trace::out, "%llu core:%u warp:%u inst %s released reg:%u\n",
+          m_gpu->get_cycle(), m_sid, inst->get_warp_id(), 
+          inst->get_inst_info().c_str(), 
+          inst->out[r]);
+      }
+      SHADER_DPRINTF(SCOREBOARD, "Register Released - warp:%d, reg: %u\n",
+                     inst->get_warp_id(), inst->out[r]);
+      releaseRegister(inst->get_warp_id(), inst->out[r]);
+      longopregs[inst->get_warp_id()].erase(inst->out[r]);
     }
   }
 }
@@ -156,10 +163,24 @@ bool Scoreboard::checkCollision(unsigned wid, const class inst_t* inst) const {
   // Check for collision, get the intersection of reserved registers and
   // instruction registers
   std::set<int>::const_iterator it2;
-  for (it2 = inst_regs.begin(); it2 != inst_regs.end(); it2++)
+  for (it2 = inst_regs.begin(); it2 != inst_regs.end(); it2++) {
     if (reg_table[wid].find(*it2) != reg_table[wid].end()) {
+      if (inst->is_load()) {
+        if (DTRACE(LOAD_PIPE)) {
+          fprintf(Trace::out, "%llu Check WAW/RAW passed for core:%u warp:%u inst %s\n",
+            m_gpu->get_cycle(), m_sid, wid, inst->get_inst_info().c_str());
+        }
+      }
       return true;
     }
+  }
+  if (inst->is_load()) {
+    if (DTRACE(LOAD_PIPE)) {
+      fprintf(Trace::out, "%llu Check WAW/RAW failed for core:%u warp:%u inst %s\n",
+        m_gpu->get_cycle(), m_sid, wid, inst->get_inst_info().c_str());
+    }
+  }  
+
   return false;
 }
 

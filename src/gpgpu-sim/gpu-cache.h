@@ -3033,8 +3033,14 @@ class data_cache : public baseline_cache {
                                               unsigned cache_index,
                                               mem_fetch *mf, unsigned long long time,
                                               std::list<cache_event> &events);
+  
+  void set_inst_info(std::string inst_info) {
+    m_inst_info = inst_info;
+  }
+  std::string get_inst_info() const { return m_inst_info; }
 
  protected:
+  std::string m_inst_info;
   mem_fetch_allocator *m_memfetch_creator;
 
   // Functions for data cache access
@@ -3129,6 +3135,8 @@ class data_cache : public baseline_cache {
 /// (the policy used in fermi according to the CUDA manual)
 class l1_cache : public data_cache {
  public:
+  friend class ldst_unit;
+
   l1_cache(const char *name, cache_config &config, 
           int core_id, 
           int type_id,
@@ -3143,7 +3151,7 @@ class l1_cache : public data_cache {
   virtual enum cache_request_status access(new_addr_type addr, mem_fetch *mf,
                                            unsigned long long time,
                                            std::list<cache_event> &events);
-
+  
  protected:
   l1_cache(const char *name, cache_config &config, int core_id, int type_id,
            mem_fetch_interface *memport, mem_fetch_allocator *mfcreator,

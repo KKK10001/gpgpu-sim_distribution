@@ -1922,7 +1922,7 @@ void mma_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst) {
   if (core->get_gpu()->is_functional_sim())
     tid = inst.warp_id_func() * core->get_warp_size();
   else
-    tid = inst.warp_id() * core->get_warp_size();
+    tid = inst.get_warp_id() * core->get_warp_size();
   float temp;
   half temp2;
 
@@ -3440,7 +3440,7 @@ void mma_st_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
   if (core->get_gpu()->is_functional_sim())
     tid = inst.warp_id_func() * core->get_warp_size();
   else
-    tid = inst.warp_id() * core->get_warp_size();
+    tid = inst.get_warp_id() * core->get_warp_size();
 
   _memory_op_t insn_memory_op =
       pI->has_memory_read() ? memory_load : memory_store;
@@ -3562,7 +3562,7 @@ void mma_ld_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
   if (core->get_gpu()->is_functional_sim())
     tid = inst.warp_id_func() * core->get_warp_size();
   else
-    tid = inst.warp_id() * core->get_warp_size();
+    tid = inst.get_warp_id() * core->get_warp_size();
 
   _memory_op_t insn_memory_op =
       pI->has_memory_read() ? memory_load : memory_store;
@@ -5367,7 +5367,7 @@ void shfl_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst) {
   if (core->get_gpu()->is_functional_sim())
     tid = inst.warp_id_func() * core->get_warp_size();
   else
-    tid = inst.warp_id() * core->get_warp_size();
+    tid = inst.get_warp_id() * core->get_warp_size();
 
   ptx_thread_info *thread = core->get_thread_info()[tid];
   ptx_warp_info *warp_info = thread->m_warp_info;

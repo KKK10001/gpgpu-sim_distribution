@@ -292,9 +292,8 @@ class shd_warp_t {
   class shader_core_ctx *get_shader() {
     return m_shader;
   }
-  u64 get_time() {
-    return m_time;
-  }
+  void set_time(u64 time) { m_time = time; }
+  u64 get_time() { return m_time; }
 
  private:
   static const u32 IBUFFER_SIZE = 2;
@@ -728,7 +727,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       m_cu = NULL;
       m_operand = -1;
       m_sched_id = sched_id;
-      m_bank = register_bank(reg, warp->warp_id(), num_banks, sub_core_model,
+      m_bank = register_bank(reg, warp->get_warp_id(), num_banks, sub_core_model,
                              banks_per_sched, sched_id);
     }
 
@@ -740,7 +739,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     }
     u32 get_wid() const {
       if (m_warp)
-        return m_warp->warp_id();
+        return m_warp->get_warp_id();
       else if (m_cu)
         return m_cu->get_warp_id();
       else
@@ -779,7 +778,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
         fprintf(fp, " <R%u, CU:%u, w:%02u> ", m_register, m_cu->get_id(),
                 m_cu->get_warp_id());
       else if (!m_warp->empty())
-        fprintf(fp, " <R%u, wid:%02u> ", m_register, m_warp->warp_id());
+        fprintf(fp, " <R%u, wid:%02u> ", m_register, m_warp->get_warp_id());
     }
     std::string get_reg_string() const {
       char buffer[64];
@@ -1449,7 +1448,7 @@ class ldst_unit : public pipelined_simd_unit {
 
   virtual bool can_issue(const warp_inst_t &inst) const {
     switch (inst.op) {
-      case LOAD_OP:
+      case LOAD_OP:        
         break;
       case TENSOR_CORE_LOAD_OP:
         break;
@@ -2237,7 +2236,7 @@ class shader_core_mem_fetch_allocator : public mem_fetch_allocator {
     mem_fetch *mf = new mem_fetch(
         access, &inst_copy, inst.get_streamID(),
         access.is_write() ? WRITE_PACKET_SIZE : READ_PACKET_SIZE,
-        inst.warp_id(), m_core_id, m_cluster_id, m_memory_config, cycle);     
+        inst.get_warp_id(), m_core_id, m_cluster_id, m_memory_config, cycle);     
 
     return mf;
   }

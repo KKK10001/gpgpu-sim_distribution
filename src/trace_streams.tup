@@ -28,6 +28,7 @@
 TS_TUP_BEGIN( trace_streams_type )
     TS_TUP( SIM_TOP ),
     TS_TUP( LSU_DETAIL ),
+    TS_TUP( LOAD_PIPE ),
     TS_TUP( INIT_KERNEL ),
     TS_TUP( LAUNCH_KERNEL ),
     TS_TUP( PICK_KERNEL),

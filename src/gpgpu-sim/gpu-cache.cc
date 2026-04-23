@@ -6361,6 +6361,13 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
   bool inter_warp_has_interference = false;
   WARP_INTERFERE_RECORD inter_warp_interfere_record((unsigned )- 1, (unsigned) - 1);
 
+  // if (m_is_l1d) {
+  //   if (DTRACE(LOAD_PIPE)) {
+  //     fprintf(Trace::out, "%llu L1D access addr:%#llx due to inst %s\n",
+  //       time, addr, get_inst_info().c_str());
+  //   }
+  // }
+
   // Pick one victim to update "cache_index" that was init as "-1" above.
   // enum cache_request_status probe_status = m_tag_array->probe(
   //   "data_cache::access",
