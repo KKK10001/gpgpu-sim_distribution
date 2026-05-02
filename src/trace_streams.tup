@@ -56,6 +56,7 @@ TS_TUP_BEGIN( trace_streams_type )
     TS_TUP( OPC_ALLOC),
     TS_TUP( DISP_OPC), // dispatch operand collect unit (cu)    
     TS_TUP( WARP_SCHEDULER ),
+    TS_TUP( WRITEBACK ),
     TS_TUP( L1D_FREQUENT_EVICTIONS), // a further cand for bypassL1D
     TS_TUP( L1D_BYPASS_CAND),
     TS_TUP( L1D_LATENCY_Q ),

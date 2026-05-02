@@ -35,9 +35,9 @@
 unsigned mem_fetch::sm_next_mf_request_uid = 1;
 
 mem_fetch::mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
-                     unsigned long long streamID, unsigned ctrl_size,
-                     unsigned wid, unsigned sid, unsigned tpc,
-                     const memory_config *config, unsigned long long cycle,
+                     u64 streamID, u32 ctrl_size,
+                     u32 wid, u32 sid, u32 tpc,
+                     const memory_config *config, u64 cycle,
                      mem_fetch *m_original_mf, mem_fetch *m_original_wr_mf)
     : m_access(access)
 
@@ -55,10 +55,14 @@ mem_fetch::mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
   m_tpc = tpc;
   m_wid = wid;
 
-  // 2/13 debug
-  if (DTRACE(DEBUG_SINGLE_MF)) {
-    fprintf(Trace::out, "mem_fetch::mem_fetch m_sid = %u m_tpc = %u m_wid = %u\n",
-      m_sid, m_tpc, m_wid);
+  if (inst && inst->is_load()) {
+    if (DTRACE(LOAD_PIPE)) {
+      fprintf(Trace::out, "%llu Init mem_fetch. "
+        "%s <tpc:%u sid:%u wid:%u>\n",
+        cycle, inst->get_inst_info(m_sid, m_request_uid).c_str(),
+        tpc, sid, wid
+        );
+    }
   }
 
   if (!config->is_SST_mode()) {

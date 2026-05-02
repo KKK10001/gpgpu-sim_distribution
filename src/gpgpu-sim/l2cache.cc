@@ -746,6 +746,11 @@ void memory_sub_partition::cache_cycle(
       if (access_l2_condition_2) {
         std::list<cache_event> events;
         mf->set_sub_partition(m_id);
+
+        std::string whole_inst_info = 
+          mf->get_inst().get_inst_info(mf->get_sid(), mf->get_request_uid());
+        m_L2cache->set_inst_info(whole_inst_info);
+      
         enum cache_request_status status = 
           m_L2cache->access(mf->get_addr(), mf, unified_cycle, events);
 

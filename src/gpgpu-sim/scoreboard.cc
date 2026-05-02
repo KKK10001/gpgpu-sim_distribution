@@ -116,9 +116,8 @@ void Scoreboard::releaseRegisters(const class warp_inst_t* inst) {
     if (inst->out[r] > 0) {
 
       if (DTRACE(SCOREBOARD)) {
-        fprintf(Trace::out, "%llu core:%u warp:%u inst %s released reg:%u\n",
-          m_gpu->get_cycle(), m_sid, inst->get_warp_id(), 
-          inst->get_inst_info().c_str(), 
+        fprintf(Trace::out, "%llu inst %s released reg:%u\n",
+          m_gpu->get_cycle(), inst->get_inst_info(m_sid).c_str(),
           inst->out[r]);
       }
       SHADER_DPRINTF(SCOREBOARD, "Register Released - warp:%d, reg: %u\n",
@@ -136,7 +135,7 @@ void Scoreboard::releaseRegisters(const class warp_inst_t* inst) {
  * @return
  * true if WAW or RAW hazard (no WAR since in-order issue)
  **/
-bool Scoreboard::checkCollision(unsigned wid, const class inst_t* inst) const {
+bool Scoreboard::checkCollision(unsigned wid, const class warp_inst_t* inst) const {
   // Get list of all input and output registers
   std::set<int> inst_regs;
 
@@ -167,21 +166,21 @@ bool Scoreboard::checkCollision(unsigned wid, const class inst_t* inst) const {
     if (reg_table[wid].find(*it2) != reg_table[wid].end()) {
       if (inst->is_load()) {
         if (DTRACE(LOAD_PIPE)) {
-          fprintf(Trace::out, "%llu Check WAW/RAW passed for core:%u warp:%u inst %s\n",
-            m_gpu->get_cycle(), m_sid, wid, inst->get_inst_info().c_str());
+          fprintf(Trace::out, "%llu Check WAW/RAW failed for inst %s\n",
+            m_gpu->get_cycle(), inst->get_inst_info(m_sid).c_str());
         }
       }
-      return true;
+      return true; // has collision
     }
   }
   if (inst->is_load()) {
     if (DTRACE(LOAD_PIPE)) {
-      fprintf(Trace::out, "%llu Check WAW/RAW failed for core:%u warp:%u inst %s\n",
-        m_gpu->get_cycle(), m_sid, wid, inst->get_inst_info().c_str());
+      fprintf(Trace::out, "%llu Check WAW/RAW passed for inst %s\n",
+        m_gpu->get_cycle(), inst->get_inst_info(m_sid).c_str());
     }
   }  
 
-  return false;
+  return false; // no collision
 }
 
 bool Scoreboard::pendingWrites(unsigned wid) const {

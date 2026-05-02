@@ -1015,11 +1015,6 @@ class inst_t {
     }
     isize = 0;
   }
-  std::string get_inst_info() const {
-    std::stringstream ss;
-    ss << "pc:0x" << std::hex << pc << " " << trace_opcode; 
-    return ss.str();
-  }
   bool valid() const { return m_decoded; }
   virtual void print_insn(FILE *fp) const {
     fprintf(fp, " [inst @ pc=0x%04llx] ", pc);
@@ -1126,6 +1121,7 @@ class warp_inst_t : public inst_t {
   // constructors
   warp_inst_t() {
     m_uid = 0;
+    m_mem_req_uid = (u32) - 1;
     m_streamID = (u64) - 1;
     m_empty = true;
     m_config = NULL;
@@ -1139,6 +1135,7 @@ class warp_inst_t : public inst_t {
   }
   warp_inst_t(const core_config *config) {
     m_uid = 0;
+    m_mem_req_uid = (u32) - 1;
     m_streamID = (u64) - 1;
     assert(config->warp_size <= MAX_WARP_SIZE);
     m_config = config;
@@ -1252,7 +1249,6 @@ class warp_inst_t : public inst_t {
     m_per_scalar_thread[lane_id].callback.thread = thread;
   }
   void set_active(const active_mask_t &active);
-
   void clear_active(const active_mask_t &inactive);
   void set_not_active(u32 lane_id);
 
@@ -1315,9 +1311,13 @@ class warp_inst_t : public inst_t {
   const core_config* get_config() const {
     return m_config;
   }
+  std::string get_inst_info(u32 core_id, u32 mem_req_uid = (u32) - 1) const;
+  void set_mem_req_uid(u32 mem_req_uid);
+  u32 get_mem_req_uid();
 
  protected:
   u32 m_uid;
+  u32 m_mem_req_uid;
   u64 m_streamID;
   bool m_empty;
   bool m_cache_hit;

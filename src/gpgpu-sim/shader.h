@@ -1540,8 +1540,9 @@ class ldst_unit : public pipelined_simd_unit {
 
   mem_fetch *m_next_global;
   warp_inst_t m_next_wb;
-  u32 m_writeback_arb;  // round-robin arbiter for writeback contention
-                             // between L1T, L1C, shared
+  // round-robin arbiter for writeback contention among {L1T, L1C, shared}
+  u32 m_writeback_arb;
+  
   u32 m_num_writeback_clients;
 
   enum mem_stage_stall_type m_mem_rc;
@@ -1560,8 +1561,7 @@ class ldst_unit : public pipelined_simd_unit {
   u32 m_cnt_l1d_run_cycles;
 
   // Track last-seen address and PC for pending long-latency load by (warp,reg)
-  std::map<std::pair<u32,int>, std::pair<u64, u32>>
-      m_pending_longop_detail;
+  std::map<std::pair<u32,int>, std::pair<u64, u32>> m_pending_longop_detail;
   // Track a simple causal chain string for the pending longop (warp,reg)
   std::map<std::pair<u32,int>, std::string> m_pending_longop_chain;
   // Track source for next writeback (to tag unblock cause)
@@ -2263,6 +2263,8 @@ class shader_core_ctx : public core_t {
                   const shader_core_config *config,
                   const memory_config *mem_config, shader_core_stats *stats);
 
+  std::string get_class_name();
+
   // used by simt_core_cluster:
   // modifiers
   void cycle();
@@ -2334,9 +2336,7 @@ class shader_core_ctx : public core_t {
   // accessors
   std::list<u32> get_regs_written(const inst_t &fvt) const;
   const shader_core_config *get_config() const { return m_config; }
-  void print_cache_stats(FILE *fp, u32 &dl1_accesses,
-                         u32 &dl1_misses);
-
+  void print_cache_stats(FILE *fp, u32 &dl1_accesses, u32 &dl1_misses);
   void get_cache_stats(cache_stats &cs, u32 sm = 0);
   void get_L1I_sub_stats(struct cache_sub_stats &css) const;
   void get_L1D_sub_stats(struct cache_sub_stats &css) const;
@@ -2672,9 +2672,7 @@ class shader_core_ctx : public core_t {
   address_type next_pc(int tid) const;
   void fetch();
   void register_cta_thread_exit(u32 cta_num, kernel_info_t *kernel);
-
   void decode();
-
   void issue();
   friend class scheduler_unit;  // this is needed to use private issue warp.
   friend class TwoLevelScheduler;
@@ -2712,16 +2710,12 @@ class shader_core_ctx : public core_t {
                                        u32 *pc, u32 *rpc) = 0;
   virtual const active_mask_t &get_active_mask(u32 warp_id,
                                                const warp_inst_t *pI) = 0;
-
   // Returns numbers of addresses in translated_addrs
   u32 translate_local_memaddr(address_type localaddr, u32 tid,
                                    u32 num_shader, u32 datasize,
                                    new_addr_type *translated_addrs);
-
   void read_operands();
-
   void execute();
-
   void writeback();
 
   // used in display_pipeline():
@@ -2821,6 +2815,7 @@ class shader_core_ctx : public core_t {
     u32 m_occupied_ctas;
     std::bitset<MAX_THREAD_PER_SM> m_occupied_hwtid;
     std::map<u32, u32> m_occupied_cta_to_hwtid;
+    std::string m_class_name;
 };
 
 class exec_shader_core_ctx : public shader_core_ctx {

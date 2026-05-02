@@ -70,15 +70,15 @@ void print_hex_128_for_bitset(const std::bitset<128>& bs) {
 // size across kernels
 const char *cache_request_status_str(enum cache_request_status status) {
   static const char *static_cache_request_status_str[] = {
-      "HIT",
-      "VC_HIT",
-      "HIT_RESERVED", 
-      "MISS",
-      "RESERVATION_FAIL",
-      "SECTOR_MISS",
-      "MSHR_HIT",
-      "BYPASS_ACTIVATED",
-      "BYPASS_DEACTIVATED",
+    "HIT",
+    "VC_HIT",
+    "HIT_RESERVED", 
+    "MISS",
+    "RESERVATION_FAIL",
+    "SECTOR_MISS",
+    "MSHR_HIT",
+    "BYPASS_ACTIVATED",
+    "BYPASS_DEACTIVATED",
 };
 
   assert(sizeof(static_cache_request_status_str) / sizeof(const char *) ==
@@ -1904,6 +1904,15 @@ void tag_array::fill(
 void tag_array::fill(
   baseline_cache *cache,
   unsigned index, u64 time, mem_fetch *mf) {
+
+  if (mf && mf->get_inst().is_load()) {
+    if (DTRACE(LOAD_PIPE)) {      
+      auto warp_inst = mf->get_inst();      
+      fprintf(Trace::out, "%llu tag_array::fill %s for inst %s\n",
+        time, m_config.get_cache_name(),
+        warp_inst.get_inst_info(mf->get_sid(), mf->get_request_uid()).c_str());
+    }
+  } 
 
   if (DTRACE(TAG_FILL)) {
     if (mf) {
@@ -5706,8 +5715,7 @@ enum cache_request_status data_cache::wr_miss_wa_naive(
 
   mem_fetch *n_mf = new mem_fetch(
       *ma, NULL, mf->get_streamID(), mf->get_ctrl_size(), mf->get_wid(),
-      mf->get_sid(), mf->get_tpc(), mf->get_mem_config(),
-      m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
+      mf->get_sid(), mf->get_tpc(), mf->get_mem_config(), m_gpu->get_cycle());
 
   bool do_miss = false;
   bool wb = false;
@@ -5876,7 +5884,7 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
     mem_fetch *n_mf = new mem_fetch(
         *ma, NULL, mf->get_streamID(), mf->get_ctrl_size(), mf->get_wid(),
         mf->get_sid(), mf->get_tpc(), mf->get_mem_config(),
-        m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, NULL, mf);
+        m_gpu->get_cycle(), NULL, mf);
 
     new_addr_type block_addr = m_config.block_addr(addr);
     bool do_miss = false;
@@ -6361,12 +6369,14 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
   bool inter_warp_has_interference = false;
   WARP_INTERFERE_RECORD inter_warp_interfere_record((unsigned )- 1, (unsigned) - 1);
 
-  // if (m_is_l1d) {
-  //   if (DTRACE(LOAD_PIPE)) {
-  //     fprintf(Trace::out, "%llu L1D access addr:%#llx due to inst %s\n",
-  //       time, addr, get_inst_info().c_str());
-  //   }
-  // }
+  if (DTRACE(LOAD_PIPE)) {    
+    if (mf) {
+      assert(get_inst_info().find("mem_req_uid") != std::string::npos);
+      fprintf(Trace::out, "%llu data_cache::access addr:%#llx "
+        "(block_addr:%#llx) for inst %s\n",
+        time, addr, block_addr, get_inst_info().c_str());
+    }
+  }
 
   // Pick one victim to update "cache_index" that was init as "-1" above.
   // enum cache_request_status probe_status = m_tag_array->probe(
@@ -6449,6 +6459,16 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
   // Ex.1: probe_status (SECTOR_MISS) -> access_status (MISS)
   // Ex.2: probe_status (HIT_RESERVED) -> access_status (RESERVATION_FAIL) when miss_queue_full(1) during a 2nd tag_array->probe
   enum cache_request_status access_status = process_tag_probe(wr, probe_status, addr, cache_index, mf, time, events);
+
+  if (DTRACE(LOAD_PIPE)) {
+    if (access_status != HIT) {
+      assert(get_inst_info().find("mem_req_uid") != std::string::npos);
+      fprintf(Trace::out, "%llu access_status:%s for accessing addr:%#llx "
+        "(block_addr:%#llx) for inst %s\n",
+        time, cache_request_status_str(access_status), addr, block_addr, 
+        get_inst_info().c_str());
+    }
+  }
 
   enum cache_request_status access_stats_bak = access_status;
 

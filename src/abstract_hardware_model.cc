@@ -50,9 +50,19 @@ void mem_access_t::init(gpgpu_context *ctx) {
   m_req_size = 0;
 }
 
+std::string warp_inst_t::get_inst_info(u32 core_id, u32 mem_req_uid) const {
+  std::stringstream ss;
+  ss << "dyn_warp_id:" << m_dynamic_warp_id <<
+  " core:" << core_id << " warp:" << m_warp_id << 
+  " pc:0x" << std::hex << pc << 
+  " mem_req_uid:0x" << mem_req_uid << 
+  " " << trace_opcode;  
+  return ss.str();
+}
+
 void warp_inst_t::issue(const active_mask_t &mask, unsigned warp_id,
-                        unsigned long long cycle, int dynamic_warp_id,
-                        int sch_id, unsigned long long streamID) {
+                        u64 cycle, int dynamic_warp_id,
+                        int sch_id, u64 streamID) {
   m_warp_active_mask = mask;
   m_warp_issued_mask = mask;
   m_uid = ++(m_config->gpgpu_ctx->warp_inst_sm_next_uid);
@@ -393,6 +403,14 @@ void warp_inst_t::set_active(const active_mask_t &active) {
       }
     }
   }
+}
+
+
+void warp_inst_t::set_mem_req_uid(u32 mem_req_uid) {
+  m_mem_req_uid = mem_req_uid;
+}
+u32 warp_inst_t::get_mem_req_uid() {
+  return m_mem_req_uid;
 }
 
 void warp_inst_t::do_atomic(bool forceDo) {
