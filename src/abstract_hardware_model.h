@@ -1157,6 +1157,9 @@ class warp_inst_t : public inst_t {
   }
   virtual ~warp_inst_t() {}
 
+  void set_cycle(u64 cycle);
+  u64 get_cycle();
+
   // modifiers
   void broadcast_barrier_reduction(const active_mask_t &access_mask);
   void do_atomic(bool forceDo = false);
@@ -1313,7 +1316,7 @@ class warp_inst_t : public inst_t {
   }
   std::string get_inst_info(u32 core_id, u32 mem_req_uid = (u32) - 1) const;
   void set_mem_req_uid(u32 mem_req_uid);
-  u32 get_mem_req_uid();
+  u32 get_mem_req_uid() const;
 
  protected:
   u32 m_uid;
@@ -1368,6 +1371,7 @@ class warp_inst_t : public inst_t {
   std::list<mem_access_t> get_access_q() {
     return m_accessq;
   }
+  u64 m_cycle;
 };
 
 void move_warp(warp_inst_t *&dst, warp_inst_t *&src);

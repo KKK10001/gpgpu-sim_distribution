@@ -409,7 +409,7 @@ void warp_inst_t::set_active(const active_mask_t &active) {
 void warp_inst_t::set_mem_req_uid(u32 mem_req_uid) {
   m_mem_req_uid = mem_req_uid;
 }
-u32 warp_inst_t::get_mem_req_uid() {
+u32 warp_inst_t::get_mem_req_uid() const {
   return m_mem_req_uid;
 }
 
@@ -474,6 +474,8 @@ void warp_inst_t::parse_mem_access_type(
 }
 
 void warp_inst_t::generate_mem_accesses(u64 cycle) {
+  set_cycle(cycle);
+
   if (empty() || op == MEMORY_BARRIER_OP || m_mem_accesses_created) {
     return;
   }
@@ -603,7 +605,7 @@ void warp_inst_t::generate_mem_accesses(u64 cycle) {
       if (m_config->gpgpu_coalesce_arch >= 13) { // = 70 for default Volta
         if (isatomic()) {
           memory_coalescing_arch_atomic(is_write, access_type);
-        } else {       
+        } else {
           memory_coalescing_arch(is_write, access_type);
         }          
       } else {
@@ -813,15 +815,14 @@ void warp_inst_t::memory_coalescing_arch_atomic(bool is_write,
       if (!active(thread)) continue;
 
       new_addr_type addr = m_per_scalar_thread[thread].memreqaddr[0];
-      new_addr_type block_address =
-          line_size_based_tag_func(addr, segment_size);
-      unsigned chunk =
-          (addr & 127) / 32;  // which 32-byte chunk within in a 128-byte chunk
-                              // does this thread access?
+      new_addr_type block_address = line_size_based_tag_func(addr, segment_size);
+
+      // which 32-byte chunk within in a 128-byte chunk
+      // does this thread access?
+      unsigned chunk = (addr & 127) / 32;  
 
       // can only write to one segment
-      assert(block_address ==
-             line_size_based_tag_func(addr + data_size - 1, segment_size));
+      assert(block_address == line_size_based_tag_func(addr + data_size - 1, segment_size));
 
       // Find a transaction that does not conflict with this thread's accesses
       bool new_transaction = true;
@@ -869,6 +870,13 @@ void warp_inst_t::memory_coalescing_arch_atomic(bool is_write,
       }
     }
   }
+}
+
+void warp_inst_t::set_cycle(u64 cycle) {
+  m_cycle = cycle;
+}
+u64 warp_inst_t::get_cycle() {
+  return m_cycle;
 }
 
 void warp_inst_t::memory_coalescing_arch_reduce_and_send(
@@ -926,6 +934,13 @@ void warp_inst_t::memory_coalescing_arch_reduce_and_send(
     fprintf(Trace::out, "%s m_accessq.push_back for inst of mem_type\n", 
       mem_access_type_str(access_type));
   }
+  if (is_load()) {
+    if (DTRACE(LOAD_PIPE)) {
+      fprintf(Trace::out, "%llu ::%s m_accessq.push_back addr:%#llx for inst %s\n",
+        get_cycle(), __func__, addr, get_inst_info(m_uid, m_mem_req_uid).c_str());
+    }
+  }
+
   m_accessq.push_back(mem_access_t(access_type, addr, size, is_write,
                                    info.active, info.bytes, info.chunks,
                                    m_config->gpgpu_ctx));
@@ -1149,6 +1164,13 @@ void simt_stack::launch(address_type start_pc, const simt_mask_t &active_mask) {
   new_stack_entry.m_active_mask = active_mask;
   new_stack_entry.m_type = STACK_ENTRY_TYPE_NORMAL;
   m_stack.push_back(new_stack_entry);
+
+  if (DTRACE(INST_PC)) {
+    fprintf(Trace::out, "%llu simt_stack::launch "
+      "pc = m_inst_fetch_buffer.m_pc = %#llx\n",
+      m_gpu->get_cycle(), new_stack_entry.m_pc
+    );
+  }  
 }
 
 void simt_stack::resume(char *fname) {
@@ -1185,6 +1207,14 @@ void simt_stack::resume(char *fname) {
     else
       new_stack_entry.m_type = STACK_ENTRY_TYPE_CALL;
     m_stack.push_back(new_stack_entry);
+
+    if (DTRACE(INST_PC)) {
+      fprintf(Trace::out, "%llu simt_stack::launch "
+        "new_stack_entry.m_pc = atoi(pch) = %#llx\n",
+        m_gpu->get_cycle(), new_stack_entry.m_pc
+      );
+    }  
+
   }
   fclose(fp2);
 }
@@ -1262,6 +1292,13 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
   assert(top_pc == next_inst_pc);
   assert(top_active_mask.any());
 
+  if (DTRACE(INST_PC)) {
+    fprintf(Trace::out, "%llu simt_stack::update "
+      "top_pc = m_stack.back().m_pc = %#llx\n",
+      m_gpu->get_cycle(), top_pc
+    );
+  }    
+
   const address_type null_pc = -1;
   bool warp_diverged = false;
   address_type new_recvg_pc = null_pc;
@@ -1329,6 +1366,14 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
           m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
       new_stack_entry.m_type = STACK_ENTRY_TYPE_CALL;
       m_stack.push_back(new_stack_entry);
+
+      if (DTRACE(INST_PC)) {
+        fprintf(Trace::out, "%llu simt_stack::update "
+          "new_stack_entry.m_pc = tmp_next_pc = %#llx\n",
+          m_gpu->get_cycle(), new_stack_entry.m_pc
+        );
+      }
+
       return;
     } else if (next_inst_op == RET_OPS && top_type == STACK_ENTRY_TYPE_CALL) {
       // pop the CALL Entry
@@ -1338,6 +1383,14 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
       assert(m_stack.size() > 0);
       m_stack.back().m_pc = tmp_next_pc;  // set the PC of the stack top entry
                                           // to return PC from  the call stack;
+
+      if (DTRACE(INST_PC)) {
+        fprintf(Trace::out, "%llu simt_stack::update Pop the call entry. "
+          "m_stack.back().m_pc = tmp_next_pc = %#llx\n",
+          m_gpu->get_cycle(), m_stack.back().m_pc
+        );
+      }
+
       // Check if the New top of the stack is reconverging
       if (tmp_next_pc == m_stack.back().m_recvg_pc &&
           m_stack.back().m_type != STACK_ENTRY_TYPE_CALL) {
@@ -1362,6 +1415,14 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
       new_recvg_pc = recvg_pc;
       if (new_recvg_pc != top_recvg_pc) {
         m_stack.back().m_pc = new_recvg_pc;
+
+        if (DTRACE(INST_PC)) {
+          fprintf(Trace::out, "%llu simt_stack::update "
+            "m_stack.back().m_pc = new_recvg_pc = %#llx\n",
+            m_gpu->get_cycle(), m_stack.back().m_pc
+          );
+        }
+
         m_stack.back().m_branch_div_cycle =
             m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
 
@@ -1374,6 +1435,14 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
 
     // update the current top of pdom stack
     m_stack.back().m_pc = tmp_next_pc;
+
+    if (DTRACE(INST_PC)) {
+      fprintf(Trace::out, "%llu simt_stack::update "
+        "m_stack.back().m_pc = tmp_next_pc = %#llx\n",
+        m_gpu->get_cycle(), m_stack.back().m_pc
+      );
+    }
+
     m_stack.back().m_active_mask = tmp_active_mask;
     if (warp_diverged) {
       m_stack.back().m_calldepth = 0;

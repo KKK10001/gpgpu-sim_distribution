@@ -40,6 +40,10 @@ Scoreboard::Scoreboard(unsigned sid, unsigned n_warps, class gpgpu_t* gpu)
   longopregs.resize(n_warps);
 
   m_gpu = gpu;
+  m_class_name = "Scoreboard";
+}
+std::string Scoreboard::get_class_name() const {
+  return m_class_name;
 }
 
 // Print scoreboard contents
@@ -69,11 +73,15 @@ void Scoreboard::reserveRegister(unsigned wid, unsigned regnum) {
 }
 
 // Unmark register as write-pending
-void Scoreboard::releaseRegister(unsigned wid, unsigned regnum) {
-  if (!(reg_table[wid].find(regnum) != reg_table[wid].end())) return;
-  SHADER_DPRINTF(SCOREBOARD, "Release register - warp:%d, reg: %d\n", wid,
-                 regnum);
+bool Scoreboard::releaseRegister(unsigned wid, unsigned regnum) {
+  if (!(reg_table[wid].find(regnum) != reg_table[wid].end())) {
+    return false;
+  }
+  SHADER_DPRINTF(SCOREBOARD, 
+    "Release register - warp:%d, reg: %d\n", wid, regnum);
+
   reg_table[wid].erase(regnum);
+  return true;
 }
 
 const bool Scoreboard::islongop(unsigned warp_id, unsigned regnum) {
@@ -115,14 +123,16 @@ void Scoreboard::releaseRegisters(const class warp_inst_t* inst) {
   for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
     if (inst->out[r] > 0) {
 
-      if (DTRACE(SCOREBOARD)) {
-        fprintf(Trace::out, "%llu inst %s released reg:%u\n",
-          m_gpu->get_cycle(), inst->get_inst_info(m_sid).c_str(),
-          inst->out[r]);
+      bool released = releaseRegister(inst->get_warp_id(), inst->out[r]);
+
+      if (released) {
+        if (DTRACE(SCOREBOARD)) {
+          fprintf(Trace::out, "%llu %s released reg:%u\n",
+            m_gpu->get_cycle(), 
+            inst->get_inst_info(m_sid).c_str(), inst->out[r]);
+        }
       }
-      SHADER_DPRINTF(SCOREBOARD, "Register Released - warp:%d, reg: %u\n",
-                     inst->get_warp_id(), inst->out[r]);
-      releaseRegister(inst->get_warp_id(), inst->out[r]);
+
       longopregs[inst->get_warp_id()].erase(inst->out[r]);
     }
   }
@@ -166,17 +176,23 @@ bool Scoreboard::checkCollision(unsigned wid, const class warp_inst_t* inst) con
     if (reg_table[wid].find(*it2) != reg_table[wid].end()) {
       if (inst->is_load()) {
         if (DTRACE(LOAD_PIPE)) {
-          fprintf(Trace::out, "%llu Check WAW/RAW failed for inst %s\n",
-            m_gpu->get_cycle(), inst->get_inst_info(m_sid).c_str());
+          fprintf(Trace::out, "%llu reg_table[warp:%u] "
+            "has scb collision for reg:%u for inst %s\n",
+            m_gpu->get_cycle(), 
+            wid, (*it2),
+            inst->get_inst_info(m_sid, inst->get_mem_req_uid()).c_str());
         }
       }
       return true; // has collision
     }
   }
+
   if (inst->is_load()) {
     if (DTRACE(LOAD_PIPE)) {
-      fprintf(Trace::out, "%llu Check WAW/RAW passed for inst %s\n",
-        m_gpu->get_cycle(), inst->get_inst_info(m_sid).c_str());
+      fprintf(Trace::out, "%llu reg_table[warp:%u] "
+        "passed scb check for inst %s\n",
+        m_gpu->get_cycle(), wid,
+        inst->get_inst_info(m_sid, inst->get_mem_req_uid()).c_str());
     }
   }  
 

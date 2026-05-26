@@ -949,8 +949,20 @@ void shader_core_ctx::decode() {
   if (m_inst_fetch_buffer.m_valid) {
     // decode 1 or 2 instructions and place them into ibuffer
     address_type pc = m_inst_fetch_buffer.m_pc;
+    if (DTRACE(INST_PC)) {
+      fprintf(Trace::out, "%llu shader_core_ctx::decode "
+        "pc = m_inst_fetch_buffer.m_pc = %#llx\n",
+        m_gpu->get_cycle(), pc
+      );
+    }
+
     const warp_inst_t *pI1 = get_next_inst(m_inst_fetch_buffer.m_warp_id, pc);
     if (pI1) {
+      if (DTRACE(DECODE)) {
+        fprintf(Trace::out, "%llu decoded %s\n", m_gpu->get_cycle(),
+          pI1->get_inst_info(m_sid).c_str());
+      }
+
       m_warp[m_inst_fetch_buffer.m_warp_id]->ibuffer_fill(0, pI1);
       m_warp[m_inst_fetch_buffer.m_warp_id]->inc_inst_in_pipeline();
 
@@ -1015,7 +1027,7 @@ void shader_core_ctx::fetch() {
       if (warp_inst && warp_inst->is_load()) {
         if (DTRACE(LOAD_PIPE)) {
           fprintf(Trace::out, "%llu %s::%s %s\n", 
-            m_gpu->get_cycle(), get_class_name(), __func__,
+            m_gpu->get_cycle(), get_class_name().c_str(), __func__,
             warp_inst->get_inst_info(mf->get_sid(), mf->get_request_uid()).c_str());
         }
       }
@@ -1095,24 +1107,17 @@ void shader_core_ctx::fetch() {
             if (DTRACE(LOAD_PIPE)) {
               assert(m_sid == mf->get_sid());
               fprintf(Trace::out, "%llu %s::%s %s\n", 
-                m_gpu->get_cycle(), get_class_name(), __func__,
+                m_gpu->get_cycle(), get_class_name().c_str(), __func__,
                 warp_inst->get_inst_info(m_sid, mf->get_request_uid()).c_str());
             }
           }
-          if (warp_inst) {
+          if (warp_inst != nullptr) {
             if (DTRACE(FETCH)) {
               assert(m_sid == mf->get_sid());
               fprintf(Trace::out, "%llu %s::%s %s\n", 
-                m_gpu->get_cycle(), get_class_name(), __func__,
+                m_gpu->get_cycle(), get_class_name().c_str(), __func__,
                 warp_inst->get_inst_info(m_sid, mf->get_request_uid()).c_str());  
             }  
-          }
-
-          if (DTRACE(FETCH)) {
-            fprintf(Trace::out, "%llu: fetched inst for warp:%u pc:%#llx "
-              "(access I$ va=%#llx, nbytes=%u) => %s\n",
-              time, warp_id,
-              pc, ppc, nbytes, cache_request_status_str(status));
           }
 
           if (status == MISS) {
@@ -2579,7 +2584,7 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
     return result;
   }
 
-  u64 time = m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle;
+  u64 time = m_core->get_gpu()->get_cycle();
 
   if (m_config->m_L1D_config.l1_latency > 0) {
     for (u32 j = 0; j < m_config->m_L1D_config.l1_banks; j++) {  // We can handle at max l1_banks reqs per cycle

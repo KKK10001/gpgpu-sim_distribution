@@ -2840,9 +2840,17 @@ void gpgpu_sim::cycle() {
   if (clock_mask & DRAM) {
     for (u32 i = 0; i < m_memory_config->m_n_mem; i++) {
       if (m_memory_config->simple_dram_model) {
+        if (DTRACE(SIM_TOP)) {
+          fprintf(Trace::out, "%llu perf cycle. "
+            "m_memory_partition_unit[%u]->simple_dram_model_cycle()\n", get_cycle(), i);
+        }        
         m_memory_partition_unit[i]->simple_dram_model_cycle();
       }        
       else {
+        if (DTRACE(SIM_TOP)) {
+          fprintf(Trace::out, "%llu perf cycle. "
+            "m_memory_partition_unit[%u]->dram_cycle()\n", get_cycle(), i);
+        }
         m_memory_partition_unit[i]->dram_cycle();  // Issue the dram command (scheduler + delay model)
       }        
       // Update performance counters for DRAM
@@ -2884,7 +2892,7 @@ void gpgpu_sim::cycle() {
         if (mf) {
           mf->set_sub_partition(i); // mf does not carry sub_id by default
           partiton_reqs_in_parallel_per_cycle++;
-          mf_monitor = mf;
+          mf_monitor = mf;        
 
           if (DTRACE(L2_SUB_PARTITION)) {
             fprintf(Trace::out, "%llu icnt_pop -> L2_sub[%i]->push mf:"
@@ -2905,6 +2913,12 @@ void gpgpu_sim::cycle() {
       if (DTRACE(DRAM_RESP_L2)) {
         // fprintf(Trace::out, "%llu dram_l2_q popped ");
       }
+
+      if (DTRACE(SIM_TOP)) {
+        fprintf(Trace::out, "%llu perf cycle. "
+          "m_memory_sub_partition[%u]->cache_cycle\n", get_cycle(), i);
+      }  
+
       m_memory_sub_partition[i]->cache_cycle(get_cycle(), mf_monitor);
       if (m_config.g_power_simulation_enabled) {
         m_memory_sub_partition[i]->accumulate_L2cache_stats(
@@ -2919,6 +2933,10 @@ void gpgpu_sim::cycle() {
   }
 
   if (clock_mask & ICNT) {
+    if (DTRACE(SIM_TOP)) {
+      fprintf(Trace::out, "%llu perf cycle. icnt_transfer\n", get_cycle());
+    }
+    
     icnt_transfer();
   }
 

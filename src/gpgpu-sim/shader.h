@@ -213,7 +213,9 @@ class shd_warp_t {
   bool get_membar() const { return m_membar; }
   virtual address_type get_pc() const { return m_next_pc; }
   virtual kernel_info_t *get_kernel_info() const;
-  void set_next_pc(address_type pc) { m_next_pc = pc; }
+  void set_next_pc(address_type pc) { 
+    m_next_pc = pc; 
+  }
 
   void store_info_of_last_inst_at_barrier(const warp_inst_t *pI) {
     m_inst_at_barrier = *pI;
@@ -1186,6 +1188,14 @@ struct ifetch_buffer_t {
     m_pc = pc;
     m_nbytes = nbytes;
     m_warp_id = warp_id;
+
+    if (DTRACE(INST_PC)) {
+      fprintf(Trace::out, "%llu ifetch_buffer_t::ifetch_buffer_t "
+        "m_pc = pc = %#llx\n",
+        time, m_pc
+      );
+    }
+
   }
 
   u64 m_time;

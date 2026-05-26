@@ -1338,7 +1338,7 @@ enum cache_request_status tag_array::probe(
     BYPASS_KEY victim_key(victim->m_stream_id, victim->m_kernel, victim_addr);  
     LOCALITY_KEY loc_key(victim->m_stream_id, victim->m_kernel);
 
-    const int max_evictions_bound = 5;
+    [[maybe_unused]] const int max_evictions_bound = 5;
     // const bool swap_out_valid = victim->is_valid_line() || victim->is_modified_line();
     const bool swap_out_valid = victim->is_valid_line() && !victim->is_modified_line();
     // Begin of probing L1D victim cache
