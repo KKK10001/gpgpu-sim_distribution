@@ -187,6 +187,17 @@ ptx_thread_info::ptx_thread_info(kernel_info_t &kernel) : m_kernel(kernel) {
 }
 
 const ptx_version &ptx_thread_info::get_ptx_version() const {
+  if (m_func_info == NULL || m_func_info->get_function_size() == 0 ||
+      m_func_info->get_symtab() == NULL) {
+    unsigned raw_ptx_version = 20;
+    if (m_func_info != NULL && m_func_info->get_kernel_info() != NULL &&
+        m_func_info->get_kernel_info()->ptx_version != 0) {
+      raw_ptx_version = m_func_info->get_kernel_info()->ptx_version;
+    }
+    static thread_local ptx_version trace_ptx_version;
+    trace_ptx_version = ptx_version(raw_ptx_version / 10.0f, 0);
+    return trace_ptx_version;
+  }
   return m_func_info->get_ptx_version();
 }
 
@@ -304,6 +315,26 @@ unsigned ptx_thread_info::get_builtin(int builtin_id, unsigned dim_mod) {
   }
   return 0;
 }
+
+ptx_reg_t ptx_thread_info::get_trace_reg(unsigned reg_num) const {
+  std::map<unsigned, ptx_reg_t>::const_iterator it =
+      m_trace_regs.find(reg_num);
+  if (it == m_trace_regs.end()) {
+    return ptx_reg_t();
+  }
+  return it->second;
+}
+
+void ptx_thread_info::set_trace_reg(unsigned reg_id,
+                                    const ptx_reg_t &value) {
+  if (reg_id == 0) {
+    return;
+  }
+  m_trace_regs[reg_id] = value;
+  m_last_set_operand_value = value;
+}
+
+void ptx_thread_info::clear_trace_regs() { m_trace_regs.clear(); }
 
 void ptx_thread_info::set_info(function_info *func) {
   m_symbol_table = func->get_symtab();

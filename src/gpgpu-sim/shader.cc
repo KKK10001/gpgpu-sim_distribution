@@ -1047,7 +1047,6 @@ void shader_core_ctx::fetch() {
         if (m_warp[warp_id]->hardware_done() &&
             !m_scoreboard->pendingWrites(warp_id) &&
             !m_warp[warp_id]->done_exit()) {
-          bool did_exit = false;
           for (u32 t = 0; t < m_config->warp_size; t++) {
             u32 tid = warp_id * m_config->warp_size + t;
             if (m_threadState[tid].m_active == true) {
@@ -1060,12 +1059,9 @@ void shader_core_ctx::fetch() {
               }
               m_not_completed -= 1;
               m_active_threads.reset(tid);
-              did_exit = true;
             }
           }
-          if (did_exit) {
-            m_warp[warp_id]->set_done_exit();
-          }
+          m_warp[warp_id]->set_done_exit();
           --m_active_warps;
           assert(m_active_warps >= 0);
         }

@@ -1467,6 +1467,12 @@ ptx_instruction::ptx_instruction(
 
   m_source_file = file ? file : "<unknown>";
   m_source_line = line;
+
+  // compatiable with Trace-Driven Mode
+  if (source == nullptr) {
+    return;
+  }
+
   m_source = source;
   // Trim tabs
   m_source.erase(std::remove(m_source.begin(), m_source.end(), '\t'),
@@ -1526,12 +1532,16 @@ operand_info ptx_instruction::get_pred() const {
 
 function_info::function_info(int entry_point, gpgpu_context *ctx) {
   gpgpu_ctx = ctx;
+  maxnt_id = 0;
   m_uid = (gpgpu_ctx->function_info_sm_next_uid)++;
   m_entry_point = (entry_point == 1) ? true : false;
   m_extern = (entry_point == 2) ? true : false;
   num_reconvergence_pairs = 0;
   m_symtab = NULL;
   m_assembled = false;
+  m_instr_mem = NULL;
+  m_start_PC = 0;
+  m_instr_mem_size = 0;
   m_return_var_sym = NULL;
   m_kernel_info.cmem = 0;
   m_kernel_info.lmem = 0;
@@ -1539,6 +1549,8 @@ function_info::function_info(int entry_point, gpgpu_context *ctx) {
   m_kernel_info.smem = 0;
   m_local_mem_framesize = 0;
   m_args_aligned_size = -1;
+  m_n = 0;
+  m_source_line_lookup_built = false;
   pdom_done = false;  // initialize it to false
 }
 

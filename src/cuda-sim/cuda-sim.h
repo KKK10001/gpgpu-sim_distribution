@@ -94,6 +94,10 @@ class functionalCoreSim : public core_t {
                                              unsigned tid) {
     if (m_thread[tid] == NULL || m_thread[tid]->is_done()) {
       m_liveThreadCount[tid / m_warp_size]--;
+      printf("m_liveThreadCount[slot:%u = (tid:%u / warp_size:%u)]-- = %u\n",
+        (tid / m_warp_size), tid, m_warp_size,
+        m_liveThreadCount[tid / m_warp_size]
+        );
     }
   }
 

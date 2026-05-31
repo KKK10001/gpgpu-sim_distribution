@@ -1253,18 +1253,48 @@ class function_info {
  public:
   function_info(int entry_point, gpgpu_context *ctx);
   const ptx_version &get_ptx_version() const {
+    if (m_symtab == NULL || uses_kernel_info_ptx_version()) {
+      unsigned raw_ptx_version = m_kernel_info.ptx_version;
+      if (raw_ptx_version == 0) raw_ptx_version = 20;
+      static thread_local ptx_version fallback_ptx_version;
+      fallback_ptx_version = ptx_version(raw_ptx_version / 10.0f, 0);
+      return fallback_ptx_version;
+    }
     return m_symtab->get_ptx_version();
   }
   virtual ~function_info() {}
-  unsigned get_sm_target() const { return m_symtab->get_sm_target(); }
+  unsigned get_sm_target() const {
+    if (m_symtab == NULL || uses_kernel_info_ptx_version()) {
+      return m_kernel_info.sm_target;
+    }
+    return m_symtab->get_sm_target();
+  }
   bool is_extern() const { return m_extern; }
   void set_name(const char *name) { m_name = name; }
   void set_symtab(symbol_table *symtab) { m_symtab = symtab; }
+  virtual bool uses_kernel_info_ptx_version() const { return false; }
+  virtual const ptx_instruction *lookup_instruction_by_source_line(
+      unsigned line) const {
+    if (line == 0) {
+      return NULL;
+    }
+
+    build_source_line_lookup();
+    std::map<unsigned, const ptx_instruction *>::const_iterator line_it =
+        m_source_line_to_instruction.find(line);
+    if (line_it == m_source_line_to_instruction.end()) {
+      return NULL;
+    }
+
+    return line_it->second;
+  }
   std::string get_name() const { return m_name; }
   unsigned print_insn(unsigned pc, FILE *fp) const;
   std::string get_insn_str(unsigned pc) const;
   void add_inst(const std::list<ptx_instruction *> &instructions) {
     m_instructions = instructions;
+    m_source_line_to_instruction.clear();
+    m_source_line_lookup_built = false;
   }
   std::list<ptx_instruction *>::iterator find_next_real_instruction(
       std::list<ptx_instruction *>::iterator i);
@@ -1393,6 +1423,23 @@ class function_info {
   // with ___.ptx
   struct gpgpu_ptx_sim_info m_kernel_info;
 
+  void build_source_line_lookup() const {
+    if (m_source_line_lookup_built || m_instr_mem == NULL ||
+        m_instr_mem_size == 0) {
+      return;
+    }
+
+    for (unsigned index = 0; index < m_instr_mem_size; ++index) {
+      const ptx_instruction *instruction = m_instr_mem[index];
+      if (instruction != NULL && instruction->source_line() != 0) {
+        m_source_line_to_instruction[instruction->source_line()] =
+            instruction;
+      }
+    }
+
+    m_source_line_lookup_built = true;
+  }
+
  private:
   unsigned maxnt_id;
   unsigned m_uid;
@@ -1426,6 +1473,9 @@ class function_info {
   int m_args_aligned_size;
 
   addr_t m_n;  // offset in m_instr_mem (used in do_pdom)
+  mutable std::map<unsigned, const ptx_instruction *>
+      m_source_line_to_instruction;
+  mutable bool m_source_line_lookup_built;
 };
 
 class arg_buffer_t {

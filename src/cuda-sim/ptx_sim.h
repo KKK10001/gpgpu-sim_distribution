@@ -43,6 +43,8 @@
 
 #include "memory.h"
 
+class shader_core_config;
+
 #define GCC_VERSION \
   (__GNUC__ * 10000 + __GNUC_MINOR__ * 100 + __GNUC_PATCHLEVEL__)
 
@@ -307,14 +309,22 @@ class ptx_thread_info {
     m_functionalSimulationMode = fsim;
   }
 
+  // void map_sass_uop_to_ptx_op(
+  //   const enum TraceInstrOpcode trace_opcode, ptx_op_t& ptx_op);
+
   void ptx_fetch_inst(inst_t &inst) const;
   void ptx_exec_inst(warp_inst_t &inst, unsigned lane_id);
+  void ptx_exec_inst_called_by_trace_driven(
+    warp_inst_t& inst, unsigned lane_id);
 
   const ptx_version &get_ptx_version() const;
   void set_reg(const symbol *reg, const ptx_reg_t &value);
   void print_reg_thread(char *fname);
   void resume_reg_thread(char *fname, symbol_table *symtab);
   ptx_reg_t get_reg(const symbol *reg);
+  ptx_reg_t get_trace_reg(unsigned reg_num) const;
+  void set_trace_reg(unsigned reg_id, const ptx_reg_t &value);
+  void clear_trace_regs();
   ptx_reg_t get_operand_value(const operand_info &op, operand_info dstInfo,
                               unsigned opType, ptx_thread_info *thread,
                               int derefFlag);
@@ -336,6 +346,7 @@ class ptx_thread_info {
       const ptx_reg_t &data6, const ptx_reg_t &data7, const ptx_reg_t &data8);
 
   function_info *func_info() { return m_func_info; }
+  
   void print_insn(unsigned pc, FILE *fp) const;
   void set_info(function_info *func);
   unsigned get_uid() const { return m_uid; }
@@ -465,6 +476,8 @@ class ptx_thread_info {
   // Weili: access symbol_table
   symbol_table *get_symbol_table() { return m_symbol_table; }
 
+  ptx_reg_t get_reg(unsigned reg_id) { return m_trace_regs[reg_id]; }
+
  public:
   addr_t m_last_effective_address;
   bool m_branch_taken;
@@ -517,6 +530,7 @@ class ptx_thread_info {
   std::list<reg_map_t> m_debug_trace_regs_modified;
   std::list<reg_map_t> m_debug_trace_regs_read;
   bool m_enable_debug_trace;
+  std::map<unsigned, ptx_reg_t> m_trace_regs;
 
   std::stack<class operand_info, std::vector<operand_info> > m_breakaddrs;
 };

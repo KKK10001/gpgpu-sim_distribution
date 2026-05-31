@@ -60,6 +60,49 @@ std::string warp_inst_t::get_inst_info(u32 core_id, u32 mem_req_uid) const {
   return ss.str();
 }
 
+// Layout is defined in trace_tool.cu
+std::string warp_inst_t::dump_sass_inst() const {
+  std::ostringstream ss;
+  std::ostringstream in_reg_str;
+  std::ostringstream out_reg_str;
+  for (size_t i = 0; i < incount; i++)
+  {
+    if (in[i] > 0) {
+      /* SASS starts from 0, while GPGPU-SIM starts from 1 */
+      in_reg_str << "R" << (in[i] - 1) << " ";
+    }
+  }
+  for (size_t i = 0; i < outcount; i++)
+  {
+    if (out[i] > 0) {
+      /* SASS starts from 0, while GPGPU-SIM starts from 1 */
+      out_reg_str << "R" << (out[i] - 1) << " ";
+    }
+  }
+
+  // 0000 ffffffff 1 R1 IMAD.MOV.U32 2 R255 R255 0 -
+  std::ostringstream imm_str;  
+  if (imm) {
+    imm_str << " " << imm;
+  } else {
+    imm_str << "";
+  }
+  ss << std::hex << std::setfill('0') << std::setw(4) << pc <<
+  " " << std::setw(8) << m_warp_active_mask.to_ullong() /* after predication */ <<
+  " " << outcount << " " << out_reg_str.str() << 
+  trace_opcode << 
+  " " << incount << " " << in_reg_str.str() << 
+  mem_width << imm_str.str();
+  return ss.str();
+
+  // ss << std::hex << std::setfill('0') << std::setw(4) << pc <<
+  // " " << std::setw(8) << m_warp_active_mask.to_ullong() /* after predication */ <<
+  // " " << outcount << " " << out_reg_str.str() << 
+  // trace_opcode << 
+  // " " << incount << " " << in_reg_str.str();
+  // return ss.str();
+}
+
 void warp_inst_t::issue(const active_mask_t &mask, unsigned warp_id,
                         u64 cycle, int dynamic_warp_id,
                         int sch_id, u64 streamID) {
@@ -68,7 +111,7 @@ void warp_inst_t::issue(const active_mask_t &mask, unsigned warp_id,
   m_uid = ++(m_config->gpgpu_ctx->warp_inst_sm_next_uid);
   m_streamID = streamID;
   m_warp_id = warp_id;
-  m_dynamic_warp_id = dynamic_warp_id;
+  m_dynamic_warp_id = dynamic_warp_id;  
   issue_cycle = cycle;
   cycles = initiation_interval;
   m_cache_hit = false;
@@ -127,12 +170,13 @@ void checkpoint::store_global_mem(class memory_space *mem, char *fname,
   fclose(fp3);
 }
 
+// Essentially swap dst-src warps
 void move_warp(warp_inst_t *&dst, warp_inst_t *&src) {
   assert(dst->empty());
   warp_inst_t *temp = dst;
   dst = src;
   src = temp;
-  src->clear();
+  src->clear(); // m_empty = true
 }
 
 void gpgpu_functional_sim_config::reg_options(class OptionParser *opp) {
@@ -1464,9 +1508,15 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
 void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
   for (unsigned t = 0; t < m_warp_size; t++) {
     if (inst.active(t)) {
-      if (warpId == (unsigned(-1))) warpId = inst.get_warp_id();
+      if (warpId == (unsigned(-1))) {
+        warpId = inst.get_warp_id();
+      }
+
       unsigned tid = m_warp_size * warpId + t;
       m_thread[tid]->ptx_exec_inst(inst, t);
+
+      fprintf(Trace::out, "functionalCoreSim::executeWarp warp:%u \"%s\"\n",
+        warpId, inst.dump_sass_inst().c_str());
 
       // virtual function
       checkExecutionStatusAndUpdate(inst, t, tid);
@@ -1486,10 +1536,11 @@ void core_t::updateSIMTStack(unsigned warpId, warp_inst_t *inst) {
   for (unsigned i = 0; i < m_warp_size; i++) {
     if (ptx_thread_done(wtid + i)) {
       thread_done.set(i);
-      next_pc.push_back((address_type)-1);
+      next_pc.push_back((address_type) - 1);
     } else {
-      if (inst->reconvergence_pc == RECONVERGE_RETURN_PC)
-        inst->reconvergence_pc = get_return_pc(m_thread[wtid + i]);
+      if (inst->reconvergence_pc == RECONVERGE_RETURN_PC) {
+        inst->reconvergence_pc = get_return_pc(m_thread[wtid + i]);     
+      }        
       next_pc.push_back(m_thread[wtid + i]->get_pc());
     }
   }

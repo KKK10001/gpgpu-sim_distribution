@@ -36,6 +36,7 @@
 class gpgpu_sim;
 class kernel_info_t;
 class gpgpu_context;
+class ptx_instruction;
 
 // Set a hard limit of 32 CTAs per shader [cuda only has 8]
 #define MAX_CTA_PER_SHADER 32
@@ -116,6 +117,107 @@ typedef u64 addr_t;
 // the following are operations the timing model can see
 #define SPECIALIZED_UNIT_NUM 8
 #define SPEC_UNIT_START_ID 100
+
+enum ptx_op_t {
+  PTX_ABS_OP = 0,
+  PTX_ADD_OP,
+  PTX_ADDP_OP,
+  PTX_ADDC_OP,
+  PTX_AND_OP,
+  PTX_ANDN_OP,
+  PTX_ATOM_OP,
+  PTX_BAR_OP,
+  PTX_BFE_OP,
+  PTX_BFI_OP,
+  PTX_BFIND_OP,
+  PTX_BRA_OP,
+  PTX_BRX_OP,
+  PTX_BREV_OP,
+  PTX_BRKPT_OP,
+  PTX_MMA_OP,
+  PTX_MMA_LD_OP,
+  PTX_MMA_ST_OP,
+  PTX_CALL_OP,
+  PTX_CALLP_OP,
+  PTX_CLZ_OP,
+  PTX_CNOT_OP,
+  PTX_COS_OP,
+  PTX_CVT_OP,
+  PTX_CVTA_OP,
+  PTX_DIV_OP,
+  PTX_DP4A_OP,
+  PTX_EX2_OP,
+  PTX_EXIT_OP,
+  PTX_FMA_OP,
+  PTX_ISSPACEP_OP,
+  PTX_LD_OP, // 31
+  PTX_LDU_OP,
+  PTX_LG2_OP,
+  PTX_MAD24_OP,
+  PTX_MAD_OP,
+  PTX_MADC_OP,
+  PTX_MADP_OP,
+  PTX_MAX_OP,
+  PTX_MEMBAR_OP,
+  PTX_MIN_OP,
+  PTX_MOV_OP,
+  PTX_MUL24_OP,
+  PTX_MUL_OP,
+  PTX_NEG_OP,
+  PTX_NANDN_OP,
+  PTX_NORN_OP,
+  PTX_NOT_OP,
+  PTX_OR_OP,
+  PTX_ORN_OP,
+  PTX_PMEVENT_OP,
+  PTX_POPC_OP,
+  PTX_PREFETCH_OP,
+  PTX_PREFETCHU_OP,
+  PTX_PRMT_OP,
+  PTX_RCP_OP,
+  PTX_RED_OP,
+  PTX_REM_OP,
+  PTX_RET_OP,
+  PTX_RETP_OP,
+  PTX_RSQRT_OP,
+  PTX_SAD_OP,
+  PTX_SELP_OP,
+  PTX_SETP_OP,
+  PTX_SET_OP,
+  PTX_SHFL_OP,
+  PTX_SHF_OP,
+  PTX_SHL_OP,
+  PTX_SHR_OP,
+  PTX_SIN_OP,
+  PTX_SLCT_OP,
+  PTX_SQRT_OP,
+  PTX_SST_OP,
+  PTX_SSY_OP,
+  PTX_ST_OP,
+  PTX_SUB_OP,
+  PTX_SUBC_OP,
+  PTX_SULD_OP,
+  PTX_SURED_OP,
+  PTX_SUST_OP,
+  PTX_SUQ_OP,
+  PTX_TEX_OP,
+  PTX_TRAP_OP,
+  PTX_VABSDIFF_OP,
+  PTX_VADD_OP,
+  PTX_VMAD_OP,
+  PTX_VMAX_OP,
+  PTX_VMIN_OP,
+  PTX_VSET_OP,
+  PTX_VSHL_OP,
+  PTX_VSHR_OP,
+  PTX_VSUB_OP,
+  PTX_VOTE_OP,
+  PTX_ACTIVEMASK_OP,
+  PTX_XOR_OP,
+  PTX_NOP_OP,
+  PTX_BREAK_OP,
+  PTX_BREAKADDR_OP
+};
 
 enum uarch_op_t {
   NO_OP = 0,
@@ -988,6 +1090,10 @@ class inst_t {
     m_decoded = false;
     pc = (address_type) - 1;
     trace_opcode = "xxxx";
+    trace_opcode_id = (u32)-1;
+    trace_line_num = 0;
+    trace_kernel_name.clear();
+    m_ptx_inst = NULL;
     reconvergence_pc = (address_type) - 1;
     op = NO_OP;    
     bar_type = NOT_BAR;
@@ -1044,9 +1150,62 @@ class inst_t {
             (sp_op == TENSOR__OP));
   }
   bool is_alu() const { return (sp_op == INT__OP); }
+  virtual u32 get_trace_opcode() const { return trace_opcode_id; }
+  void set_trace_opcode(u32 opcode) { trace_opcode_id = opcode; }
+  void set_trace_line_num(unsigned line_num) { trace_line_num = line_num; }
+  unsigned get_trace_line_num() const { return trace_line_num; }
+  void set_trace_kernel_name(const std::string &kernel_name) {
+    trace_kernel_name = kernel_name;
+  }
+  const std::string &get_trace_kernel_name() const {
+    return trace_kernel_name;
+  }
+  void set_trace_ptx_instruction(const ptx_instruction *inst) {
+    m_ptx_inst = inst;
+  }
+  const ptx_instruction *get_trace_ptx_instruction() const {
+    return m_ptx_inst;
+  }
 
   u32 get_num_operands() const { return num_operands; }
   u32 get_num_regs() const { return num_regs; }
+
+  u32 get_gpgpusim_srcreg_id() {
+    for (size_t i = 0; i < 24; i++)
+    {
+      if (in[i]) {
+        return i;
+      }
+    }
+    return (u32) - 1;    
+  }
+  u32 get_sass_srcreg_id() {
+    for (size_t i = 0; i < 24; i++)
+    {
+      if (in[i]) {
+        return (i - 1);
+      }
+    }
+    return (u32) - 1;
+  }
+  u32 get_gpgpusim_dstreg_id() {
+    for (size_t i = 0; i < 8; i++)
+    {
+      if (out[i]) {
+        return i;
+      }
+    }
+    return (u32) - 1;    
+  }
+  u32 get_sass_dstreg_id() {
+    for (size_t i = 0; i < 8; i++)
+    {
+      if (out[i]) {
+        return (i - 1);
+      }
+    }
+    return (u32) - 1;
+  }
 
   // never used member functions
   // 1. {num_regs, num_operands} are both set inside 
@@ -1062,6 +1221,10 @@ class inst_t {
 
   address_type pc;  // program counter address of instruction
   std::string trace_opcode; // trace.opcode (e.g., "LDG.E.SYS")
+  u32 trace_opcode_id;
+  unsigned trace_line_num;
+  std::string trace_kernel_name;
+  const ptx_instruction *m_ptx_inst;
   u32 isize;  // size of instruction in bytes
   op_type op; // opcode (uarch visible)
 
@@ -1088,6 +1251,8 @@ class inst_t {
   u32 outcount;
   u32 in[24];
   u32 incount;
+  u32 mem_width; // inst_memadd_info_t *memadd_info->width
+  u64 imm;       // struct inst_trace_t { u64 imm; }
   unsigned char is_vectorin;
   unsigned char is_vectorout;
   int pred;  // predicate register number
@@ -1268,6 +1433,9 @@ class warp_inst_t : public inst_t {
     return m_warp_issued_mask.count();
   }  // for instruction counting
   bool empty() const { return m_empty; }
+  void set_warp_id(u32 warp_id) {
+    m_warp_id = warp_id;
+  }
   u32 get_warp_id() const {
     assert(!m_empty);
     return m_warp_id;
@@ -1315,6 +1483,7 @@ class warp_inst_t : public inst_t {
     return m_config;
   }
   std::string get_inst_info(u32 core_id, u32 mem_req_uid = (u32) - 1) const;
+  std::string dump_sass_inst() const;
   void set_mem_req_uid(u32 mem_req_uid);
   u32 get_mem_req_uid() const;
 
