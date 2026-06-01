@@ -47,8 +47,10 @@ class ptx_instruction;
 #define MAX_OUTPUT_VALUES 8
 
 typedef unsigned long long u64;
+typedef signed long long s64;
 typedef unsigned int u32;
 typedef unsigned u32;
+typedef signed int s32;
 
 enum _memory_space_t {
   undefined_space = 0,

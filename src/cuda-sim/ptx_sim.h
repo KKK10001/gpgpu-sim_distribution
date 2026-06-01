@@ -309,13 +309,8 @@ class ptx_thread_info {
     m_functionalSimulationMode = fsim;
   }
 
-  // void map_sass_uop_to_ptx_op(
-  //   const enum TraceInstrOpcode trace_opcode, ptx_op_t& ptx_op);
-
   void ptx_fetch_inst(inst_t &inst) const;
   void ptx_exec_inst(warp_inst_t &inst, unsigned lane_id);
-  void ptx_exec_inst_called_by_trace_driven(
-    warp_inst_t& inst, unsigned lane_id);
 
   const ptx_version &get_ptx_version() const;
   void set_reg(const symbol *reg, const ptx_reg_t &value);
