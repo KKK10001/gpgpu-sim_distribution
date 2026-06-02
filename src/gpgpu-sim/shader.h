@@ -2893,7 +2893,7 @@ class simt_core_cluster {
   void print_not_completed(FILE *fp) const;
   u32 get_n_active_cta() const;
   u32 get_n_active_sms() const;
-  gpgpu_sim *get_gpu() { return m_gpu; }
+  gpgpu_sim *get_gpu() { return m_gpu; }  
 
   void display_pipeline(u32 sid, FILE *fout, int print_mem, int mask);
   void print_cache_stats(FILE *fp, u32 &dl1_accesses,

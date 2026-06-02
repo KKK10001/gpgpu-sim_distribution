@@ -61,6 +61,8 @@ struct param_t {
 
 using half_float::half;
 
+typedef unsigned short u16;
+
 union ptx_reg_t {
   ptx_reg_t() {
     bits.ms = 0;
@@ -302,6 +304,7 @@ class ptx_thread_info {
             unsigned wid, unsigned tid, bool fsim) {
     m_gpu = gpu;
     m_core = core;
+    m_prf = core->get_prf();
     m_hw_sid = sid;
     m_hw_ctaid = cta_id;
     m_hw_wid = wid;
@@ -473,6 +476,8 @@ class ptx_thread_info {
 
   ptx_reg_t get_reg(unsigned reg_id) { return m_trace_regs[reg_id]; }
 
+  prf* get_prf() { return m_prf; }
+
  public:
   addr_t m_last_effective_address;
   bool m_branch_taken;
@@ -491,6 +496,7 @@ class ptx_thread_info {
   kernel_info_t &m_kernel;
   core_t *m_core;
   gpgpu_t *m_gpu;
+  prf* m_prf;
   bool m_valid;
   dim3 m_ntid;
   dim3 m_tid;
@@ -526,6 +532,30 @@ class ptx_thread_info {
   std::list<reg_map_t> m_debug_trace_regs_read;
   bool m_enable_debug_trace;
   std::map<unsigned, ptx_reg_t> m_trace_regs;
+  // 4 sets * 2 banks * 16 thread_slots * 15P * 16-bit  
+  //                                    |---- line----|
+  // Each PRF can fetch 2 banks * 15 * 16 = 480 bits per cycle
+  // std::vector<u16> m_prf_line; // {low, high} lines
+  std::vector<prf> m_prf_set_ptr;
+
+  // SIMD32
+  //   bank0      bank1
+  // |---16b---|---16b---|
+
+  // SIMD16 (Fetch one sub per bank. Total 16-bit simd_lane_mask)
+  // |  bank0  |  bank1  |
+  // |sub0|sub1|sub0|sub1|
+  // |-8b-| xx |-8b-| xx |
+
+  // SIMD8 (Fetch one sub per bank. Total 8-bit simd_lane_mask)
+  // |   bank0   |   bank1   |
+  // |s0|s1|s2|s3|s0|s1|s2|s3|
+  // |4b|xx|xx|xx|xx|xx|xx|4b|
+
+  // SIMD4 (Fetch one sub per bank. Total 4-bit simd_lane_mask)
+  // |         bank0         |         bank1         |
+  // |s0|s1|s2|s3|s4|s5|s6|s7|s0|s1|s2|s3|s4|s5|s6|s7|
+  // |2b|xx|xx|xx|xx|xx|xx|xx|xx|xx|xx|xx|xx|2b|xx|xx|
 
   std::stack<class operand_info, std::vector<operand_info> > m_breakaddrs;
 };

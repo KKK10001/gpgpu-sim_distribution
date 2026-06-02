@@ -51,6 +51,7 @@ typedef signed long long s64;
 typedef unsigned int u32;
 typedef unsigned u32;
 typedef signed int s32;
+typedef unsigned short u16;
 
 enum _memory_space_t {
   undefined_space = 0,
@@ -1557,6 +1558,46 @@ class checkpoint {
   void store_global_mem(class memory_space *mem, char *fname, char *format);
   u32 radnom;
 };
+
+// Predicate Register File (PRF)
+class prf {
+  public:
+    prf(u32 set, u32 banks, u32 thread_slots, u32 preds) {
+      m_sets  = set;
+      m_banks = banks;
+      m_thread_slots = thread_slots;
+      m_preds = preds;
+      m_data.resize(m_sets * m_banks * m_thread_slots * m_preds,
+                    static_cast<u16>(0xFFFF));
+    }
+    u16 get_simd_lane_mask(u32 set, u32 bank, u32 thread_slot, u32 pred) const {
+      // return data[set][bank][thread_slot][pred]
+      u32 index = get_index(set, bank, thread_slot, pred);
+      return m_data[index];
+    }
+    void set_simd_lane_mask(
+      u32 set, u32 bank, u32 thread_slot, u32 pred, u16 simd_lane_mask) {
+      u32 index = get_index(set, bank, thread_slot, pred);
+      m_data[index] = simd_lane_mask;
+    }
+  private:
+    u32 get_index(u32 set, u32 bank, u32 thread_slot, u32 pred) const {
+      assert(set < m_sets);
+      assert(bank < m_banks);
+      assert(thread_slot < m_thread_slots);
+      assert(pred < m_preds);
+      return set * (m_banks * m_thread_slots * m_preds) +
+             bank * (m_thread_slots * m_preds) +
+             thread_slot * m_preds + pred;
+    }
+
+    u32 m_sets;
+    u32 m_banks;
+    u32 m_thread_slots;
+    u32 m_preds; // P1 ~ P15
+    std::vector<u16> m_data;
+};
+
 /*
  * This abstract class used as a base for functional and performance and
  * simulation, it has basic functional simulation data structures and
@@ -1564,12 +1605,13 @@ class checkpoint {
  */
 class core_t {
  public:
-  core_t(gpgpu_sim *gpu, kernel_info_t *kernel, u32 warp_size,
+  core_t(gpgpu_sim *gpu, kernel_info_t *kernel, 
+        u32 warp_size,
          u32 threads_per_shader)
       : m_gpu(gpu),
         m_kernel(kernel),
         m_simt_stack(NULL),
-        m_thread(NULL),
+        m_thread(NULL),        
         m_warp_size(warp_size) {
     m_warp_count = threads_per_shader / m_warp_size;
     // Handle the case where the number of threads is not a
@@ -1582,13 +1624,20 @@ class core_t {
                                           sizeof(ptx_thread_info *));
     initilizeSIMTStack(m_warp_count, m_warp_size);
 
+    m_prf = new prf(
+    4 /* sets */, 2 /* banks */,
+    16 /* thread_slots */, 15 /* preds: P1 ~ P15 */);
+
     for (u32 i = 0; i < MAX_CTA_PER_SHADER; i++) {
       for (u32 j = 0; j < MAX_BARRIERS_PER_CTA; j++) {
         reduction_storage[i][j] = 0;
       }
     }
   }
-  virtual ~core_t() { free(m_thread); }
+
+  virtual ~core_t() {
+    free(m_thread);
+  }
   virtual void warp_exit(u32 warp_id) = 0;
   virtual bool warp_waiting_at_barrier(u32 warp_id) const = 0;
   virtual void checkExecutionStatusAndUpdate(warp_inst_t &inst, u32 t,
@@ -1596,6 +1645,7 @@ class core_t {
   class gpgpu_sim *get_gpu() {
     return m_gpu;
   }
+  prf* get_prf() { return m_prf; }
   void execute_warp_inst_t(warp_inst_t &inst, u32 warpId = (unsigned)-1);
   bool ptx_thread_done(u32 hw_thread_id) const;
   virtual void updateSIMTStack(u32 warpId, warp_inst_t *inst);
@@ -1627,10 +1677,12 @@ class core_t {
   kernel_info_t *m_kernel;
   simt_stack **m_simt_stack;  // pdom based reconvergence context for each warp
   class ptx_thread_info **m_thread;
+  prf* m_prf;
   u32 m_warp_size;
   u32 m_warp_count;
   u32 reduction_storage[MAX_CTA_PER_SHADER][MAX_BARRIERS_PER_CTA];
 };
+
 
 // register that can hold multiple instructions.
 class register_set {
